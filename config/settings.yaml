@@ -1,0 +1,55 @@
+# Quantum Alpha V1 Configuration
+version: "1.0.0"
+
+# Data Sources
+data:
+  primary_source: "yfinance"
+  cache_enabled: true
+  cache_ttl_hours: 24
+  default_universe:
+    - "SPY"
+    - "QQQ"
+    - "IWM"
+    - "AAPL"
+    - "MSFT"
+    - "GOOGL"
+    - "AMZN"
+    - "NVDA"
+    - "META"
+    - "TSLA"
+
+# Backtesting
+backtest:
+  initial_capital: 100000
+  commission_rate: 0.001  # 0.1% per trade
+  slippage_bps: 5  # 5 basis points
+  min_commission: 1.0
+
+# Risk Management
+risk:
+  max_position_size: 0.25  # Max 25% per position
+  max_portfolio_leverage: 1.0
+  max_drawdown: 0.10  # 10% max drawdown
+  var_confidence: 0.95
+  kelly_fraction: 0.5  # Half-Kelly for conservatism
+
+# Strategy
+strategy:
+  lookback_window: 60
+  signal_threshold: 0.3  # Min signal strength to trade
+  rebalance_frequency: "daily"
+
+# Technical Indicators
+indicators:
+  rsi_period: 14
+  macd_fast: 12
+  macd_slow: 26
+  macd_signal: 9
+  bb_period: 20
+  bb_std: 2
+  atr_period: 14
+
+# Logging
+logging:
+  level: "INFO"
+  file: "quantum_alpha.log"

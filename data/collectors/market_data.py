@@ -5,6 +5,7 @@ Efficient data collection from yfinance with caching and failover.
 
 import pandas as pd
 import numpy as np
+import logging
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 from functools import wraps
@@ -12,6 +13,11 @@ import time
 import pickle
 from pathlib import Path
 
+from quantum_alpha.data.storage.sqlite_cache import SQLiteCache
+from quantum_alpha.data.storage.data_quality import DataQualityChecker
+from quantum_alpha.data.storage.parquet_manager import ParquetManager
+
+logger = logging.getLogger(__name__)
 
 class RateLimiter:
     """Token bucket rate limiter."""
@@ -59,11 +65,31 @@ class DataCollector:
     - Automatic retry with exponential backoff
     """
 
-    def __init__(self, cache_dir: str = ".cache"):
+    def __init__(
+        self,
+        cache_dir: str = ".cache",
+        use_sqlite_cache: bool = True,
+        use_parquet_cache: bool = True,
+        cache_ttl_hours: int = 24,
+        parquet_min_rows: int = 1000,
+    ):
         self.cache_dir = Path(cache_dir)
         self.cache_dir.mkdir(exist_ok=True)
         self.rate_limiter = RateLimiter(120)
         self._yf = None
+        self.cache_ttl_hours = cache_ttl_hours
+        self.parquet_min_rows = parquet_min_rows
+        self.sqlite_cache = None
+        if use_sqlite_cache:
+            db_path = self.cache_dir / "market_data.db"
+            self.sqlite_cache = SQLiteCache(str(db_path), ttl_hours=cache_ttl_hours)
+        self.parquet_manager = None
+        if use_parquet_cache:
+            parquet_dir = self.cache_dir / "parquet"
+            self.parquet_manager = ParquetManager(
+                str(parquet_dir), ttl_hours=cache_ttl_hours
+            )
+        self.quality_checker = DataQualityChecker()
 
     @property
     def yf(self):
@@ -81,12 +107,42 @@ class DataCollector:
         key = f"{symbol}_{start.date()}_{end.date()}_{interval}"
         return self.cache_dir / f"{key}.pkl"
 
+    def _cache_key(
+        self, symbol: str, start: datetime, end: datetime, interval: str
+    ) -> str:
+        return f"{symbol}|{start.date()}|{end.date()}|{interval}"
+
+    def _estimate_bars(self, start: datetime, end: datetime, interval: str) -> int:
+        days = max((end - start).days, 1)
+        interval = interval.lower()
+        if interval.endswith("d"):
+            bars_per_day = 1
+        elif interval.endswith("h"):
+            bars_per_day = 7
+        elif interval.endswith("m"):
+            try:
+                minutes = int(interval[:-1])
+            except ValueError:
+                minutes = 1
+            bars_per_day = max(1, 390 // minutes)
+        else:
+            bars_per_day = 1
+        return int(days * bars_per_day)
+
+    def _use_parquet(self, start: datetime, end: datetime, interval: str) -> bool:
+        if not self.parquet_manager:
+            return False
+        return self._estimate_bars(start, end, interval) >= self.parquet_min_rows
+
     def _load_cache(
-        self, path: Path, max_age_hours: int = 24
+        self, path: Path, max_age_hours: Optional[int] = None
     ) -> Optional[pd.DataFrame]:
         """Load cached data if fresh."""
         if not path.exists():
             return None
+
+        if max_age_hours is None:
+            max_age_hours = self.cache_ttl_hours
 
         mod_time = datetime.fromtimestamp(path.stat().st_mtime)
         if datetime.now() - mod_time > timedelta(hours=max_age_hours):
@@ -123,8 +179,21 @@ class DataCollector:
             DataFrame with columns: open, high, low, close, volume, returns
         """
         cache_path = self._cache_path(symbol, start, end, interval)
+        cache_key = self._cache_key(symbol, start, end, interval)
 
         if use_cache:
+            if self._use_parquet(start, end, interval):
+                try:
+                    cached = self.parquet_manager.load(symbol, start, end, interval)
+                    if cached is not None:
+                        return cached
+                except ImportError as exc:
+                    logger.warning("Parquet cache unavailable: %s", exc)
+
+            if self.sqlite_cache:
+                cached = self.sqlite_cache.get(cache_key)
+                if cached is not None:
+                    return cached
             cached = self._load_cache(cache_path)
             if cached is not None:
                 return cached
@@ -154,8 +223,21 @@ class DataCollector:
         # Calculate returns
         df["returns"] = df["close"].pct_change()
 
+        quality = self.quality_checker.validate_ohlcv(df)
+        if not quality["is_valid"]:
+            logger.warning(
+                "Data quality issues for %s: %s", symbol, ", ".join(quality["issues"])
+            )
+
         if use_cache:
             self._save_cache(cache_path, df)
+            if self.sqlite_cache:
+                self.sqlite_cache.set(cache_key, df)
+            if self._use_parquet(start, end, interval):
+                try:
+                    self.parquet_manager.save(df, symbol, start, end, interval)
+                except ImportError as exc:
+                    logger.warning("Parquet save unavailable: %s", exc)
 
         return df
 

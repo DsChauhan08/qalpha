@@ -1,0 +1,33 @@
+version: "1.0.0"
+
+strategies:
+  momentum:
+    enabled: true
+    rsi_oversold: 30
+    rsi_overbought: 70
+    adx_threshold: 25
+    signal_threshold: 0.3
+  mean_reversion:
+    enabled: true
+    zscore_entry: 2.0
+    zscore_exit: 0.5
+    lookback: 20
+  trend:
+    enabled: true
+    fast_period: 10
+    slow_period: 30
+  composite:
+    enabled: true
+    regime_weights:
+      trending:
+        momentum: 0.4
+        mean_reversion: 0.1
+        trend: 0.5
+      mean_reverting:
+        momentum: 0.2
+        mean_reversion: 0.6
+        trend: 0.2
+      mixed:
+        momentum: 0.4
+        mean_reversion: 0.3
+        trend: 0.3

@@ -1,0 +1,36 @@
+version: "1.0.0"
+
+market_data:
+  primary: "yfinance"
+  yfinance:
+    enabled: true
+    interval: "1d"
+    max_retries: 3
+  alphavantage:
+    enabled: false
+    api_key_env: "ALPHAVANTAGE_API_KEY"
+
+fundamentals:
+  primary: "yfinance"
+  yfinance:
+    enabled: true
+
+news:
+  primary: "newsapi"
+  newsapi:
+    enabled: false
+    api_key_env: "NEWSAPI_KEY"
+
+social:
+  primary: "reddit"
+  reddit:
+    enabled: false
+
+macro:
+  primary: "fred"
+  fred:
+    enabled: false
+    api_key_env: "FRED_API_KEY"
+
+options_flow:
+  enabled: false

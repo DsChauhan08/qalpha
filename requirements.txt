@@ -1,0 +1,94 @@
+# Quantum Alpha V1 - Core Dependencies
+
+# Data & Analysis
+numpy>=1.24.0
+pandas>=2.0.0
+yfinance>=0.2.28
+
+# Technical Analysis (optional - pure numpy fallback available)
+# ta-lib>=0.4.26
+
+# Scientific Computing
+scipy>=1.11.0
+
+# Visualization (minimal for backtest reports)
+matplotlib>=3.7.0
+
+# Configuration
+pyyaml>=6.0
+
+# CLI
+click>=8.1.0
+tqdm>=4.65.0
+
+# Type hints
+typing-extensions>=4.7.0
+
+# HTTP requests (for API collectors)
+requests>=2.31.0
+
+# Parquet support (optional)
+# pyarrow>=12.0.0
+# fastparquet>=2023.0.0
+
+# ==========================================
+# Phase 1: Mathematical Features (Optional)
+# ==========================================
+# These are optional - the code has fallbacks
+
+# Topological Data Analysis
+# ripser>=0.6.0  # For TDA persistent homology
+# persim>=0.3.0  # For persistence diagrams
+
+# Wavelet Analysis
+# PyWavelets>=1.4.0  # For wavelet transforms
+
+# Optimal Transport
+# POT>=0.9.0  # Python Optimal Transport
+
+# ==========================================
+# Phase 2: ML Models (Optional)
+# ==========================================
+# All ML dependencies are optional with rule-based fallbacks
+
+# Deep Learning - Choose ONE framework:
+# PyTorch (recommended for flexibility)
+# torch>=2.0.0
+# torchvision>=0.15.0
+
+# OR TensorFlow (alternative)
+# tensorflow>=2.13.0
+
+# Sentiment Analysis
+# transformers>=4.30.0  # For FinBERT
+# tokenizers>=0.13.0
+
+# Reinforcement Learning (uses PyTorch)
+# gymnasium>=0.28.0  # Modern Gym replacement
+
+# ==========================================
+# Phase 3: Backtesting & Validation
+# ==========================================
+# Core backtesting uses numpy/pandas only
+
+# Optional statistical testing
+# statsmodels>=0.14.0  # For time series analysis
+# arch>=5.0.0  # For GARCH models
+
+# ==========================================
+# Development Dependencies (Optional)
+# ==========================================
+# pytest>=7.0.0
+# pytest-cov>=4.0.0
+# black>=23.0.0
+# isort>=5.12.0
+# mypy>=1.0.0
+# pylint>=2.17.0
+
+# ==========================================
+# Production Dependencies (Optional)
+# ==========================================
+# uvicorn>=0.22.0  # For API server
+# fastapi>=0.100.0  # REST API framework
+# redis>=4.5.0  # Caching
+# celery>=5.3.0  # Task queue

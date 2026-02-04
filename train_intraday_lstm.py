@@ -8,7 +8,7 @@ import argparse
 import json
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 
 import pandas as pd
 
@@ -48,11 +48,12 @@ DEFAULT_FEATURES = [
 ]
 
 
-def _write_latest(checkpoint_dir: str, checkpoint: str, interval: str) -> None:
+def _write_latest(checkpoint_dir: str, checkpoint: str, interval: str, symbol: str) -> None:
     path = Path(checkpoint_dir) / "latest_intraday.json"
     payload = {
         "intraday_checkpoint": checkpoint,
         "interval": interval,
+        "symbol": symbol,
         "updated_at": datetime.utcnow().isoformat(),
     }
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -141,6 +142,28 @@ def _intraday_horizons(interval: str) -> List[HorizonConfig]:
     ]
 
 
+def _normalize_checkpoint_name(checkpoint: str) -> str:
+    name = Path(checkpoint).name
+    for suffix in ("_model.keras", "_scaler.json", "_meta.json"):
+        if name.endswith(suffix):
+            name = name[: -len(suffix)]
+            break
+    return name
+
+
+def _resolve_resume_checkpoint(checkpoint_dir: str, resume_checkpoint: Optional[str], resume_latest: bool) -> Optional[str]:
+    if resume_checkpoint:
+        return _normalize_checkpoint_name(resume_checkpoint)
+    if resume_latest:
+        latest_path = Path(checkpoint_dir) / "latest_intraday.json"
+        if latest_path.exists():
+            payload = json.loads(latest_path.read_text())
+            value = payload.get("intraday_checkpoint")
+            if isinstance(value, str) and value:
+                return value
+    return None
+
+
 def train_intraday(
     symbol: str,
     end_date: datetime,
@@ -152,6 +175,8 @@ def train_intraday(
     window_step_size: int,
     checkpoint_dir: str,
     chunk_days: int,
+    resume_checkpoint: Optional[str] = None,
+    resume_latest: bool = False,
 ) -> None:
     if not HAS_TF:
         print("TensorFlow is not installed. LSTM training requires TensorFlow.")
@@ -172,26 +197,42 @@ def train_intraday(
     data = _build_dataset(df, DEFAULT_FEATURES)
     close_col = DEFAULT_FEATURES.index("close")
 
-    config = TrainingConfig(
-        epochs=epochs,
-        batch_size=batch_size,
-        sequence_length=sequence_length,
-        window_step_size=window_step_size,
-    )
+    resume_name = _resolve_resume_checkpoint(checkpoint_dir, resume_checkpoint, resume_latest)
 
-    horizons = _intraday_horizons(interval)
-    model = MultiHorizonLSTM(
-        input_dim=data.shape[1],
-        sequence_length=sequence_length,
-        horizons=horizons,
-    )
-    trainer = LSTMTrainer(model=model, config=config, checkpoint_dir=checkpoint_dir)
+    if resume_name:
+        trainer = LSTMTrainer(checkpoint_dir=checkpoint_dir)
+        trainer.load_checkpoint(resume_name)
+        if sequence_length != trainer.config.sequence_length:
+            print(
+                f"Using checkpoint sequence length {trainer.config.sequence_length} "
+                f"(requested {sequence_length})."
+            )
+        trainer.config.epochs = epochs
+        trainer.config.batch_size = batch_size
+        trainer.config.window_step_size = window_step_size
+        horizons = trainer.model.horizons if trainer.model else _intraday_horizons(interval)
+        fit_scaler = False
+    else:
+        config = TrainingConfig(
+            epochs=epochs,
+            batch_size=batch_size,
+            sequence_length=sequence_length,
+            window_step_size=window_step_size,
+        )
+        horizons = _intraday_horizons(interval)
+        model = MultiHorizonLSTM(
+            input_dim=data.shape[1],
+            sequence_length=sequence_length,
+            horizons=horizons,
+        )
+        trainer = LSTMTrainer(model=model, config=config, checkpoint_dir=checkpoint_dir)
+        fit_scaler = True
     X_train, y_train, X_val, y_val = trainer.prepare_data(
         data,
         feature_cols=list(range(len(DEFAULT_FEATURES))),
         close_col=close_col,
         horizons=horizons,
-        fit_scaler=True,
+        fit_scaler=fit_scaler,
     )
 
     trainer.train(X_train, y_train, X_val, y_val, verbose=1)
@@ -199,7 +240,7 @@ def train_intraday(
     ckpt = trainer.save_checkpoint()
     print(f"Saved intraday checkpoint: {ckpt}")
     print(metrics)
-    _write_latest(checkpoint_dir, ckpt, interval)
+    _write_latest(checkpoint_dir, ckpt, interval, symbol)
 
 
 def main() -> None:
@@ -213,6 +254,8 @@ def main() -> None:
     parser.add_argument("--sequence-length", type=int, default=90)
     parser.add_argument("--window-step", type=int, default=5)
     parser.add_argument("--chunk-days", type=int, default=7)
+    parser.add_argument("--resume-checkpoint", type=str, default=None)
+    parser.add_argument("--resume-latest", action="store_true")
     parser.add_argument(
         "--checkpoint-dir",
         type=str,
@@ -235,6 +278,8 @@ def main() -> None:
         window_step_size=args.window_step,
         checkpoint_dir=args.checkpoint_dir,
         chunk_days=args.chunk_days,
+        resume_checkpoint=args.resume_checkpoint,
+        resume_latest=args.resume_latest,
     )
 
 

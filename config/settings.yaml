@@ -53,3 +53,10 @@ indicators:
 logging:
   level: "INFO"
   file: "quantum_alpha.log"
+
+# Benchmarks
+benchmarks:
+  market: "SPY"
+  quant_composite:
+    - "QQQ"
+    - "IWM"

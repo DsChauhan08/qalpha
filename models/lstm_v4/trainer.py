@@ -216,6 +216,7 @@ class LSTMTrainer:
         feature_cols: Optional[List[int]] = None,
         close_col: int = 3,
         horizons: Optional[List[HorizonConfig]] = None,
+        fit_scaler: bool = True,
     ) -> Tuple[np.ndarray, Dict[str, np.ndarray], np.ndarray, Dict[str, np.ndarray]]:
         """
         Prepare data for training.
@@ -247,7 +248,12 @@ class LSTMTrainer:
         )
 
         # Scale features
-        X_train_scaled = self.scaler.fit_transform(X_train)
+        if fit_scaler:
+            X_train_scaled = self.scaler.fit_transform(X_train)
+        else:
+            if not self.scaler._fitted:
+                raise RuntimeError("Scaler must be fitted before transform")
+            X_train_scaled = self.scaler.transform(X_train)
         X_val_scaled = self.scaler.transform(X_val)
 
         return X_train_scaled, y_train, X_val_scaled, y_val
@@ -280,8 +286,9 @@ class LSTMTrainer:
                 input_dim=input_dim, sequence_length=self.config.sequence_length
             )
 
-        # Build and compile
-        self.model.build_model()
+        # Build and compile (do not rebuild if already built)
+        if self.model.model is None:
+            self.model.build_model()
         self.model.compile_model(learning_rate=self.config.learning_rate)
 
         if verbose:
@@ -470,7 +477,7 @@ class LSTMTrainer:
         name = name or f"checkpoint_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
 
         # Save model
-        model_path = os.path.join(self.checkpoint_dir, f"{name}_model")
+        model_path = os.path.join(self.checkpoint_dir, f"{name}_model.keras")
         self.model.save(model_path)
 
         # Save scaler
@@ -480,10 +487,21 @@ class LSTMTrainer:
         # Save metrics and config
         meta_path = os.path.join(self.checkpoint_dir, f"{name}_meta.json")
         with open(meta_path, "w") as f:
+            model_info = {}
+            if self.model is not None:
+                model_info = {
+                    "input_dim": self.model.input_dim,
+                    "sequence_length": self.model.seq_len,
+                    "horizons": [
+                        {"name": h.name, "days": h.days, "weight": h.weight}
+                        for h in self.model.horizons
+                    ],
+                }
             json.dump(
                 {
                     "config": self.config.__dict__,
                     "metrics": self.metrics,
+                    "model_info": model_info,
                     "history": {
                         k: [float(v) for v in vals] for k, vals in self.history.items()
                     }
@@ -501,20 +519,32 @@ class LSTMTrainer:
         if self.checkpoint_dir is None:
             raise ValueError("checkpoint_dir not set")
 
+        meta_path = os.path.join(self.checkpoint_dir, f"{name}_meta.json")
+        with open(meta_path, "r") as f:
+            meta = json.load(f)
+
+        model_info = meta.get("model_info") or {}
+        horizons_data = model_info.get("horizons") or None
+        horizons = None
+        if horizons_data:
+            horizons = [HorizonConfig(**h) for h in horizons_data]
+        input_dim = model_info.get("input_dim") or 1
+        seq_len = model_info.get("sequence_length") or meta.get("config", {}).get(
+            "sequence_length", 90
+        )
+
         # Load model
-        model_path = os.path.join(self.checkpoint_dir, f"{name}_model")
-        if self.model is None:
-            self.model = MultiHorizonLSTM()
+        model_path = os.path.join(self.checkpoint_dir, f"{name}_model.keras")
+        self.model = MultiHorizonLSTM(
+            input_dim=input_dim,
+            sequence_length=seq_len,
+            horizons=horizons,
+        )
         self.model.load(model_path)
 
         # Load scaler
         scaler_path = os.path.join(self.checkpoint_dir, f"{name}_scaler.json")
         self.scaler.load(scaler_path)
-
-        # Load meta
-        meta_path = os.path.join(self.checkpoint_dir, f"{name}_meta.json")
-        with open(meta_path, "r") as f:
-            meta = json.load(f)
 
         self.config = TrainingConfig(**meta["config"])
         self.metrics = meta["metrics"]

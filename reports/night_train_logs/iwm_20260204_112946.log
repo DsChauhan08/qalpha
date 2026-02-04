@@ -1,0 +1,115 @@
+2026-02-04 06:29:46.788541: I tensorflow/core/platform/cpu_feature_guard.cc:210] This TensorFlow binary is optimized to use available CPU instructions in performance-critical operations.
+To enable the following instructions: AVX2 FMA, in other operations, rebuild TensorFlow with the appropriate compiler flags.
+2026-02-04 06:29:48,929 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:29:48,929 | ERROR | yfinance | ['IWM']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:29:48,947 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:29:48,947 | ERROR | yfinance | ['IWM']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:29:49,963 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:29:49,963 | ERROR | yfinance | ['IWM']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:29:49,977 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:29:49,977 | ERROR | yfinance | ['IWM']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:29:51,993 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:29:51,993 | ERROR | yfinance | ['IWM']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:29:52,006 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:29:52,007 | ERROR | yfinance | ['IWM']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:29:52,493 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:29:52,493 | ERROR | yfinance | ['IWM']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:29:52,506 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:29:52,506 | ERROR | yfinance | ['IWM']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:29:53,521 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:29:53,521 | ERROR | yfinance | ['IWM']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:29:53,534 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:29:53,534 | ERROR | yfinance | ['IWM']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:29:55,550 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:29:55,550 | ERROR | yfinance | ['IWM']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:29:55,564 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:29:55,564 | ERROR | yfinance | ['IWM']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:29:56,049 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:29:56,050 | ERROR | yfinance | ['IWM']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:29:56,065 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:29:56,065 | ERROR | yfinance | ['IWM']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:29:57,082 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:29:57,082 | ERROR | yfinance | ['IWM']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:29:57,095 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:29:57,095 | ERROR | yfinance | ['IWM']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:29:59,110 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:29:59,111 | ERROR | yfinance | ['IWM']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:29:59,125 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:29:59,125 | ERROR | yfinance | ['IWM']: TypeError("'NoneType' object is not subscriptable")
+Traceback (most recent call last):
+  File "/home/regulus/Trade/quantum_alpha/train_intraday_lstm.py", line 92, in fetch_range
+    return collector.fetch_ohlcv(symbol, start, end, interval=interval, use_cache=False)
+           ~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/regulus/Trade/quantum_alpha/data/collectors/market_data.py", line 46, in wrapper
+    return func(*args, **kwargs)
+  File "/home/regulus/Trade/quantum_alpha/data/collectors/market_data.py", line 258, in fetch_ohlcv
+    raise ValueError(f"No data returned for {symbol}")
+ValueError: No data returned for IWM
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/home/regulus/Trade/quantum_alpha/train_intraday_lstm.py", line 92, in fetch_range
+    return collector.fetch_ohlcv(symbol, start, end, interval=interval, use_cache=False)
+           ~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/regulus/Trade/quantum_alpha/data/collectors/market_data.py", line 46, in wrapper
+    return func(*args, **kwargs)
+  File "/home/regulus/Trade/quantum_alpha/data/collectors/market_data.py", line 258, in fetch_ohlcv
+    raise ValueError(f"No data returned for {symbol}")
+ValueError: No data returned for IWM
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "/home/regulus/Trade/quantum_alpha/train_intraday_lstm.py", line 239, in <module>
+    main()
+    ~~~~^^
+  File "/home/regulus/Trade/quantum_alpha/train_intraday_lstm.py", line 224, in main
+    train_intraday(
+    ~~~~~~~~~~~~~~^
+        symbol=args.symbol,
+        ^^^^^^^^^^^^^^^^^^^
+    ...<8 lines>...
+        chunk_days=args.chunk_days,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/home/regulus/Trade/quantum_alpha/train_intraday_lstm.py", line 162, in train_intraday
+    df = _fetch_intraday_history(
+        collector, symbol, start_date=start_date, end_date=end_date, interval=interval, chunk_days=chunk_days
+    )
+  File "/home/regulus/Trade/quantum_alpha/train_intraday_lstm.py", line 105, in _fetch_intraday_history
+    df = fetch_range(cursor, chunk_end)
+  File "/home/regulus/Trade/quantum_alpha/train_intraday_lstm.py", line 97, in fetch_range
+    left = fetch_range(start, mid)
+  File "/home/regulus/Trade/quantum_alpha/train_intraday_lstm.py", line 97, in fetch_range
+    left = fetch_range(start, mid)
+  File "/home/regulus/Trade/quantum_alpha/train_intraday_lstm.py", line 92, in fetch_range
+    return collector.fetch_ohlcv(symbol, start, end, interval=interval, use_cache=False)
+           ~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/regulus/Trade/quantum_alpha/data/collectors/market_data.py", line 46, in wrapper
+    return func(*args, **kwargs)
+  File "/home/regulus/Trade/quantum_alpha/data/collectors/market_data.py", line 258, in fetch_ohlcv
+    raise ValueError(f"No data returned for {symbol}")
+ValueError: No data returned for IWM
+Intraday training window: 2026-01-15 06:29:48.788795 to 2026-02-04 06:29:48.788795 (5m)

@@ -1,0 +1,132 @@
+{
+  "config": {
+    "epochs": 2,
+    "batch_size": 32,
+    "learning_rate": 0.001,
+    "early_stopping_patience": 10,
+    "reduce_lr_patience": 5,
+    "validation_split": 0.2,
+    "sequence_length": 90,
+    "window_step_size": 5
+  },
+  "metrics": {
+    "1d": {
+      "mse": NaN,
+      "mae": NaN,
+      "rmse": NaN,
+      "direction_accuracy": 0.0,
+      "information_coefficient": 0.0,
+      "within_1std": 0.0,
+      "within_2std": 0.0,
+      "mean_uncertainty": NaN
+    },
+    "1w": {
+      "mse": NaN,
+      "mae": NaN,
+      "rmse": NaN,
+      "direction_accuracy": 0.0,
+      "information_coefficient": 0.0,
+      "within_1std": 0.0,
+      "within_2std": 0.0,
+      "mean_uncertainty": NaN
+    },
+    "1m": {
+      "mse": NaN,
+      "mae": NaN,
+      "rmse": NaN,
+      "direction_accuracy": 0.0,
+      "information_coefficient": 0.0,
+      "within_1std": 0.0,
+      "within_2std": 0.0,
+      "mean_uncertainty": NaN
+    },
+    "6m": {
+      "mse": NaN,
+      "mae": NaN,
+      "rmse": NaN,
+      "direction_accuracy": 0.0,
+      "information_coefficient": 0.0,
+      "within_1std": 0.0,
+      "within_2std": 0.0,
+      "mean_uncertainty": NaN
+    }
+  },
+  "history": {
+    "1d_log_var_loss": [
+      0.0,
+      0.0
+    ],
+    "1d_mean_loss": [
+      NaN,
+      NaN
+    ],
+    "1m_log_var_loss": [
+      0.0,
+      0.0
+    ],
+    "1m_mean_loss": [
+      NaN,
+      NaN
+    ],
+    "1w_log_var_loss": [
+      0.0,
+      0.0
+    ],
+    "1w_mean_loss": [
+      NaN,
+      NaN
+    ],
+    "6m_log_var_loss": [
+      0.0,
+      0.0
+    ],
+    "6m_mean_loss": [
+      NaN,
+      NaN
+    ],
+    "loss": [
+      NaN,
+      NaN
+    ],
+    "val_1d_log_var_loss": [
+      0.0,
+      0.0
+    ],
+    "val_1d_mean_loss": [
+      NaN,
+      NaN
+    ],
+    "val_1m_log_var_loss": [
+      0.0,
+      0.0
+    ],
+    "val_1m_mean_loss": [
+      NaN,
+      NaN
+    ],
+    "val_1w_log_var_loss": [
+      0.0,
+      0.0
+    ],
+    "val_1w_mean_loss": [
+      NaN,
+      NaN
+    ],
+    "val_6m_log_var_loss": [
+      0.0,
+      0.0
+    ],
+    "val_6m_mean_loss": [
+      NaN,
+      NaN
+    ],
+    "val_loss": [
+      NaN,
+      NaN
+    ],
+    "learning_rate": [
+      0.0010000000474974513,
+      0.0010000000474974513
+    ]
+  }
+}

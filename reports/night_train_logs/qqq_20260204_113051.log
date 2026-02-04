@@ -1,0 +1,400 @@
+2026-02-04 06:30:52.342544: I tensorflow/core/platform/cpu_feature_guard.cc:210] This TensorFlow binary is optimized to use available CPU instructions in performance-critical operations.
+To enable the following instructions: AVX2 FMA, in other operations, rebuild TensorFlow with the appropriate compiler flags.
+2026-02-04 06:31:00,667 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:31:00,668 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:31:00,682 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:31:00,682 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:31:01,696 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:31:01,696 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:31:01,709 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:31:01,709 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:31:03,723 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:31:03,723 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:31:03,736 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:31:03,737 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:31:04,223 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:31:04,223 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:31:04,237 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:31:04,237 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:31:05,251 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:31:05,251 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:31:05,264 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:31:05,264 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:31:07,278 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:31:07,278 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:31:07,291 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:31:07,291 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:31:07,778 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:31:07,779 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:31:07,792 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:31:07,792 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:31:08,816 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:31:08,817 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:31:08,844 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:31:08,844 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:31:10,858 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:31:10,859 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:31:10,872 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:31:10,872 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:31:11,359 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:31:11,359 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:31:11,373 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:31:11,374 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:31:12,394 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:31:12,398 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:31:12,424 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:31:12,424 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:31:14,463 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:31:14,463 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:31:14,507 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:31:14,507 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:31:14,951 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:31:14,951 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:31:14,965 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:31:14,966 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:31:15,985 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:31:15,986 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:31:16,013 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:31:16,013 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:31:18,032 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:31:18,033 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:31:18,047 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:31:18,048 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:31:18,532 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:31:18,533 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:31:18,560 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:31:18,561 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:31:19,596 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:31:19,597 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:31:19,634 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:31:19,636 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:31:21,665 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:31:21,666 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:31:21,704 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:31:21,705 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:31:22,168 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:31:22,169 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:31:22,208 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:31:22,214 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:31:23,244 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:31:23,250 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:31:23,290 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:31:23,291 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:31:25,334 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:31:25,335 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:31:25,362 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:31:25,362 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:31:25,836 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:31:25,837 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:31:25,870 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:31:25,871 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:31:26,910 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:31:26,910 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:31:26,947 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:31:26,948 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:31:28,990 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:31:28,991 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:31:29,009 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:31:29,010 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:31:29,475 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:31:29,476 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:31:29,512 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:31:29,512 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:31:30,549 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:31:30,552 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:31:30,580 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:31:30,581 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:31:32,616 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:31:32,616 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:31:32,629 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:31:32,630 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:31:33,126 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:31:33,128 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:31:33,146 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:31:33,146 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:31:34,169 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:31:34,170 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:31:34,198 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:31:34,199 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:31:36,221 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:31:36,223 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:31:36,240 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:31:36,240 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:31:36,736 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:31:36,736 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:31:36,763 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:31:36,763 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:31:37,783 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:31:37,783 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:31:37,820 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:31:37,821 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:31:39,848 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:31:39,849 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:31:39,882 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:31:39,883 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:31:40,342 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:31:40,342 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:31:40,361 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:31:40,361 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:31:41,388 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:31:41,389 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:31:41,428 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:31:41,429 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:31:43,461 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:31:43,462 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:31:43,477 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:31:43,478 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:31:43,967 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:31:43,968 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:31:43,999 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:31:44,001 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:31:45,027 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:31:45,027 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:31:45,042 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:31:45,042 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:31:47,057 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:31:47,057 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:31:47,071 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:31:47,071 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:31:47,559 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:31:47,559 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:31:47,573 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:31:47,573 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:31:48,603 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:31:48,603 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:31:48,628 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:31:48,629 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:31:50,654 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:31:50,655 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:31:50,678 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:31:50,679 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:31:51,151 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:31:51,151 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:31:51,166 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:31:51,166 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:31:52,190 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:31:52,190 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:31:52,203 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:31:52,203 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:31:54,218 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:31:54,218 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:31:54,232 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:31:54,232 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:31:54,730 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:31:54,730 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:31:54,744 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:31:54,745 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:31:55,790 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:31:55,791 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:31:55,818 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:31:55,819 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:31:57,845 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:31:57,846 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:31:57,873 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:31:57,873 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:31:58,345 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:31:58,345 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:31:58,371 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:31:58,372 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:31:59,391 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:31:59,391 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:31:59,405 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:31:59,405 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:32:01,432 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:32:01,432 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:32:01,447 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:32:01,447 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:32:01,929 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:32:01,929 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:32:01,946 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:32:01,946 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:32:02,975 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:32:02,975 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:32:02,990 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:32:02,990 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:32:05,024 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:32:05,025 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:32:05,050 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:32:05,051 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:32:05,524 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:32:05,525 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:32:05,561 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:32:05,562 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:32:06,587 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:32:06,587 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:32:06,614 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:32:06,615 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:32:08,643 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:32:08,644 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:32:08,673 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:32:08,673 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:32:09,143 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:32:09,144 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:32:09,176 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:32:09,176 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:32:10,213 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:32:10,214 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:32:10,246 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:32:10,246 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:32:12,282 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:32:12,283 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:32:12,312 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:32:12,312 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:32:12,781 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:32:12,782 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:32:12,811 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:32:12,813 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:32:13,850 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:32:13,851 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:32:13,884 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:32:13,885 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:32:15,910 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:32:15,910 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:32:15,923 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:32:15,923 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "/home/regulus/Trade/quantum_alpha/train_intraday_lstm.py", line 242, in <module>
+    main()
+    ~~~~^^
+  File "/home/regulus/Trade/quantum_alpha/train_intraday_lstm.py", line 227, in main
+    train_intraday(
+    ~~~~~~~~~~~~~~^
+        symbol=args.symbol,
+        ^^^^^^^^^^^^^^^^^^^
+    ...<8 lines>...
+        chunk_days=args.chunk_days,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/home/regulus/Trade/quantum_alpha/train_intraday_lstm.py", line 169, in train_intraday
+    raise ValueError("No intraday data returned. Check interval and lookback.")
+ValueError: No intraday data returned. Check interval and lookback.
+Intraday training window: 2026-01-15 06:31:00.097477 to 2026-02-04 06:31:00.097477 (5m)

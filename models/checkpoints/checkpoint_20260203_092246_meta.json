@@ -1,0 +1,113 @@
+{
+  "config": {
+    "epochs": 1,
+    "batch_size": 32,
+    "learning_rate": 0.001,
+    "early_stopping_patience": 10,
+    "reduce_lr_patience": 5,
+    "validation_split": 0.2,
+    "sequence_length": 90,
+    "window_step_size": 5
+  },
+  "metrics": {
+    "1d": {
+      "mse": 0.004723262896372016,
+      "mae": 0.06872599869315844,
+      "rmse": 0.06872599869315844,
+      "direction_accuracy": 0.0,
+      "information_coefficient": 0.0,
+      "within_1std": 1.0,
+      "within_2std": 1.0,
+      "mean_uncertainty": 0.09661757946014404
+    },
+    "1w": {
+      "mse": 0.035653707907525464,
+      "mae": 0.18882189467200425,
+      "rmse": 0.18882189467200425,
+      "direction_accuracy": 1.0,
+      "information_coefficient": 0.0,
+      "within_1std": 0.0,
+      "within_2std": 1.0,
+      "mean_uncertainty": 0.1540812849998474
+    },
+    "1m": {
+      "mse": 0.06824981294049833,
+      "mae": 0.2612466515393036,
+      "rmse": 0.2612466515393036,
+      "direction_accuracy": 1.0,
+      "information_coefficient": 0.0,
+      "within_1std": 0.0,
+      "within_2std": 1.0,
+      "mean_uncertainty": 0.20636413991451263
+    },
+    "6m": {
+      "mse": 1.3576072445281375e-05,
+      "mae": 0.003684572220120183,
+      "rmse": 0.003684572220120183,
+      "direction_accuracy": 1.0,
+      "information_coefficient": 0.0,
+      "within_1std": 1.0,
+      "within_2std": 1.0,
+      "mean_uncertainty": 0.15889829397201538
+    }
+  },
+  "history": {
+    "1d_log_var_loss": [
+      0.0
+    ],
+    "1d_mean_loss": [
+      2318.56396484375
+    ],
+    "1m_log_var_loss": [
+      0.0
+    ],
+    "1m_mean_loss": [
+      8.493695259094238
+    ],
+    "1w_log_var_loss": [
+      0.0
+    ],
+    "1w_mean_loss": [
+      79.783447265625
+    ],
+    "6m_log_var_loss": [
+      0.0
+    ],
+    "6m_mean_loss": [
+      0.13306909799575806
+    ],
+    "loss": [
+      2406.97412109375
+    ],
+    "val_1d_log_var_loss": [
+      0.0
+    ],
+    "val_1d_mean_loss": [
+      1086.1025390625
+    ],
+    "val_1m_log_var_loss": [
+      0.0
+    ],
+    "val_1m_mean_loss": [
+      5.955375671386719
+    ],
+    "val_1w_log_var_loss": [
+      0.0
+    ],
+    "val_1w_mean_loss": [
+      269.9572448730469
+    ],
+    "val_6m_log_var_loss": [
+      0.0
+    ],
+    "val_6m_mean_loss": [
+      0.08494488894939423
+    ],
+    "val_loss": [
+      1362.10009765625
+    ],
+    "learning_rate": [
+      0.0010000000474974513
+    ]
+  }
+}

@@ -22,6 +22,11 @@ from quantum_alpha.features.technical.indicators import TechnicalFeatureGenerato
 from quantum_alpha.strategy.signals import MomentumStrategy, CompositeStrategy
 from quantum_alpha.backtesting.engine import Backtester, OrderSide, OrderType
 from quantum_alpha.backtesting.validation import MCPT, BootstrapAnalysis
+from quantum_alpha.backtesting.performance_metrics import (
+    compute_metrics,
+    compute_metrics_from_returns,
+)
+from quantum_alpha.backtesting.performance_gate import evaluate_gate, aggregate_fundamentals
 from quantum_alpha.risk.position_sizing import PositionSizer, VaRCalculator
 from quantum_alpha.execution.paper_trader import PaperTrader
 from quantum_alpha.config.validator import (
@@ -32,6 +37,7 @@ from quantum_alpha.config.validator import (
 )
 from quantum_alpha.monitoring.logging import configure_logging
 from quantum_alpha.monitoring.alert_system import AlertManager, build_default_rules
+from quantum_alpha.plugins import load_plugins
 
 
 def load_config(config_path: str = None) -> Dict:
@@ -96,6 +102,7 @@ def run_backtest(
     strategy_type: str = "momentum",
     validate: bool = False,
     verbose: bool = True,
+    config_path: Optional[str] = None,
 ) -> Dict:
     """
     Run a complete backtest.
@@ -237,6 +244,86 @@ def run_backtest(
     # Get results
     metrics = backtester.get_metrics()
 
+    # Extended metrics and gating
+    settings = load_config(config_path)
+    bench_cfg = settings.get("benchmarks", {})
+    market_benchmark = bench_cfg.get("market", "SPY")
+    quant_benchmark = bench_cfg.get("quant_composite", ["QQQ", "IWM"])
+
+    def _returns(df: pd.DataFrame) -> pd.Series:
+        return df["close"].pct_change().dropna()
+
+    market_returns = None
+    quant_returns = None
+
+    try:
+        market_df = collector.fetch_ohlcv(market_benchmark, start_date, end_date)
+        market_returns = _returns(market_df)
+    except Exception:
+        market_returns = None
+
+    if isinstance(quant_benchmark, list) and quant_benchmark:
+        returns_list = []
+        for sym in quant_benchmark:
+            try:
+                qdf = collector.fetch_ohlcv(sym, start_date, end_date)
+                returns_list.append(_returns(qdf))
+            except Exception:
+                continue
+        if returns_list:
+            quant_returns = pd.concat(returns_list, axis=1).mean(axis=1).dropna()
+
+    extended_metrics = compute_metrics(
+        backtester.equity_curve,
+        trades=backtester.trades,
+        benchmark_returns=market_returns,
+    )
+    metrics.update(extended_metrics)
+
+    fundamentals = []
+    for symbol in symbols:
+        try:
+            fundamentals.append(collector.fetch_fundamentals(symbol))
+        except Exception:
+            continue
+    metrics.update(aggregate_fundamentals(fundamentals))
+
+    market_metrics = (
+        compute_metrics_from_returns(market_returns, benchmark_returns=market_returns)
+        if market_returns is not None
+        else {}
+    )
+    quant_metrics = (
+        compute_metrics_from_returns(quant_returns, benchmark_returns=market_returns)
+        if quant_returns is not None
+        else {}
+    )
+
+    try:
+        market_fund = collector.fetch_fundamentals(market_benchmark)
+        market_metrics.update(aggregate_fundamentals([market_fund]))
+    except Exception:
+        pass
+
+    if isinstance(quant_benchmark, list) and quant_benchmark:
+        quant_funds = []
+        for sym in quant_benchmark:
+            try:
+                quant_funds.append(collector.fetch_fundamentals(sym))
+            except Exception:
+                continue
+        if quant_funds:
+            quant_metrics.update(aggregate_fundamentals(quant_funds))
+
+    gate_details = None
+    if market_returns is not None and quant_returns is not None:
+        gate = evaluate_gate(metrics, market_metrics, quant_metrics)
+        metrics["gate_passed"] = gate.passed
+        metrics["gate_ratio_good"] = gate.ratio_good
+        metrics["gate_coverage"] = gate.coverage
+        metrics["gate_good_count"] = gate.good_count
+        gate_details = gate.details
+
     if verbose:
         print(f"\n{'=' * 60}")
         print("BACKTEST RESULTS")
@@ -252,10 +339,16 @@ def run_backtest(
         print(f"Profit Factor:   {metrics['profit_factor']:>10.2f}")
         print(f"Total Trades:    {metrics['n_trades']:>10d}")
         print(f"Final Equity:    ${metrics['final_equity']:>10,.2f}")
+        if "gate_passed" in metrics:
+            print(f"Gate Passed:     {str(metrics['gate_passed']).upper():>10}")
+            print(f"Gate Coverage:   {metrics['gate_coverage']:>10d}")
+            print(f"Gate Good:       {metrics['gate_good_count']:>10d}")
+            print(f"Gate Ratio:      {metrics['gate_ratio_good'] * 100:>9.2f}%")
         print(f"{'=' * 60}\n")
 
     results = {
         "metrics": metrics,
+        "gate_details": gate_details,
         "equity_curve": backtester.equity_curve,
         "trades": backtester.trades,
         "fills": backtester.fills,
@@ -472,6 +565,16 @@ def main():
         help="Strategy type",
     )
     parser.add_argument(
+        "--firm-mode",
+        action="store_true",
+        help="Enable firm-grade execution safeguards",
+    )
+    parser.add_argument(
+        "--dashboard",
+        action="store_true",
+        help="Launch local dashboard (if available)",
+    )
+    parser.add_argument(
         "--paper-bars",
         type=int,
         default=30,
@@ -487,6 +590,8 @@ def main():
     except Exception as e:
         print(f"Config error: {e}")
         return None
+
+    load_plugins()
 
     config_dir = _resolve_config_dir(args.config)
     log_cfg = settings.get("logging", {}) if settings else {}
@@ -509,6 +614,17 @@ def main():
     for rule in build_default_rules(thresholds):
         alert_manager.add_rule(rule)
 
+    if args.firm_mode and args.mode != "live":
+        print("Firm mode requested, but live execution is not enabled. Firm mode disabled.")
+        args.firm_mode = False
+
+    if args.firm_mode and args.mode == "live":
+        print("Firm mode requested, but live execution is not implemented in this phase.")
+        return None
+
+    if args.dashboard:
+        print("Dashboard flag enabled. Local dashboard is not implemented in V1.")
+
     # Parse dates
     if args.end:
         end_date = datetime.strptime(args.end, "%Y-%m-%d")
@@ -529,6 +645,7 @@ def main():
             strategy_type=args.strategy,
             validate=args.validate,
             verbose=True,
+            config_path=args.config,
         )
         if isinstance(results, dict) and "metrics" in results:
             alert_manager.evaluate(results["metrics"])

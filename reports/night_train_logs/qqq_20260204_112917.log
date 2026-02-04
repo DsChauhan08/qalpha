@@ -1,0 +1,88 @@
+2026-02-04 06:29:17.775606: I tensorflow/core/platform/cpu_feature_guard.cc:210] This TensorFlow binary is optimized to use available CPU instructions in performance-critical operations.
+To enable the following instructions: AVX2 FMA, in other operations, rebuild TensorFlow with the appropriate compiler flags.
+2026-02-04 06:29:19,767 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:29:19,767 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:29:20,784 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:29:20,784 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:29:22,800 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:29:22,800 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:29:23,300 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:29:23,300 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:29:24,316 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:29:24,316 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:29:26,331 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:29:26,331 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:29:26,831 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:29:26,832 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:29:27,846 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:29:27,846 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:29:29,861 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:29:29,862 | ERROR | yfinance | ['QQQ']: TypeError("'NoneType' object is not subscriptable")
+Traceback (most recent call last):
+  File "/home/regulus/Trade/quantum_alpha/train_intraday_lstm.py", line 92, in fetch_range
+    return collector.fetch_ohlcv(symbol, start, end, interval=interval, use_cache=False)
+           ~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/regulus/Trade/quantum_alpha/data/collectors/market_data.py", line 46, in wrapper
+    return func(*args, **kwargs)
+  File "/home/regulus/Trade/quantum_alpha/data/collectors/market_data.py", line 244, in fetch_ohlcv
+    raise ValueError(f"No data returned for {symbol}")
+ValueError: No data returned for QQQ
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/home/regulus/Trade/quantum_alpha/train_intraday_lstm.py", line 92, in fetch_range
+    return collector.fetch_ohlcv(symbol, start, end, interval=interval, use_cache=False)
+           ~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/regulus/Trade/quantum_alpha/data/collectors/market_data.py", line 46, in wrapper
+    return func(*args, **kwargs)
+  File "/home/regulus/Trade/quantum_alpha/data/collectors/market_data.py", line 244, in fetch_ohlcv
+    raise ValueError(f"No data returned for {symbol}")
+ValueError: No data returned for QQQ
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "/home/regulus/Trade/quantum_alpha/train_intraday_lstm.py", line 239, in <module>
+    main()
+    ~~~~^^
+  File "/home/regulus/Trade/quantum_alpha/train_intraday_lstm.py", line 224, in main
+    train_intraday(
+    ~~~~~~~~~~~~~~^
+        symbol=args.symbol,
+        ^^^^^^^^^^^^^^^^^^^
+    ...<8 lines>...
+        chunk_days=args.chunk_days,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/home/regulus/Trade/quantum_alpha/train_intraday_lstm.py", line 162, in train_intraday
+    df = _fetch_intraday_history(
+        collector, symbol, start_date=start_date, end_date=end_date, interval=interval, chunk_days=chunk_days
+    )
+  File "/home/regulus/Trade/quantum_alpha/train_intraday_lstm.py", line 105, in _fetch_intraday_history
+    df = fetch_range(cursor, chunk_end)
+  File "/home/regulus/Trade/quantum_alpha/train_intraday_lstm.py", line 97, in fetch_range
+    left = fetch_range(start, mid)
+  File "/home/regulus/Trade/quantum_alpha/train_intraday_lstm.py", line 97, in fetch_range
+    left = fetch_range(start, mid)
+  File "/home/regulus/Trade/quantum_alpha/train_intraday_lstm.py", line 92, in fetch_range
+    return collector.fetch_ohlcv(symbol, start, end, interval=interval, use_cache=False)
+           ~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/regulus/Trade/quantum_alpha/data/collectors/market_data.py", line 46, in wrapper
+    return func(*args, **kwargs)
+  File "/home/regulus/Trade/quantum_alpha/data/collectors/market_data.py", line 244, in fetch_ohlcv
+    raise ValueError(f"No data returned for {symbol}")
+ValueError: No data returned for QQQ
+Intraday training window: 2026-01-15 06:29:19.594430 to 2026-02-04 06:29:19.594430 (5m)

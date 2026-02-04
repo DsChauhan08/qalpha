@@ -1,0 +1,115 @@
+2026-02-04 06:29:46.816042: I tensorflow/core/platform/cpu_feature_guard.cc:210] This TensorFlow binary is optimized to use available CPU instructions in performance-critical operations.
+To enable the following instructions: AVX2 FMA, in other operations, rebuild TensorFlow with the appropriate compiler flags.
+2026-02-04 06:29:49,014 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:29:49,014 | ERROR | yfinance | ['SPY']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:29:49,030 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:29:49,030 | ERROR | yfinance | ['SPY']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:29:50,045 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:29:50,045 | ERROR | yfinance | ['SPY']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:29:50,059 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:29:50,059 | ERROR | yfinance | ['SPY']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:29:52,076 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:29:52,077 | ERROR | yfinance | ['SPY']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:29:52,092 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:29:52,092 | ERROR | yfinance | ['SPY']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:29:52,574 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:29:52,575 | ERROR | yfinance | ['SPY']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:29:52,589 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:29:52,589 | ERROR | yfinance | ['SPY']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:29:53,604 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:29:53,604 | ERROR | yfinance | ['SPY']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:29:53,617 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:29:53,617 | ERROR | yfinance | ['SPY']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:29:55,632 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:29:55,633 | ERROR | yfinance | ['SPY']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:29:55,647 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:29:55,647 | ERROR | yfinance | ['SPY']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:29:56,133 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:29:56,133 | ERROR | yfinance | ['SPY']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:29:56,148 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:29:56,148 | ERROR | yfinance | ['SPY']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:29:57,164 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:29:57,164 | ERROR | yfinance | ['SPY']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:29:57,179 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:29:57,179 | ERROR | yfinance | ['SPY']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:29:59,194 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:29:59,194 | ERROR | yfinance | ['SPY']: TypeError("'NoneType' object is not subscriptable")
+2026-02-04 06:29:59,208 | ERROR | yfinance | 
+1 Failed download:
+2026-02-04 06:29:59,209 | ERROR | yfinance | ['SPY']: TypeError("'NoneType' object is not subscriptable")
+Traceback (most recent call last):
+  File "/home/regulus/Trade/quantum_alpha/train_intraday_lstm.py", line 92, in fetch_range
+    return collector.fetch_ohlcv(symbol, start, end, interval=interval, use_cache=False)
+           ~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/regulus/Trade/quantum_alpha/data/collectors/market_data.py", line 46, in wrapper
+    return func(*args, **kwargs)
+  File "/home/regulus/Trade/quantum_alpha/data/collectors/market_data.py", line 258, in fetch_ohlcv
+    raise ValueError(f"No data returned for {symbol}")
+ValueError: No data returned for SPY
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/home/regulus/Trade/quantum_alpha/train_intraday_lstm.py", line 92, in fetch_range
+    return collector.fetch_ohlcv(symbol, start, end, interval=interval, use_cache=False)
+           ~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/regulus/Trade/quantum_alpha/data/collectors/market_data.py", line 46, in wrapper
+    return func(*args, **kwargs)
+  File "/home/regulus/Trade/quantum_alpha/data/collectors/market_data.py", line 258, in fetch_ohlcv
+    raise ValueError(f"No data returned for {symbol}")
+ValueError: No data returned for SPY
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "/home/regulus/Trade/quantum_alpha/train_intraday_lstm.py", line 239, in <module>
+    main()
+    ~~~~^^
+  File "/home/regulus/Trade/quantum_alpha/train_intraday_lstm.py", line 224, in main
+    train_intraday(
+    ~~~~~~~~~~~~~~^
+        symbol=args.symbol,
+        ^^^^^^^^^^^^^^^^^^^
+    ...<8 lines>...
+        chunk_days=args.chunk_days,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/home/regulus/Trade/quantum_alpha/train_intraday_lstm.py", line 162, in train_intraday
+    df = _fetch_intraday_history(
+        collector, symbol, start_date=start_date, end_date=end_date, interval=interval, chunk_days=chunk_days
+    )
+  File "/home/regulus/Trade/quantum_alpha/train_intraday_lstm.py", line 105, in _fetch_intraday_history
+    df = fetch_range(cursor, chunk_end)
+  File "/home/regulus/Trade/quantum_alpha/train_intraday_lstm.py", line 97, in fetch_range
+    left = fetch_range(start, mid)
+  File "/home/regulus/Trade/quantum_alpha/train_intraday_lstm.py", line 97, in fetch_range
+    left = fetch_range(start, mid)
+  File "/home/regulus/Trade/quantum_alpha/train_intraday_lstm.py", line 92, in fetch_range
+    return collector.fetch_ohlcv(symbol, start, end, interval=interval, use_cache=False)
+           ~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/regulus/Trade/quantum_alpha/data/collectors/market_data.py", line 46, in wrapper
+    return func(*args, **kwargs)
+  File "/home/regulus/Trade/quantum_alpha/data/collectors/market_data.py", line 258, in fetch_ohlcv
+    raise ValueError(f"No data returned for {symbol}")
+ValueError: No data returned for SPY
+Intraday training window: 2026-01-15 06:29:48.834799 to 2026-02-04 06:29:48.834799 (5m)

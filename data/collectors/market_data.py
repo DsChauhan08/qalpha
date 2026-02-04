@@ -72,6 +72,7 @@ class DataCollector:
         use_parquet_cache: bool = True,
         cache_ttl_hours: int = 24,
         parquet_min_rows: int = 1000,
+        use_stooq_fallback: bool = True,
     ):
         self.cache_dir = Path(cache_dir)
         self.cache_dir.mkdir(exist_ok=True)
@@ -79,6 +80,7 @@ class DataCollector:
         self._yf = None
         self.cache_ttl_hours = cache_ttl_hours
         self.parquet_min_rows = parquet_min_rows
+        self.use_stooq_fallback = use_stooq_fallback
         self.sqlite_cache = None
         if use_sqlite_cache:
             db_path = self.cache_dir / "market_data.db"
@@ -112,6 +114,26 @@ class DataCollector:
     ) -> str:
         return f"{symbol}|{start.date()}|{end.date()}|{interval}"
 
+    def _fetch_stooq(self, symbol: str) -> pd.DataFrame:
+        stooq_symbol = f"{symbol.lower()}.us"
+        url = f"https://stooq.com/q/d/l/?s={stooq_symbol}&i=d"
+        df = pd.read_csv(url)
+        if df.empty:
+            return df
+        df = df.rename(
+            columns={
+                "Date": "date",
+                "Open": "open",
+                "High": "high",
+                "Low": "low",
+                "Close": "close",
+                "Volume": "volume",
+            }
+        )
+        df["date"] = pd.to_datetime(df["date"])
+        df = df.set_index("date").sort_index()
+        return df
+
     def _estimate_bars(self, start: datetime, end: datetime, interval: str) -> int:
         days = max((end - start).days, 1)
         interval = interval.lower()
@@ -128,6 +150,11 @@ class DataCollector:
         else:
             bars_per_day = 1
         return int(days * bars_per_day)
+
+    def _intraday_period(self, start: datetime, end: datetime) -> str:
+        days = max((end - start).days, 1)
+        days = min(days, 60)
+        return f"{days}d"
 
     def _use_parquet(self, start: datetime, end: datetime, interval: str) -> bool:
         if not self.parquet_manager:
@@ -201,10 +228,34 @@ class DataCollector:
         self.rate_limiter.wait()
 
         ticker = self.yf.Ticker(symbol)
-        df = ticker.history(start=start, end=end, interval=interval)
+        try:
+            df = ticker.history(start=start, end=end, interval=interval)
+        except Exception:
+            df = self.yf.download(
+                symbol, start=start, end=end, interval=interval, progress=False
+            )
+
+        if isinstance(df.columns, pd.MultiIndex):
+            if symbol in df.columns.get_level_values(-1):
+                df = df.xs(symbol, level=-1, axis=1)
+            else:
+                df.columns = df.columns.droplevel(0)
+
+        if df.empty and interval != "1d":
+            period = self._intraday_period(start, end)
+            try:
+                df = self.yf.download(
+                    symbol, period=period, interval=interval, progress=False
+                )
+            except Exception:
+                df = pd.DataFrame()
 
         if df.empty:
-            raise ValueError(f"No data returned for {symbol}")
+            if self.use_stooq_fallback and interval == "1d":
+                df = self._fetch_stooq(symbol)
+                df = df.loc[(df.index >= start) & (df.index <= end)]
+            if df.empty:
+                raise ValueError(f"No data returned for {symbol}")
 
         # Standardize columns
         df = df.rename(
@@ -291,9 +342,28 @@ class DataCollector:
             "pe_ratio": info.get("trailingPE"),
             "forward_pe": info.get("forwardPE"),
             "price_to_book": info.get("priceToBook"),
+            "enterprise_to_ebitda": info.get("enterpriseToEbitda"),
+            "enterprise_to_revenue": info.get("enterpriseToRevenue"),
+            "peg_ratio": info.get("pegRatio"),
             "profit_margins": info.get("profitMargins"),
+            "gross_margins": info.get("grossMargins"),
+            "operating_margins": info.get("operatingMargins"),
+            "ebitda_margins": info.get("ebitdaMargins"),
             "return_on_equity": info.get("returnOnEquity"),
+            "return_on_assets": info.get("returnOnAssets"),
+            "return_on_investment": info.get("returnOnInvestment"),
             "debt_to_equity": info.get("debtToEquity"),
+            "total_debt": info.get("totalDebt"),
+            "total_cash": info.get("totalCash"),
+            "ebitda": info.get("ebitda"),
+            "operating_cashflow": info.get("operatingCashflow"),
+            "free_cashflow": info.get("freeCashflow"),
+            "payout_ratio": info.get("payoutRatio"),
+            "dividend_rate": info.get("dividendRate"),
+            "five_year_avg_dividend_yield": info.get("fiveYearAvgDividendYield"),
+            "earnings_growth": info.get("earningsGrowth"),
+            "revenue_growth": info.get("revenueGrowth"),
+            "price_to_sales": info.get("priceToSalesTrailing12Months"),
             "beta": info.get("beta"),
             "dividend_yield": info.get("dividendYield"),
             "avg_volume": info.get("averageVolume"),

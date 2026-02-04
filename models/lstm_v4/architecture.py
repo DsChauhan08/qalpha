@@ -456,14 +456,14 @@ class MultiHorizonLSTM:
             annual_factor = 252.0 / periods
 
             # Clip to prevent numerical issues
-            y_true_clipped = tf.clip_by_value(y_true, -0.99, 10.0)
-            y_pred_clipped = tf.clip_by_value(y_pred, -0.99, 10.0)
+            y_true_clipped = tf.clip_by_value(y_true, -0.95, 1.0)
+            y_pred_clipped = tf.clip_by_value(y_pred, -0.95, 1.0)
 
-            # Convert to annualized returns
-            y_true_annual = tf.pow(1.0 + y_true_clipped, annual_factor) - 1.0
-            y_pred_annual = tf.pow(1.0 + y_pred_clipped, annual_factor) - 1.0
+            # Compare annualized log returns to avoid overflow
+            y_true_log = tf.math.log1p(y_true_clipped) * annual_factor
+            y_pred_log = tf.math.log1p(y_pred_clipped) * annual_factor
 
-            return tf.reduce_mean(tf.square(y_true_annual - y_pred_annual))
+            return tf.reduce_mean(tf.square(y_true_log - y_pred_log))
 
         return loss_fn
 
@@ -677,6 +677,8 @@ class MultiHorizonLSTM:
                 custom_objects={
                     f"cagr_loss_{h.days}": self.cagr_loss(h.days) for h in self.horizons
                 },
+                compile=False,
+                safe_mode=False,
             )
         else:
             raise RuntimeError("TensorFlow required to load model")

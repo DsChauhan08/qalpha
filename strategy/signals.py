@@ -263,6 +263,75 @@ class TrendFollowingStrategy:
         return result
 
 
+class BreakoutTrendStrategy:
+    """
+    Breakout trend strategy with MA filter.
+    """
+
+    def __init__(
+        self, short_ma: int = 50, long_ma: int = 200, breakout_window: int = 55
+    ):
+        self.short_ma = short_ma
+        self.long_ma = long_ma
+        self.breakout_window = breakout_window
+
+    def generate_signals(self, df: pd.DataFrame) -> pd.DataFrame:
+        result = df.copy()
+
+        close = df["close"]
+        short_ma = close.rolling(self.short_ma).mean()
+        long_ma = close.rolling(self.long_ma).mean()
+        upper = close.rolling(self.breakout_window).max()
+        lower = close.rolling(self.breakout_window).min()
+
+        signal = np.zeros(len(result), dtype=float)
+        long_break = (close > upper) & (short_ma > long_ma)
+        short_break = (close < lower) & (short_ma < long_ma)
+        signal[long_break] = 1.0
+        signal[short_break] = -1.0
+
+        result["signal"] = signal
+        if "atr" in result.columns:
+            dist = np.where(signal > 0, close - upper, lower - close)
+            confidence = np.clip((dist / result["atr"]).abs(), 0, 1)
+        else:
+            confidence = np.clip(abs(signal), 0, 1)
+        result["signal_confidence"] = pd.Series(confidence).fillna(0.0).values
+
+        return result
+
+
+class TimeSeriesMomentumStrategy:
+    """
+    Time-series momentum using multi-horizon returns.
+    """
+
+    def __init__(self, long_window: int = 252, short_window: int = 63):
+        self.long_window = long_window
+        self.short_window = short_window
+
+    def generate_signals(self, df: pd.DataFrame) -> pd.DataFrame:
+        result = df.copy()
+
+        close = df["close"]
+        long_mom = close.pct_change(self.long_window)
+        short_mom = close.pct_change(self.short_window)
+
+        result["ts_mom_long"] = long_mom
+        result["ts_mom_short"] = short_mom
+
+        signal = np.zeros(len(result), dtype=float)
+        both_pos = (long_mom > 0) & (short_mom > 0)
+        both_neg = (long_mom < 0) & (short_mom < 0)
+        signal[both_pos] = 1.0
+        signal[both_neg] = -1.0
+
+        result["signal"] = signal
+        result["signal_confidence"] = np.clip(long_mom.abs() * 4, 0, 1).fillna(0.0)
+
+        return result
+
+
 class CompositeStrategy:
     """
     Combines multiple strategies with regime-based weighting.
@@ -345,5 +414,122 @@ class CompositeStrategy:
         )
 
         result["regime"] = regime
+
+        return result
+
+
+class AdaptiveCompositeStrategy:
+    """
+    Composite strategy with long-term trend filter and time-series momentum.
+    """
+
+    def __init__(
+        self,
+        long_trend_window: int = 200,
+        adx_trend_threshold: float = 25,
+        adx_mean_threshold: float = 20,
+        trend_filter_strength: float = 0.75,
+    ):
+        self.momentum = MomentumStrategy()
+        self.mean_rev = MeanReversionStrategy()
+        self.trend = TrendFollowingStrategy()
+        self.breakout = BreakoutTrendStrategy()
+        self.ts_mom = TimeSeriesMomentumStrategy()
+        self.long_trend_window = long_trend_window
+        self.adx_trend_threshold = adx_trend_threshold
+        self.adx_mean_threshold = adx_mean_threshold
+        self.trend_filter_strength = trend_filter_strength
+
+    def _regime(self, df: pd.DataFrame) -> str:
+        if len(df) < max(60, self.long_trend_window):
+            return "mixed"
+
+        recent = df.tail(30)
+        avg_adx = recent["adx"].mean()
+
+        close = df["close"]
+        long_ma = close.rolling(self.long_trend_window).mean()
+        long_trend = close.iloc[-1] - long_ma.iloc[-1]
+
+        if avg_adx >= self.adx_trend_threshold and long_trend >= 0:
+            return "trending_up"
+        if avg_adx >= self.adx_trend_threshold and long_trend < 0:
+            return "trending_down"
+        if avg_adx <= self.adx_mean_threshold:
+            return "mean_reverting"
+        return "mixed"
+
+    def generate_signals(self, df: pd.DataFrame) -> pd.DataFrame:
+        regime = self._regime(df)
+
+        mom_df = self.momentum.generate_signals(df)
+        mr_df = self.mean_rev.generate_signals(df)
+        trend_df = self.trend.generate_signals(df)
+        brk_df = self.breakout.generate_signals(df)
+        tsm_df = self.ts_mom.generate_signals(df)
+
+        result = df.copy()
+
+        if regime == "trending_up":
+            weights = {
+                "momentum": 0.15,
+                "mean_rev": 0.1,
+                "trend": 0.2,
+                "breakout": 0.25,
+                "ts_mom": 0.3,
+            }
+        elif regime == "trending_down":
+            weights = {
+                "momentum": 0.1,
+                "mean_rev": 0.2,
+                "trend": 0.2,
+                "breakout": 0.25,
+                "ts_mom": 0.25,
+            }
+        elif regime == "mean_reverting":
+            weights = {
+                "momentum": 0.15,
+                "mean_rev": 0.55,
+                "trend": 0.05,
+                "breakout": 0.05,
+                "ts_mom": 0.2,
+            }
+        else:
+            weights = {
+                "momentum": 0.25,
+                "mean_rev": 0.2,
+                "trend": 0.15,
+                "breakout": 0.1,
+                "ts_mom": 0.3,
+            }
+
+        result["signal"] = (
+            mom_df["signal"] * weights["momentum"]
+            + mr_df["signal"] * weights["mean_rev"]
+            + trend_df["signal"] * weights["trend"]
+            + brk_df["signal"] * weights["breakout"]
+            + tsm_df["signal"] * weights["ts_mom"]
+        )
+
+        result["signal_confidence"] = (
+            mom_df["signal_confidence"] * weights["momentum"]
+            + mr_df["signal_confidence"] * weights["mean_rev"]
+            + trend_df["signal_confidence"] * weights["trend"]
+            + brk_df["signal_confidence"] * weights["breakout"]
+            + tsm_df["signal_confidence"] * weights["ts_mom"]
+        )
+
+        close = df["close"]
+        long_ma = close.rolling(self.long_trend_window).mean()
+        trend_dir = np.sign(close - long_ma).fillna(0.0)
+
+        # Reduce counter-trend exposure instead of hard blocking
+        signal = result["signal"].copy()
+        counter_trend = signal * trend_dir < 0
+        signal[counter_trend] = signal[counter_trend] * (1 - self.trend_filter_strength)
+        result["signal"] = signal
+
+        result["regime"] = regime
+        result["long_trend"] = trend_dir
 
         return result

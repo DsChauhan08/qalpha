@@ -269,35 +269,54 @@ class Backtester:
             self.positions[symbol] = Position(symbol=symbol)
 
         pos = self.positions[symbol]
+        signed_qty = fill.quantity if fill.side == OrderSide.BUY else -fill.quantity
 
-        if fill.side == OrderSide.BUY:
-            # Update average entry
+        # Same-direction add or open
+        if pos.quantity == 0 or np.sign(pos.quantity) == np.sign(signed_qty):
+            new_qty = pos.quantity + signed_qty
             total_cost = (
-                pos.quantity * pos.avg_entry_price + fill.quantity * fill.fill_price
+                abs(pos.quantity) * pos.avg_entry_price + fill.quantity * fill.fill_price
             )
-            pos.quantity += fill.quantity
-            pos.avg_entry_price = total_cost / pos.quantity if pos.quantity > 0 else 0
-
-        else:  # SELL
-            # Calculate realized P&L
-            realized = fill.quantity * (fill.fill_price - pos.avg_entry_price)
-            pos.realized_pnl += realized
-            pos.quantity -= fill.quantity
-
-            # Record trade
-            self.trades.append(
-                {
-                    "symbol": symbol,
-                    "entry_price": pos.avg_entry_price,
-                    "exit_price": fill.fill_price,
-                    "quantity": fill.quantity,
-                    "pnl": realized - fill.commission,
-                    "timestamp": fill.timestamp,
-                }
+            pos.quantity = new_qty
+            pos.avg_entry_price = (
+                total_cost / abs(new_qty) if new_qty != 0 else 0.0
             )
+            return
 
-            if pos.quantity <= 0:
-                pos.avg_entry_price = 0
+        # Opposite-direction trade: reduce, close, or flip
+        closed_qty = min(abs(pos.quantity), fill.quantity)
+        if pos.quantity > 0:  # Closing long with sell
+            realized = closed_qty * (fill.fill_price - pos.avg_entry_price)
+        else:  # Closing short with buy
+            realized = closed_qty * (pos.avg_entry_price - fill.fill_price)
+
+        pos.realized_pnl += realized
+        commission_alloc = (
+            fill.commission * (closed_qty / fill.quantity) if fill.quantity else 0.0
+        )
+
+        self.trades.append(
+            {
+                "symbol": symbol,
+                "entry_price": pos.avg_entry_price,
+                "exit_price": fill.fill_price,
+                "quantity": closed_qty,
+                "pnl": realized - commission_alloc,
+                "timestamp": fill.timestamp,
+            }
+        )
+
+        new_qty = pos.quantity + signed_qty
+        if new_qty == 0:
+            pos.quantity = 0.0
+            pos.avg_entry_price = 0.0
+        elif np.sign(new_qty) == np.sign(pos.quantity):
+            # Reduced but not flipped
+            pos.quantity = new_qty
+        else:
+            # Flipped direction: remaining position opened at fill price
+            pos.quantity = new_qty
+            pos.avg_entry_price = fill.fill_price
 
     def _mark_to_market(self, bar_data: Dict[str, pd.Series]):
         """Update position values."""

@@ -19,7 +19,11 @@ from quantum_alpha.data.collectors.market_data import DataCollector
 from quantum_alpha.data.preprocessing.cleaners import DataCleaner
 from quantum_alpha.data.preprocessing.imputers import MissingValueImputer
 from quantum_alpha.features.technical.indicators import TechnicalFeatureGenerator
-from quantum_alpha.strategy.signals import MomentumStrategy, CompositeStrategy
+from quantum_alpha.strategy.signals import (
+    MomentumStrategy,
+    CompositeStrategy,
+    AdaptiveCompositeStrategy,
+)
 from quantum_alpha.backtesting.engine import Backtester, OrderSide, OrderType
 from quantum_alpha.backtesting.validation import MCPT, BootstrapAnalysis
 from quantum_alpha.backtesting.performance_metrics import (
@@ -94,6 +98,75 @@ def _load_optional_yaml(path: Path) -> Optional[Dict]:
         return yaml.safe_load(f)
 
 
+def _apply_signal_lag(df: pd.DataFrame, lag: int = 1) -> pd.DataFrame:
+    """Lag signals and sizing features to avoid lookahead."""
+    for col in ("signal", "signal_confidence", "position_signal", "atr_pct", "mom_12m", "mom_3m"):
+        if col in df.columns:
+            df[col] = df[col].shift(lag)
+
+    if "signal" in df.columns:
+        df["signal"] = df["signal"].fillna(0.0)
+    if "signal_confidence" in df.columns:
+        df["signal_confidence"] = df["signal_confidence"].fillna(0.0)
+    if "position_signal" in df.columns:
+        df["position_signal"] = df["position_signal"].fillna(0.0)
+    if "atr_pct" in df.columns:
+        df["atr_pct"] = df["atr_pct"].fillna(0.02)
+    if "mom_12m" in df.columns:
+        df["mom_12m"] = df["mom_12m"].fillna(0.0)
+    if "mom_3m" in df.columns:
+        df["mom_3m"] = df["mom_3m"].fillna(0.0)
+
+    return df
+
+
+def _resolve_symbols(
+    symbols: Optional[list],
+    collector: DataCollector,
+    settings: Optional[Dict],
+) -> list:
+    data_cfg = settings.get("data", {}) if settings else {}
+    universe_limit = int(data_cfg.get("universe_limit", 0))
+
+    def _limit(values: list) -> list:
+        if universe_limit and universe_limit > 0:
+            return list(values)[:universe_limit]
+        return list(values)
+
+    if symbols:
+        if len(symbols) == 1:
+            token = symbols[0].upper()
+            if token in {"SP500", "S&P500", "SPX"}:
+                return _limit(collector.get_sp500_symbols())
+            if token in {"AUTO", "DEFAULT"}:
+                return _limit(data_cfg.get("default_universe", ["SPY"]))
+        return symbols
+
+    return _limit(data_cfg.get("default_universe", ["SPY"]))
+
+
+def _format_symbols(symbols: list) -> str:
+    if len(symbols) <= 15:
+        return str(symbols)
+    head = ", ".join(symbols[:10])
+    return f"{len(symbols)} symbols (e.g., {head}, ...)"
+
+
+def _should_rebalance(ts: datetime, last_ts: Optional[datetime], frequency: str) -> bool:
+    if last_ts is None:
+        return True
+
+    freq = (frequency or "daily").lower()
+    if freq == "daily":
+        return ts.date() != last_ts.date()
+    if freq == "weekly":
+        ts_iso = ts.isocalendar()
+        last_iso = last_ts.isocalendar()
+        return (ts_iso.year, ts_iso.week) != (last_iso.year, last_iso.week)
+    if freq == "monthly":
+        return (ts.year, ts.month) != (last_ts.year, last_ts.month)
+    return True
+
 def run_backtest(
     symbols: list,
     start_date: datetime,
@@ -123,11 +196,36 @@ def run_backtest(
         print(f"\n{'=' * 60}")
         print("QUANTUM ALPHA V1 - BACKTEST")
         print(f"{'=' * 60}")
-        print(f"Symbols: {symbols}")
+        print(f"Symbols: {_format_symbols(symbols)}")
         print(f"Period: {start_date.date()} to {end_date.date()}")
         print(f"Capital: ${initial_capital:,.0f}")
         print(f"Strategy: {strategy_type}")
         print(f"{'=' * 60}\n")
+
+    settings = load_config(config_path)
+    risk_cfg = settings.get("risk", {}) if settings else {}
+    strategy_cfg = settings.get("strategy", {}) if settings else {}
+    max_position = float(risk_cfg.get("max_position_size", 0.25))
+    max_leverage = float(risk_cfg.get("max_portfolio_leverage", 1.0))
+    max_drawdown = float(risk_cfg.get("max_drawdown", 0.10))
+    kelly_fraction = float(risk_cfg.get("kelly_fraction", 0.5))
+    rebalance_frequency = str(strategy_cfg.get("rebalance_frequency", "daily"))
+    momentum_top_pct = float(strategy_cfg.get("momentum_top_pct", 80))
+    momentum_bottom_pct = float(strategy_cfg.get("momentum_bottom_pct", 20))
+    rs_top_n = int(strategy_cfg.get("relative_strength_top_n", 0))
+    rs_min_mom = float(strategy_cfg.get("relative_strength_min_mom", 0.0))
+    use_relative_strength = bool(strategy_cfg.get("use_relative_strength", False))
+    long_only = bool(strategy_cfg.get("long_only", False))
+    risk_off_cash = bool(strategy_cfg.get("risk_off_cash", False))
+    momentum_top_pct = float(strategy_cfg.get("momentum_top_pct", 80))
+    momentum_bottom_pct = float(strategy_cfg.get("momentum_bottom_pct", 20))
+    rs_top_n = int(strategy_cfg.get("relative_strength_top_n", 0))
+    rs_min_mom = float(strategy_cfg.get("relative_strength_min_mom", 0.0))
+    use_relative_strength = bool(strategy_cfg.get("use_relative_strength", False))
+    long_only = bool(strategy_cfg.get("long_only", False))
+    risk_off_cash = bool(strategy_cfg.get("risk_off_cash", False))
+    if max_leverage <= 0:
+        max_leverage = 1.0
 
     # Initialize components
     collector = DataCollector()
@@ -135,15 +233,37 @@ def run_backtest(
     cleaner = DataCleaner()
     imputer = MissingValueImputer()
 
+    symbols = _resolve_symbols(symbols, collector, settings)
+
     if strategy_type == "momentum":
         strategy = MomentumStrategy()
     elif strategy_type == "composite":
         strategy = CompositeStrategy()
+    elif strategy_type == "adaptive":
+        strategy = AdaptiveCompositeStrategy()
     else:
         strategy = MomentumStrategy()
 
-    position_sizer = PositionSizer()
+    position_sizer = PositionSizer(
+        max_position=max_position,
+        kelly_fraction=kelly_fraction,
+        max_drawdown=max_drawdown,
+    )
     backtester = Backtester(initial_capital=initial_capital)
+
+    bench_cfg = settings.get("benchmarks", {})
+    market_benchmark = bench_cfg.get("market", "SPY")
+    quant_benchmark = bench_cfg.get("quant_composite", ["QQQ", "IWM"])
+    market_df = None
+    market_trend = None
+    try:
+        market_df = collector.fetch_ohlcv(market_benchmark, start_date, end_date)
+        m_close = market_df["close"]
+        m_ma = m_close.rolling(200).mean()
+        market_trend = (m_close.shift(1) > m_ma.shift(1))
+    except Exception:
+        market_df = None
+        market_trend = None
 
     # Collect data
     if verbose:
@@ -157,6 +277,7 @@ def run_backtest(
             df = imputer.impute(df)
             df = feature_gen.generate(df)
             df = strategy.generate_signals(df)
+            df = _apply_signal_lag(df)
             data[symbol] = df
             if verbose:
                 print(f"  {symbol}: {len(df)} bars")
@@ -176,10 +297,55 @@ def run_backtest(
         "trade_history": [],
         "current_drawdown": 0,
         "peak_equity": initial_capital,
+        "last_rebalance": None,
     }
 
     def trading_strategy(timestamp, bars, bt):
         """Strategy execution function."""
+        if not _should_rebalance(timestamp, state["last_rebalance"], rebalance_frequency):
+            equity = bt._total_equity()
+            state["peak_equity"] = max(state["peak_equity"], equity)
+            state["current_drawdown"] = (equity - state["peak_equity"]) / state[
+                "peak_equity"
+            ]
+            return
+
+        state["last_rebalance"] = timestamp
+        target_positions = {}
+        volatilities = {}
+        trade_history = (
+            np.array([t["pnl"] for t in bt.trades]) if bt.trades else np.array([0])
+        )
+        market_risk_on = True
+        if market_trend is not None and timestamp in market_trend.index:
+            market_risk_on = bool(market_trend.loc[timestamp])
+        allow_shorts = not long_only
+        if not market_risk_on:
+            allow_shorts = False
+
+        mom_scores = {}
+        for sym, df in data.items():
+            if timestamp in df.index:
+                mom_val = df.loc[timestamp].get("mom_12m", 0.0)
+                if pd.notna(mom_val):
+                    mom_scores[sym] = float(mom_val)
+        top_cut = None
+        bottom_cut = None
+        top_syms = None
+        if len(mom_scores) >= 3:
+            vals = np.array(list(mom_scores.values()), dtype=float)
+            top_cut = np.nanpercentile(vals, momentum_top_pct)
+            bottom_cut = np.nanpercentile(vals, momentum_bottom_pct)
+            if use_relative_strength and rs_top_n > 0:
+                ranked = sorted(mom_scores.items(), key=lambda x: x[1], reverse=True)
+                top_syms = {
+                    sym for sym, val in ranked[:rs_top_n] if val >= rs_min_mom
+                }
+
+        use_rp_allocation = top_syms is not None
+
+        use_rp_allocation = top_syms is not None
+
         for symbol, bar in bars.items():
             if symbol not in data:
                 continue
@@ -189,7 +355,31 @@ def run_backtest(
                 continue
 
             row = df.loc[timestamp]
-            signal = row.get("signal", 0)
+            signal = (
+                row.get("position_signal")
+                if "position_signal" in row
+                else row.get("signal", 0)
+            )
+            if top_syms is not None:
+                signal = 1.0 if symbol in top_syms else 0.0
+            else:
+                if signal < 0 and not allow_shorts:
+                    signal = 0.0
+                if top_cut is not None and bottom_cut is not None:
+                    mom_val = mom_scores.get(symbol)
+                    if signal > 0 and (mom_val is None or mom_val < top_cut):
+                        signal = 0.0
+                    if signal < 0 and (mom_val is None or mom_val > bottom_cut or long_only):
+                        signal = 0.0
+            volatility = row.get("atr_pct", 0.02)
+            if pd.isna(volatility) or volatility <= 0:
+                volatility = 0.02
+            volatility = volatility * np.sqrt(252)
+            volatilities[symbol] = max(volatility, 1e-6)
+
+            if use_rp_allocation:
+                continue
+
             confidence = row.get("signal_confidence", 0.5)
 
             # Get current position
@@ -197,11 +387,6 @@ def run_backtest(
             current_qty = current_pos.quantity if current_pos else 0
 
             # Calculate position size
-            trade_history = (
-                np.array([t["pnl"] for t in bt.trades]) if bt.trades else np.array([0])
-            )
-            volatility = row.get("atr_pct", 0.02) * np.sqrt(252)
-
             sizing = position_sizer.calculate(
                 trade_history=trade_history,
                 current_volatility=max(volatility, 0.01),
@@ -213,15 +398,53 @@ def run_backtest(
             if sizing["halt_trading"]:
                 return
 
-            target_position = sizing["position_size"]
-            equity = bt._total_equity()
-            target_value = equity * target_position
-            target_qty = target_value / bar["close"] if bar["close"] > 0 else 0
+            target_positions[symbol] = sizing["position_size"]
 
-            # Generate orders
+        if use_rp_allocation:
+            if volatilities:
+                inv = {s: 1 / v for s, v in volatilities.items()}
+                total_inv = sum(inv.values())
+                if total_inv > 0:
+                    target_positions = {
+                        s: (inv[s] / total_inv) * max_leverage for s in inv
+                    }
+            if not target_positions:
+                return
+        if risk_off_cash and not market_risk_on:
+            target_positions = {s: 0.0 for s in bars.keys()}
+        elif not target_positions:
+            return
+
+        if volatilities and not use_rp_allocation:
+            inv = {s: 1 / v for s, v in volatilities.items()}
+            total_inv = sum(inv.values())
+            if total_inv > 0:
+                rp_weights = {s: inv[s] / total_inv for s in inv}
+                weight_scale = len(rp_weights)
+                target_positions = {
+                    s: target_positions[s] * rp_weights.get(s, 0) * weight_scale
+                    for s in target_positions
+                }
+
+        total_abs = sum(abs(w) for w in target_positions.values())
+        if total_abs > max_leverage and total_abs > 0:
+            scale = max_leverage / total_abs
+            target_positions = {s: w * scale for s, w in target_positions.items()}
+
+        equity = bt._total_equity()
+        for symbol, target_position in target_positions.items():
+            bar = bars.get(symbol)
+            if bar is None:
+                continue
+            current_pos = bt.positions.get(symbol)
+            current_qty = current_pos.quantity if current_pos else 0
+            price = bar.get("open", bar.get("close", 0))
+            target_value = equity * target_position
+            target_qty = target_value / price if price > 0 else 0
+
             qty_diff = target_qty - current_qty
 
-            if abs(qty_diff) > 0.01 * equity / bar["close"]:
+            if price > 0 and abs(qty_diff) > 0.01 * equity / price:
                 if qty_diff > 0:
                     bt.submit_order(
                         symbol, OrderSide.BUY, abs(qty_diff), OrderType.MARKET
@@ -245,11 +468,6 @@ def run_backtest(
     metrics = backtester.get_metrics()
 
     # Extended metrics and gating
-    settings = load_config(config_path)
-    bench_cfg = settings.get("benchmarks", {})
-    market_benchmark = bench_cfg.get("market", "SPY")
-    quant_benchmark = bench_cfg.get("quant_composite", ["QQQ", "IWM"])
-
     def _returns(df: pd.DataFrame) -> pd.Series:
         return df["close"].pct_change().dropna()
 
@@ -257,7 +475,8 @@ def run_backtest(
     quant_returns = None
 
     try:
-        market_df = collector.fetch_ohlcv(market_benchmark, start_date, end_date)
+        if market_df is None:
+            market_df = collector.fetch_ohlcv(market_benchmark, start_date, end_date)
         market_returns = _returns(market_df)
     except Exception:
         market_returns = None
@@ -322,6 +541,9 @@ def run_backtest(
         metrics["gate_ratio_good"] = gate.ratio_good
         metrics["gate_coverage"] = gate.coverage
         metrics["gate_good_count"] = gate.good_count
+        metrics["gate_available"] = gate.available
+        metrics["gate_required"] = gate.required
+        metrics["gate_relaxed"] = gate.relaxed
         gate_details = gate.details
 
     if verbose:
@@ -342,6 +564,11 @@ def run_backtest(
         if "gate_passed" in metrics:
             print(f"Gate Passed:     {str(metrics['gate_passed']).upper():>10}")
             print(f"Gate Coverage:   {metrics['gate_coverage']:>10d}")
+            if "gate_available" in metrics and "gate_required" in metrics:
+                print(f"Gate Available:  {metrics['gate_available']:>10d}")
+                print(f"Gate Required:   {metrics['gate_required']:>10d}")
+                if metrics.get("gate_relaxed"):
+                    print(f"Gate Relaxed:    {'TRUE':>10}")
             print(f"Gate Good:       {metrics['gate_good_count']:>10d}")
             print(f"Gate Ratio:      {metrics['gate_ratio_good'] * 100:>9.2f}%")
         print(f"{'=' * 60}\n")
@@ -366,6 +593,7 @@ def run_backtest(
         def strategy_func(price_df):
             feat_df = feature_gen.generate(price_df)
             sig_df = strategy.generate_signals(feat_df)
+            sig_df = _apply_signal_lag(sig_df)
             return sig_df["signal"].fillna(0).values
 
         mcpt = MCPT(n_permutations=500, test_statistic="sharpe")
@@ -398,29 +626,61 @@ def run_paper(
         print(f"\n{'=' * 60}")
         print("QUANTUM ALPHA V1 - PAPER TRADING")
         print(f"{'=' * 60}")
-        print(f"Symbols: {symbols}")
+        print(f"Symbols: {_format_symbols(symbols)}")
         print(f"Period: {start_date.date()} to {end_date.date()}")
         print(f"Capital: ${initial_capital:,.0f}")
         print(f"Strategy: {strategy_type}")
         print(f"Paper Bars: {paper_bars}")
         print(f"{'=' * 60}\n")
 
+    settings = load_config(None)
+    risk_cfg = settings.get("risk", {}) if settings else {}
+    strategy_cfg = settings.get("strategy", {}) if settings else {}
+    max_position = float(risk_cfg.get("max_position_size", 0.25))
+    max_leverage = float(risk_cfg.get("max_portfolio_leverage", 1.0))
+    max_drawdown = float(risk_cfg.get("max_drawdown", 0.10))
+    kelly_fraction = float(risk_cfg.get("kelly_fraction", 0.5))
+    rebalance_frequency = str(strategy_cfg.get("rebalance_frequency", "daily"))
+    if max_leverage <= 0:
+        max_leverage = 1.0
+
     collector = DataCollector()
     feature_gen = TechnicalFeatureGenerator()
     cleaner = DataCleaner()
     imputer = MissingValueImputer()
 
+    symbols = _resolve_symbols(symbols, collector, settings)
+
     if strategy_type == "momentum":
         strategy = MomentumStrategy()
     elif strategy_type == "composite":
         strategy = CompositeStrategy()
+    elif strategy_type == "adaptive":
+        strategy = AdaptiveCompositeStrategy()
     else:
         strategy = MomentumStrategy()
 
-    position_sizer = PositionSizer()
+    position_sizer = PositionSizer(
+        max_position=max_position,
+        kelly_fraction=kelly_fraction,
+        max_drawdown=max_drawdown,
+    )
     paper_trader = PaperTrader(
         initial_capital=initial_capital, paper_bars=paper_bars
     )
+
+    bench_cfg = settings.get("benchmarks", {})
+    market_benchmark = bench_cfg.get("market", "SPY")
+    market_df = None
+    market_trend = None
+    try:
+        market_df = collector.fetch_ohlcv(market_benchmark, start_date, end_date)
+        m_close = market_df["close"]
+        m_ma = m_close.rolling(200).mean()
+        market_trend = (m_close.shift(1) > m_ma.shift(1))
+    except Exception:
+        market_df = None
+        market_trend = None
 
     if verbose:
         print("Collecting price data...")
@@ -433,6 +693,7 @@ def run_paper(
             df = imputer.impute(df)
             df = feature_gen.generate(df)
             df = strategy.generate_signals(df)
+            df = _apply_signal_lag(df)
             data[symbol] = df
             if verbose:
                 print(f"  {symbol}: {len(df)} bars")
@@ -451,9 +712,49 @@ def run_paper(
         "trade_history": [],
         "current_drawdown": 0,
         "peak_equity": initial_capital,
+        "last_rebalance": None,
     }
 
     def trading_strategy(timestamp, bars, bt):
+        if not _should_rebalance(timestamp, state["last_rebalance"], rebalance_frequency):
+            equity = bt._total_equity()
+            state["peak_equity"] = max(state["peak_equity"], equity)
+            state["current_drawdown"] = (equity - state["peak_equity"]) / state[
+                "peak_equity"
+            ]
+            return
+
+        state["last_rebalance"] = timestamp
+        target_positions = {}
+        volatilities = {}
+        trade_history = (
+            np.array([t["pnl"] for t in bt.trades]) if bt.trades else np.array([0])
+        )
+        market_risk_on = True
+        if market_trend is not None and timestamp in market_trend.index:
+            market_risk_on = bool(market_trend.loc[timestamp])
+        allow_shorts = not long_only
+        if not market_risk_on:
+            allow_shorts = False
+
+        mom_scores = {}
+        for sym, df in data.items():
+            if timestamp in df.index:
+                mom_val = df.loc[timestamp].get("mom_12m", 0.0)
+                if pd.notna(mom_val):
+                    mom_scores[sym] = float(mom_val)
+        top_cut = None
+        bottom_cut = None
+        top_syms = None
+        if len(mom_scores) >= 3:
+            vals = np.array(list(mom_scores.values()), dtype=float)
+            top_cut = np.nanpercentile(vals, momentum_top_pct)
+            bottom_cut = np.nanpercentile(vals, momentum_bottom_pct)
+            if use_relative_strength and rs_top_n > 0:
+                ranked = sorted(mom_scores.items(), key=lambda x: x[1], reverse=True)
+                top_syms = {
+                    sym for sym, val in ranked[:rs_top_n] if val >= rs_min_mom
+                }
         for symbol, bar in bars.items():
             if symbol not in data:
                 continue
@@ -463,16 +764,35 @@ def run_paper(
                 continue
 
             row = df.loc[timestamp]
-            signal = row.get("signal", 0)
+            signal = (
+                row.get("position_signal")
+                if "position_signal" in row
+                else row.get("signal", 0)
+            )
+            if top_syms is not None:
+                signal = 1.0 if symbol in top_syms else 0.0
+            else:
+                if signal < 0 and not allow_shorts:
+                    signal = 0.0
+                if top_cut is not None and bottom_cut is not None:
+                    mom_val = mom_scores.get(symbol)
+                    if signal > 0 and (mom_val is None or mom_val < top_cut):
+                        signal = 0.0
+                    if signal < 0 and (mom_val is None or mom_val > bottom_cut or long_only):
+                        signal = 0.0
+            volatility = row.get("atr_pct", 0.02)
+            if pd.isna(volatility) or volatility <= 0:
+                volatility = 0.02
+            volatility = volatility * np.sqrt(252)
+            volatilities[symbol] = max(volatility, 1e-6)
+
+            if use_rp_allocation:
+                continue
+
             confidence = row.get("signal_confidence", 0.5)
 
             current_pos = bt.positions.get(symbol)
             current_qty = current_pos.quantity if current_pos else 0
-
-            trade_history = (
-                np.array([t["pnl"] for t in bt.trades]) if bt.trades else np.array([0])
-            )
-            volatility = row.get("atr_pct", 0.02) * np.sqrt(252)
 
             sizing = position_sizer.calculate(
                 trade_history=trade_history,
@@ -485,14 +805,53 @@ def run_paper(
             if sizing["halt_trading"]:
                 return
 
-            target_position = sizing["position_size"]
-            equity = bt._total_equity()
+            target_positions[symbol] = sizing["position_size"]
+
+        if use_rp_allocation:
+            if volatilities:
+                inv = {s: 1 / v for s, v in volatilities.items()}
+                total_inv = sum(inv.values())
+                if total_inv > 0:
+                    target_positions = {
+                        s: (inv[s] / total_inv) * max_leverage for s in inv
+                    }
+            if not target_positions:
+                return
+        if risk_off_cash and not market_risk_on:
+            target_positions = {s: 0.0 for s in bars.keys()}
+        elif not target_positions:
+            return
+
+        if volatilities and not use_rp_allocation:
+            inv = {s: 1 / v for s, v in volatilities.items()}
+            total_inv = sum(inv.values())
+            if total_inv > 0:
+                rp_weights = {s: inv[s] / total_inv for s in inv}
+                weight_scale = len(rp_weights)
+                target_positions = {
+                    s: target_positions[s] * rp_weights.get(s, 0) * weight_scale
+                    for s in target_positions
+                }
+
+        total_abs = sum(abs(w) for w in target_positions.values())
+        if total_abs > max_leverage and total_abs > 0:
+            scale = max_leverage / total_abs
+            target_positions = {s: w * scale for s, w in target_positions.items()}
+
+        equity = bt._total_equity()
+        for symbol, target_position in target_positions.items():
+            bar = bars.get(symbol)
+            if bar is None:
+                continue
+            current_pos = bt.positions.get(symbol)
+            current_qty = current_pos.quantity if current_pos else 0
+            price = bar.get("open", bar.get("close", 0))
             target_value = equity * target_position
-            target_qty = target_value / bar["close"] if bar["close"] > 0 else 0
+            target_qty = target_value / price if price > 0 else 0
 
             qty_diff = target_qty - current_qty
 
-            if abs(qty_diff) > 0.01 * equity / bar["close"]:
+            if price > 0 and abs(qty_diff) > 0.01 * equity / price:
                 if qty_diff > 0:
                     bt.submit_order(
                         symbol, OrderSide.BUY, abs(qty_diff), OrderType.MARKET
@@ -560,7 +919,7 @@ def main():
     parser.add_argument("--end", type=str, default=None, help="End date (YYYY-MM-DD)")
     parser.add_argument(
         "--strategy",
-        choices=["momentum", "mean_reversion", "composite"],
+        choices=["momentum", "mean_reversion", "composite", "adaptive"],
         default="momentum",
         help="Strategy type",
     )

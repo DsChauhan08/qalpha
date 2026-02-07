@@ -347,6 +347,11 @@ class TechnicalFeatureGenerator:
         # VWAP (for intraday, less meaningful for daily)
         result["vwap"] = vwap(high, low, close, volume)
 
+        # Momentum features (cross-sectional filters)
+        close_series = pd.Series(close, index=result.index)
+        result["mom_12m"] = close_series.pct_change(252)
+        result["mom_3m"] = close_series.pct_change(63)
+
         # Normalized signals for model input
         result["rsi_signal"] = (result["rsi"] - 50) / 50  # -1 to 1
         result["bb_signal"] = 2 * (result["bb_position"] - 0.5)  # -1 to 1

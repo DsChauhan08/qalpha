@@ -71,6 +71,9 @@ class GateResult:
     coverage: int
     good_count: int
     ratio_good: float
+    available: int
+    required: int
+    relaxed: bool
     details: Dict[str, Dict[str, object]]
 
 
@@ -92,11 +95,15 @@ def evaluate_gate(
     details: Dict[str, Dict[str, object]] = {}
     good = 0
     coverage = 0
+    available = 0
 
     for metric, rule in METRIC_RULES.items():
         value = metrics.get(metric)
         market_val = market_metrics.get(metric)
         quant_val = quant_metrics.get(metric)
+
+        if market_val is not None and quant_val is not None:
+            available += 1
 
         if value is None or market_val is None or quant_val is None:
             details[metric] = {
@@ -126,13 +133,18 @@ def evaluate_gate(
             good += 1
 
     ratio_good = good / coverage if coverage > 0 else 0.0
-    passed = coverage >= min_metrics and ratio_good >= min_ratio
+    required = min(min_metrics, available) if available > 0 else min_metrics
+    relaxed = required < min_metrics
+    passed = coverage >= required and ratio_good >= min_ratio and coverage > 0
 
     return GateResult(
         passed=passed,
         coverage=coverage,
         good_count=good,
         ratio_good=ratio_good,
+        available=available,
+        required=required,
+        relaxed=relaxed,
         details=details,
     )
 

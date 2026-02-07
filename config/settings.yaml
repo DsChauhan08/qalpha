@@ -6,6 +6,7 @@ data:
   primary_source: "yfinance"
   cache_enabled: true
   cache_ttl_hours: 24
+  universe_limit: 25
   default_universe:
     - "SPY"
     - "QQQ"
@@ -37,7 +38,14 @@ risk:
 strategy:
   lookback_window: 60
   signal_threshold: 0.3  # Min signal strength to trade
-  rebalance_frequency: "daily"
+  rebalance_frequency: "monthly"
+  momentum_top_pct: 80
+  momentum_bottom_pct: 20
+  relative_strength_top_n: 4
+  relative_strength_min_mom: 0.0
+  use_relative_strength: true
+  long_only: true
+  risk_off_cash: true
 
 # Technical Indicators
 indicators:

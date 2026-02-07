@@ -251,13 +251,16 @@ class PositionSizer:
         kelly_weight: float = 0.4,
         vol_weight: float = 0.4,
         max_position: float = 0.25,
+        kelly_fraction: float = 0.5,
+        max_drawdown: float = 0.10,
     ):
         self.kelly = KellyCriterion(max_position)
         self.var = VaRCalculator()
-        self.dd_control = DrawdownController()
+        self.dd_control = DrawdownController(max_drawdown=max_drawdown)
         self.kelly_weight = kelly_weight
         self.vol_weight = vol_weight
         self.max_position = max_position
+        self.kelly_fraction = kelly_fraction
 
     def calculate(
         self,
@@ -282,7 +285,7 @@ class PositionSizer:
         """
         # Kelly component
         kelly_result = self.kelly.calculate(trade_history, signal_confidence)
-        kelly_size = kelly_result.half_kelly * abs(signal_strength)
+        kelly_size = kelly_result.full_kelly * self.kelly_fraction * abs(signal_strength)
 
         # Volatility scaling
         vol_scale = 0.20 / current_volatility if current_volatility > 0 else 1.0

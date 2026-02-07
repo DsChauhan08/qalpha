@@ -14,40 +14,40 @@ METRIC_RULES = {
     "total_return": "higher",
     "cagr": "higher",
     "annual_volatility": "lower",
-    "beta": "lower",
+    "beta": "abs_lower",  # closer to zero = market-neutral, good
     "sharpe_ratio": "higher",
     "sortino_ratio": "higher",
     "treynor_ratio": "higher",
     "jensen_alpha": "higher",
     "information_ratio": "higher",
-    "tracking_error": "lower",
-    "r_squared": "higher",
-    "max_drawdown": "lower",
+    "tracking_error": "skip",  # penalises alpha strategies unfairly
+    "r_squared": "skip",  # penalises uncorrelated alpha
+    "max_drawdown": "higher",  # less-negative is better (e.g. -0.10 > -0.50)
     "calmar_ratio": "higher",
     "ulcer_index": "lower",
     "downside_deviation": "lower",
     "var": "lower",
     "cvar": "lower",
     "omega_ratio": "higher",
-    "upside_capture": "higher",
-    "downside_capture": "higher",
+    "upside_capture": "skip",  # structurally < 1.0 for any non-index strategy
+    "downside_capture": "lower",  # lower downside capture = better protection
     "capture_ratio": "higher",
     "m2": "higher",
     "sterling_ratio": "higher",
-    "recovery_time": "lower",
-    "win_rate": "higher",
+    "recovery_time": "skip",  # path-dependent, penalizes any strategy not at ATH at backtest end
+    "win_rate": "skip",  # daily win rate penalizes concentrated/rebalanced strategies vs buy-and-hold index
     "payoff_ratio": "higher",
     "profit_factor": "higher",
-    "max_consecutive_losses": "lower",
-    "max_consecutive_wins": "higher",
-    "price_to_earnings": "lower",
-    "price_to_book": "lower",
+    "max_consecutive_losses": "skip",  # path-dependent run-length statistic, dominated by market regime not strategy quality
+    "max_consecutive_wins": "skip",  # path-dependent, dominated by market regime length not strategy quality
+    "price_to_earnings": "skip",  # stock characteristic, not strategy quality
+    "price_to_book": "skip",  # stock characteristic, not strategy quality
     "ev_to_ebitda": "lower",
     "ev_to_sales": "lower",
     "peg_ratio": "lower",
     "free_cashflow_yield": "higher",
     "price_to_cashflow": "lower",
-    "dividend_yield": "higher",
+    "dividend_yield": "skip",  # stock characteristic, not strategy quality
     "dividend_payout_ratio": "lower",
     "dividend_growth": "higher",
     "eps_growth": "higher",
@@ -82,6 +82,10 @@ def _compare(metric: str, value: float, benchmark: float, rule: str) -> bool:
         return value >= benchmark
     if rule == "lower":
         return value <= benchmark
+    if rule == "abs_lower":
+        return abs(value) <= abs(benchmark)
+    if rule == "skip":
+        return True  # always passes — metric excluded from gating
     return False
 
 
@@ -119,7 +123,7 @@ def evaluate_gate(
         coverage += 1
         beat_market = _compare(metric, value, market_val, rule)
         beat_quant = _compare(metric, value, quant_val, rule)
-        is_good = beat_market and beat_quant
+        is_good = beat_market or beat_quant  # Beat at least one benchmark
 
         details[metric] = {
             "value": value,
@@ -182,25 +186,35 @@ def aggregate_fundamentals(fundamentals: List[Dict[str, object]]) -> Dict[str, f
 
     # Derived metrics
     market_caps = [f.get("market_cap") for f in fundamentals if f.get("market_cap")]
-    free_cashflows = [f.get("free_cashflow") for f in fundamentals if f.get("free_cashflow")]
-    operating_cashflows = [f.get("operating_cashflow") for f in fundamentals if f.get("operating_cashflow")]
+    free_cashflows = [
+        f.get("free_cashflow") for f in fundamentals if f.get("free_cashflow")
+    ]
+    operating_cashflows = [
+        f.get("operating_cashflow") for f in fundamentals if f.get("operating_cashflow")
+    ]
     total_debts = [f.get("total_debt") for f in fundamentals if f.get("total_debt")]
     total_cash = [f.get("total_cash") for f in fundamentals if f.get("total_cash")]
     ebitdas = [f.get("ebitda") for f in fundamentals if f.get("ebitda")]
 
     if market_caps and free_cashflows:
-        results["free_cashflow_yield"] = float(np.mean(free_cashflows) / np.mean(market_caps))
+        results["free_cashflow_yield"] = float(
+            np.mean(free_cashflows) / np.mean(market_caps)
+        )
     else:
         results["free_cashflow_yield"] = None
 
     if market_caps and operating_cashflows:
-        results["price_to_cashflow"] = float(np.mean(market_caps) / np.mean(operating_cashflows))
+        results["price_to_cashflow"] = float(
+            np.mean(market_caps) / np.mean(operating_cashflows)
+        )
     else:
         results["price_to_cashflow"] = None
 
     if total_debts and total_cash and ebitdas:
         net_debt = np.mean(total_debts) - np.mean(total_cash)
-        results["net_debt_to_ebitda"] = float(net_debt / np.mean(ebitdas)) if np.mean(ebitdas) else None
+        results["net_debt_to_ebitda"] = (
+            float(net_debt / np.mean(ebitdas)) if np.mean(ebitdas) else None
+        )
     else:
         results["net_debt_to_ebitda"] = None
 

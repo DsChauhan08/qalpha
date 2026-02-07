@@ -18,7 +18,9 @@ class DrawdownStats:
     recovery_time: int
 
 
-def _annualize_return(total_return: float, n_periods: int, periods_per_year: int = 252) -> float:
+def _annualize_return(
+    total_return: float, n_periods: int, periods_per_year: int = 252
+) -> float:
     if n_periods <= 0:
         return 0.0
     years = n_periods / periods_per_year
@@ -46,12 +48,18 @@ def _drawdown_stats(equity: pd.Series) -> DrawdownStats:
                 recovery_time = int((recovered.index[0] - trough_idx).days)
             else:
                 recovery_time = int((equity.index[-1] - trough_idx).days)
-    return DrawdownStats(max_drawdown=max_dd, ulcer_index=ulcer, recovery_time=recovery_time)
+    return DrawdownStats(
+        max_drawdown=max_dd, ulcer_index=ulcer, recovery_time=recovery_time
+    )
 
 
 def _max_consecutive_runs(series: pd.Series) -> Tuple[int, int]:
-    wins = (series > 0).astype(int)
-    losses = (series <= 0).astype(int)
+    # Filter to only days with actual non-zero returns (i.e. trading activity)
+    active = series[series != 0]
+    if active.empty:
+        return 0, 0
+    wins = (active > 0).astype(int)
+    losses = (active < 0).astype(int)
 
     def max_run(arr: np.ndarray) -> int:
         max_len = 0
@@ -75,7 +83,9 @@ def _omega_ratio(returns: pd.Series, threshold: float = 0.0) -> float:
     return float(gains / losses) if losses > 0 else float("inf")
 
 
-def _capture_ratio(returns: pd.Series, benchmark: pd.Series) -> Tuple[float, float, float]:
+def _capture_ratio(
+    returns: pd.Series, benchmark: pd.Series
+) -> Tuple[float, float, float]:
     aligned = returns.align(benchmark, join="inner")
     if aligned[0].empty:
         return 0.0, 0.0, 0.0
@@ -90,7 +100,11 @@ def _capture_ratio(returns: pd.Series, benchmark: pd.Series) -> Tuple[float, flo
     downside_capture = (
         strat[downside].mean() / bench[downside].mean() if downside.any() else 0.0
     )
-    capture = upside_capture / downside_capture if downside_capture not in (0, np.nan) else 0.0
+    capture = (
+        upside_capture / downside_capture
+        if downside_capture not in (0, np.nan)
+        else 0.0
+    )
 
     return float(upside_capture), float(downside_capture), float(capture)
 
@@ -119,11 +133,17 @@ def compute_metrics(
     sortino = (annual_return - risk_free) / downside_dev if downside_dev > 0 else 0.0
 
     dd_stats = _drawdown_stats(equity)
-    calmar = annual_return / abs(dd_stats.max_drawdown) if dd_stats.max_drawdown != 0 else 0.0
+    calmar = (
+        annual_return / abs(dd_stats.max_drawdown)
+        if dd_stats.max_drawdown != 0
+        else 0.0
+    )
 
     var_level = 0.95
     var = float(np.percentile(returns, (1 - var_level) * 100))
-    cvar = float(returns[returns <= var].mean()) if len(returns[returns <= var]) else var
+    cvar = (
+        float(returns[returns <= var].mean()) if len(returns[returns <= var]) else var
+    )
 
     omega = _omega_ratio(returns)
 
@@ -131,7 +151,11 @@ def compute_metrics(
     avg_win = returns[returns > 0].mean() if (returns > 0).any() else 0.0
     avg_loss = returns[returns < 0].mean() if (returns < 0).any() else 0.0
     payoff_ratio = float(avg_win / abs(avg_loss)) if avg_loss != 0 else float("inf")
-    profit_factor = float(returns[returns > 0].sum() / abs(returns[returns < 0].sum())) if (returns < 0).any() else float("inf")
+    profit_factor = (
+        float(returns[returns > 0].sum() / abs(returns[returns < 0].sum()))
+        if (returns < 0).any()
+        else float("inf")
+    )
     max_consec_wins, max_consec_losses = _max_consecutive_runs(returns)
 
     metrics = {
@@ -161,7 +185,11 @@ def compute_metrics(
             metrics["trade_win_rate"] = float((trade_pnls > 0).mean())
             trade_wins = trade_pnls[trade_pnls > 0]
             trade_losses = trade_pnls[trade_pnls < 0]
-            metrics["trade_payoff_ratio"] = float(trade_wins.mean() / abs(trade_losses.mean())) if trade_losses.size else float("inf")
+            metrics["trade_payoff_ratio"] = (
+                float(trade_wins.mean() / abs(trade_losses.mean()))
+                if trade_losses.size
+                else float("inf")
+            )
 
     if benchmark_returns is not None and not benchmark_returns.empty:
         aligned = returns.align(benchmark_returns, join="inner")
@@ -170,13 +198,36 @@ def compute_metrics(
             cov = np.cov(strat.values, bench.values)[0, 1]
             var_bench = np.var(bench.values)
             beta = cov / var_bench if var_bench > 0 else 0.0
-            alpha = annual_return - (risk_free + beta * (bench.mean() * 252 - risk_free))
+            alpha = annual_return - (
+                risk_free + beta * (bench.mean() * 252 - risk_free)
+            )
             tracking_error = np.std((strat - bench).values) * np.sqrt(252)
-            info_ratio = (annual_return - bench.mean() * 252) / tracking_error if tracking_error > 0 else 0.0
-            r2 = np.corrcoef(strat.values, bench.values)[0, 1] ** 2 if len(strat) > 1 else 0.0
+            # Use geometric benchmark return for consistency with strategy's
+            # geometric CAGR (annual_return).  Arithmetic mean * 252
+            # systematically over-estimates the benchmark and penalises active
+            # strategies.
+            bench_equity = (1 + bench).cumprod()
+            bench_total = (
+                float(bench_equity.iloc[-1] / bench_equity.iloc[0] - 1)
+                if len(bench_equity) > 1
+                else 0.0
+            )
+            bench_ann = _annualize_return(bench_total, len(bench))
+            info_ratio = (
+                (annual_return - bench_ann) / tracking_error
+                if tracking_error > 1e-10
+                else 0.0
+            )
+            r2 = (
+                np.corrcoef(strat.values, bench.values)[0, 1] ** 2
+                if len(strat) > 1
+                else 0.0
+            )
             treynor = (annual_return - risk_free) / beta if beta != 0 else 0.0
 
-            upside_cap, downside_cap, capture = _capture_ratio(returns, benchmark_returns)
+            upside_cap, downside_cap, capture = _capture_ratio(
+                returns, benchmark_returns
+            )
 
             m2 = risk_free + sharpe * (bench.std() * np.sqrt(252))
             sterling = annual_return / (abs(dd_stats.max_drawdown) + 1e-6)
@@ -213,5 +264,8 @@ def compute_metrics_from_returns(
         {"timestamp": idx, "equity": float(val)} for idx, val in equity.items()
     ]
     return compute_metrics(
-        equity_curve, trades=None, benchmark_returns=benchmark_returns, risk_free=risk_free
+        equity_curve,
+        trades=None,
+        benchmark_returns=benchmark_returns,
+        risk_free=risk_free,
     )

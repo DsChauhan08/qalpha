@@ -7,9 +7,21 @@ Advanced quantitative features for algorithmic trading based on:
 - Fractal Geometry
 - Optimal Transport Theory
 - Wavelet Analysis
+- Stochastic Processes (GBM, Jump Diffusion, OU, Heston)
+- Ito Calculus (Black-Scholes, Greeks)
+- Time Series Models (ARMA, GARCH, Cointegration)
+- Portfolio Optimization (MVO, Black-Litterman, Risk Parity, HRP)
+- Copula Models (Gaussian, Clayton, Frank, Gumbel)
 
 These features capture market structure beyond traditional technical indicators.
 """
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import pandas as pd
 
 from .persistent_homology import PersistentHomologyAnalyzer
 from .hurst_exponent import HurstExponentCalculator
@@ -18,13 +30,77 @@ from .wavelet_analysis import WaveletAnalyzer
 from .optimal_transport import OptimalTransportAnalyzer
 from .fractal_dimension import FractalDimensionCalculator
 
+# Stochastic processes
+from .stochastic_processes import (
+    GeometricBrownianMotion,
+    JumpDiffusionProcess,
+    OrnsteinUhlenbeckProcess,
+    HestonModel,
+)
+
+# Ito calculus and derivatives pricing
+from .ito_calculus import (
+    ItoCalculus,
+    black_scholes_call,
+    black_scholes_put,
+    implied_volatility,
+)
+
+# Time series models
+from .time_series_models import ARMA, GARCH, CointegrationTest
+
+# Portfolio optimization
+from .portfolio_optimization import (
+    MeanVarianceOptimizer,
+    BlackLitterman,
+    RiskParityOptimizer,
+    MaximumDiversification,
+    HierarchicalRiskParity,
+)
+
+# Copula models
+from .copula_models import (
+    GaussianCopula,
+    ClaytonCopula,
+    FrankCopula,
+    GumbelCopula,
+    CopulaAnalyzer,
+)
+
 __all__ = [
+    # Original 6 modules
     "PersistentHomologyAnalyzer",
     "HurstExponentCalculator",
     "EntropyCalculator",
     "WaveletAnalyzer",
     "OptimalTransportAnalyzer",
     "FractalDimensionCalculator",
+    # Stochastic processes
+    "GeometricBrownianMotion",
+    "JumpDiffusionProcess",
+    "OrnsteinUhlenbeckProcess",
+    "HestonModel",
+    # Ito calculus
+    "ItoCalculus",
+    "black_scholes_call",
+    "black_scholes_put",
+    "implied_volatility",
+    # Time series models
+    "ARMA",
+    "GARCH",
+    "CointegrationTest",
+    # Portfolio optimization
+    "MeanVarianceOptimizer",
+    "BlackLitterman",
+    "RiskParityOptimizer",
+    "MaximumDiversification",
+    "HierarchicalRiskParity",
+    # Copula models
+    "GaussianCopula",
+    "ClaytonCopula",
+    "FrankCopula",
+    "GumbelCopula",
+    "CopulaAnalyzer",
 ]
 
 
@@ -43,7 +119,7 @@ class MathematicalFeatureGenerator:
         self.ot = OptimalTransportAnalyzer()
         self.fractal = FractalDimensionCalculator()
 
-    def generate_all(self, price_data: "pd.DataFrame") -> dict:
+    def generate_all(self, price_data: pd.DataFrame) -> dict:
         """
         Generate all mathematical features.
 
@@ -98,7 +174,7 @@ class MathematicalFeatureGenerator:
 
         return features
 
-    def generate_signals(self, price_data: "pd.DataFrame") -> dict:
+    def generate_signals(self, price_data: pd.DataFrame) -> dict:
         """
         Generate trading signals from mathematical analysis.
 

@@ -3,10 +3,13 @@ Strategy Module - V1
 Signal aggregation and trading logic.
 """
 
+import logging
 import numpy as np
 import pandas as pd
 from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -531,5 +534,272 @@ class AdaptiveCompositeStrategy:
 
         result["regime"] = regime
         result["long_trend"] = trend_dir
+
+        return result
+
+
+class EnhancedCompositeStrategy:
+    """
+    Enhanced composite strategy that layers cross-asset signals on top of
+    the single-asset AdaptiveCompositeStrategy.
+
+    Cross-asset signal sources:
+    - Cross-sectional momentum (rank-based long/short)
+    - PCA-based statistical arbitrage residuals
+    - Regime-adaptive momentum with variable lookbacks
+
+    These are computed once across all symbols, then merged per-symbol
+    into the single-asset signal from AdaptiveCompositeStrategy.
+
+    The final signal is a weighted blend:
+      signal = w_base * adaptive_signal + w_xs * cross_sectional_signal
+    where w_xs increases when cross-asset signals have high agreement.
+    """
+
+    def __init__(
+        self,
+        base_weight: float = 0.60,
+        cross_sectional_weight: float = 0.40,
+        momentum_lookback: int = 126,
+        momentum_n_top: int = 5,
+        stat_arb_n_factors: int = 3,
+        residual_threshold: float = 1.5,
+        long_trend_window: int = 200,
+    ):
+        self.base_weight = base_weight
+        self.cross_sectional_weight = cross_sectional_weight
+        self.momentum_lookback = momentum_lookback
+        self.momentum_n_top = momentum_n_top
+        self.stat_arb_n_factors = stat_arb_n_factors
+        self.residual_threshold = residual_threshold
+
+        # Base strategy
+        self.adaptive = AdaptiveCompositeStrategy(
+            long_trend_window=long_trend_window,
+        )
+
+        # Cross-asset signals (computed lazily)
+        self._xs_momentum_signals: Optional[pd.DataFrame] = None
+        self._stat_arb_signals: Optional[pd.DataFrame] = None
+        self._regime_signals: Optional[pd.DataFrame] = None
+
+    def fit_cross_asset(self, price_data: Dict[str, pd.DataFrame]) -> None:
+        """
+        Pre-compute cross-asset signals from multi-symbol price data.
+
+        This must be called BEFORE generate_signals() to provide
+        cross-asset context. The backtest pipeline calls this once
+        after all data is loaded.
+
+        Args:
+            price_data: Dict of symbol -> DataFrame with 'close' column
+        """
+        # Build aligned close price matrix
+        closes = {}
+        for sym, df in price_data.items():
+            if "close" in df.columns:
+                closes[sym] = df["close"]
+
+        if len(closes) < 3:
+            logger.warning(
+                "Need >= 3 symbols for cross-asset signals, got %d", len(closes)
+            )
+            return
+
+        price_matrix = pd.DataFrame(closes).dropna()
+        if len(price_matrix) < self.momentum_lookback + 50:
+            logger.warning(
+                "Insufficient data for cross-asset signals: %d rows", len(price_matrix)
+            )
+            return
+
+        # 1. Cross-sectional momentum
+        self._compute_xs_momentum(price_matrix)
+
+        # 2. PCA stat arb residuals
+        self._compute_stat_arb(price_matrix)
+
+        # 3. Regime-adaptive momentum
+        self._compute_regime_momentum(price_matrix)
+
+        logger.info(
+            "Cross-asset signals computed for %d symbols over %d periods",
+            len(closes),
+            len(price_matrix),
+        )
+
+    def _compute_xs_momentum(self, prices: pd.DataFrame) -> None:
+        """Compute cross-sectional momentum rankings."""
+        returns = prices.pct_change(self.momentum_lookback)
+        ranks = returns.rank(axis=1, ascending=False, na_option="bottom")
+        n_assets = len(prices.columns)
+        n_select = min(self.momentum_n_top, max(1, n_assets // 3))
+
+        signals = pd.DataFrame(0.0, index=prices.index, columns=prices.columns)
+        signals[ranks <= n_select] = 1.0
+        signals[ranks > n_assets - n_select] = -1.0
+
+        # Normalize to [-1, 1] with smooth transition
+        mid = (n_assets + 1) / 2
+        smooth = -(ranks - mid) / mid
+        # Blend: 70% hard signal, 30% smooth
+        self._xs_momentum_signals = signals * 0.7 + smooth.clip(-1, 1) * 0.3
+
+    def _compute_stat_arb(self, prices: pd.DataFrame) -> None:
+        """Compute PCA stat arb residual z-scores."""
+        try:
+            from sklearn.decomposition import PCA
+        except ImportError:
+            logger.warning("scikit-learn not available, skipping PCA stat arb")
+            return
+
+        returns = prices.pct_change().dropna()
+        if len(returns) < 60:
+            return
+
+        n_factors = min(
+            self.stat_arb_n_factors, len(prices.columns) - 1, len(returns) - 1
+        )
+        if n_factors < 1:
+            return
+
+        pca = PCA(n_components=n_factors)
+        factor_returns = pca.fit_transform(returns.values)
+        loadings = pca.components_  # (n_factors, n_assets)
+
+        # Reconstruct systematic returns
+        systematic = factor_returns @ loadings
+        residuals = returns.values - systematic
+
+        # Rolling z-score of residuals
+        residual_df = pd.DataFrame(
+            residuals, index=returns.index, columns=returns.columns
+        )
+        rolling_mean = residual_df.rolling(20).mean()
+        rolling_std = residual_df.rolling(20).std().clip(lower=1e-8)
+        z_scores = (residual_df - rolling_mean) / rolling_std
+
+        # Generate mean-reversion signals from residuals
+        signals = pd.DataFrame(0.0, index=returns.index, columns=returns.columns)
+        signals[z_scores < -self.residual_threshold] = 1.0  # Underperformed -> buy
+        signals[z_scores > self.residual_threshold] = -1.0  # Overperformed -> sell
+
+        # Smooth with tanh
+        signals = np.tanh(signals * 0.8 + (-z_scores / 3.0) * 0.2)
+
+        self._stat_arb_signals = signals
+
+    def _compute_regime_momentum(self, prices: pd.DataFrame) -> None:
+        """Compute regime-adaptive momentum signals."""
+        returns = prices.pct_change().dropna()
+        if len(returns) < 252:
+            return
+
+        # Detect regime from market-wide volatility
+        market_return = returns.mean(axis=1)
+        rolling_vol = market_return.rolling(63).std() * np.sqrt(252)
+
+        signals = pd.DataFrame(0.0, index=returns.index, columns=returns.columns)
+
+        for i in range(252, len(returns)):
+            vol = rolling_vol.iloc[i]
+            if pd.isna(vol) or vol <= 0:
+                continue
+
+            # Adaptive lookback: shorter in high-vol, longer in low-vol
+            if vol > 0.25:
+                lookback = 21  # High vol: fast momentum
+            elif vol > 0.15:
+                lookback = 63  # Normal: medium momentum
+            else:
+                lookback = 126  # Low vol: slow momentum
+
+            if i >= lookback:
+                mom = prices.iloc[i] / prices.iloc[i - lookback] - 1
+                ranks = mom.rank(ascending=False)
+                n_assets = len(prices.columns)
+                n_select = min(self.momentum_n_top, max(1, n_assets // 3))
+                row_signal = pd.Series(0.0, index=prices.columns)
+                row_signal[ranks <= n_select] = 1.0
+                row_signal[ranks > n_assets - n_select] = -1.0
+                signals.iloc[i] = row_signal
+
+        self._regime_signals = signals
+
+    def generate_signals(
+        self, df: pd.DataFrame, symbol: Optional[str] = None
+    ) -> pd.DataFrame:
+        """
+        Generate enhanced signals for a single asset.
+
+        Merges single-asset adaptive signals with cross-asset signals
+        for the given symbol.
+
+        Args:
+            df: Single-asset DataFrame with technical indicators
+            symbol: Symbol name (needed to look up cross-asset signals)
+
+        Returns:
+            DataFrame with signal, signal_confidence, regime columns
+        """
+        # Base adaptive signal
+        result = self.adaptive.generate_signals(df)
+
+        if symbol is None:
+            return result
+
+        # Merge cross-asset signals
+        xs_signals = []
+        xs_weights = []
+
+        if (
+            self._xs_momentum_signals is not None
+            and symbol in self._xs_momentum_signals.columns
+        ):
+            xs_mom = self._xs_momentum_signals[symbol]
+            xs_signals.append(("xs_momentum", xs_mom))
+            xs_weights.append(0.40)
+
+        if (
+            self._stat_arb_signals is not None
+            and symbol in self._stat_arb_signals.columns
+        ):
+            sa_sig = self._stat_arb_signals[symbol]
+            xs_signals.append(("stat_arb", sa_sig))
+            xs_weights.append(0.35)
+
+        if self._regime_signals is not None and symbol in self._regime_signals.columns:
+            regime_sig = self._regime_signals[symbol]
+            xs_signals.append(("regime_mom", regime_sig))
+            xs_weights.append(0.25)
+
+        if not xs_signals:
+            return result
+
+        # Normalize weights
+        total_w = sum(xs_weights)
+        xs_weights = [w / total_w for w in xs_weights]
+
+        # Compute blended cross-asset signal aligned to df's index
+        xs_combined = pd.Series(0.0, index=df.index, dtype=float)
+        for (name, sig), w in zip(xs_signals, xs_weights):
+            aligned = sig.reindex(df.index, method=None).fillna(0.0)
+            xs_combined += aligned * w
+
+        # Blend with base signal
+        base_signal = result["signal"].copy()
+        base_conf = result["signal_confidence"].copy()
+
+        # Cross-asset agreement boosts confidence
+        agreement = (np.sign(base_signal) == np.sign(xs_combined)).astype(float)
+        agreement_boost = agreement * 0.15  # Up to 15% confidence boost
+
+        blended = (
+            base_signal * self.base_weight + xs_combined * self.cross_sectional_weight
+        )
+
+        result["signal"] = blended
+        result["signal_confidence"] = (base_conf + agreement_boost).clip(0, 1)
+        result["xs_signal"] = xs_combined
 
         return result

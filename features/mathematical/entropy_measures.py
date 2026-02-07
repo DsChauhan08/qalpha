@@ -14,6 +14,7 @@ Types:
 """
 
 import numpy as np
+from math import factorial
 from typing import Dict, Optional, Tuple, List
 from collections import Counter
 from itertools import permutations
@@ -123,10 +124,10 @@ class EntropyCalculator:
             }
 
         if r is None:
-            r = 0.2 * np.std(data)
+            r = float(0.2 * np.std(data))
 
         # Count template matches
-        def count_matches(template_len):
+        def count_matches(template_len: int) -> int:
             count = 0
             templates = []
 
@@ -154,17 +155,17 @@ class EntropyCalculator:
             }
 
         # Sample entropy
-        sample_ent = -np.log(A / B) if A > 0 else float("inf")
+        sample_ent = float(-np.log(A / B)) if A > 0 else float("inf")
 
         # Approximate normalization (typical range 0-3)
         normalized = min(sample_ent / 3.0, 1.0) if np.isfinite(sample_ent) else 1.0
 
         return {
-            "entropy": float(sample_ent) if np.isfinite(sample_ent) else 3.0,
+            "entropy": sample_ent if np.isfinite(sample_ent) else 3.0,
             "normalized": float(normalized),
             "method": "sample",
             "m": m,
-            "r": float(r),
+            "r": r,
             "interpretation": self._interpret_sample_entropy(sample_ent),
         }
 
@@ -213,7 +214,7 @@ class EntropyCalculator:
         probs = np.array([count / total for count in pattern_counts.values()])
 
         entropy = -np.sum(probs * np.log2(probs + 1e-10))
-        max_entropy = np.log2(np.math.factorial(order))  # Max possible patterns
+        max_entropy = np.log2(float(factorial(order)))  # Max possible patterns
 
         normalized = entropy / max_entropy if max_entropy > 0 else 0.0
 
@@ -224,7 +225,7 @@ class EntropyCalculator:
             "order": order,
             "delay": delay,
             "n_patterns": len(pattern_counts),
-            "max_patterns": int(np.math.factorial(order)),
+            "max_patterns": factorial(order),
             "interpretation": self._interpret_entropy(normalized),
         }
 
@@ -256,9 +257,9 @@ class EntropyCalculator:
             }
 
         if r is None:
-            r = 0.2 * np.std(data)
+            r = float(0.2 * np.std(data))
 
-        def phi(template_len):
+        def phi(template_len: int) -> float:
             templates = []
             for i in range(n - template_len + 1):
                 templates.append(data[i : i + template_len])
@@ -272,7 +273,7 @@ class EntropyCalculator:
                         count += 1
                 C[i] = count / len(templates)
 
-            return np.sum(np.log(C + 1e-10)) / len(templates)
+            return float(np.sum(np.log(C + 1e-10)) / len(templates))
 
         ap_en = phi(m) - phi(m + 1)
 
@@ -284,14 +285,14 @@ class EntropyCalculator:
             "normalized": float(normalized),
             "method": "approximate",
             "m": m,
-            "r": float(r),
+            "r": r,
             "interpretation": self._interpret_sample_entropy(ap_en),
         }
 
     def multiscale_entropy(
         self,
         data: np.ndarray,
-        scales: List[int] = None,
+        scales: Optional[List[int]] = None,
         m: int = 2,
         r: Optional[float] = None,
     ) -> Dict:
@@ -349,7 +350,7 @@ class EntropyCalculator:
             "complexity_index": float(complexity_index),
             "method": "multiscale",
             "scales": scales,
-            "interpretation": self._interpret_complexity(complexity_index),
+            "interpretation": self._interpret_complexity(float(complexity_index)),
         }
 
     def compute_all(self, data: np.ndarray, include_multiscale: bool = False) -> Dict:
@@ -383,7 +384,7 @@ class EntropyCalculator:
 
         results["composite"] = {
             "entropy": float(composite),
-            "interpretation": self._interpret_entropy(composite),
+            "interpretation": self._interpret_entropy(float(composite)),
         }
 
         return results

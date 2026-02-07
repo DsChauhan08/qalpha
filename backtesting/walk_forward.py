@@ -240,22 +240,29 @@ class WalkForwardOptimizer:
             # Assume strategy is callable
             signals_df = strategy(data)
 
-        # Extract signals
+        # Extract signals (fill NaNs to avoid propagating into returns)
         if "position_signal" in signals_df.columns:
-            signals = signals_df["position_signal"].values
+            signals = signals_df["position_signal"].to_numpy(dtype=float)
         elif "signal" in signals_df.columns:
-            signals = signals_df["signal"].values
+            signals = signals_df["signal"].to_numpy(dtype=float)
         else:
-            signals = np.zeros(len(data))
+            signals = np.zeros(len(data), dtype=float)
+
+        signals = np.nan_to_num(signals, nan=0.0, posinf=0.0, neginf=0.0)
 
         # Calculate returns
         if "returns" in data.columns:
-            returns = data["returns"].values
+            returns = data["returns"].to_numpy(dtype=float)
         else:
-            returns = data["close"].pct_change().fillna(0).values
+            returns = data["close"].pct_change().fillna(0).to_numpy(dtype=float)
+
+        returns = np.nan_to_num(returns, nan=0.0, posinf=0.0, neginf=0.0)
 
         # Strategy returns (signal * next period return)
         strategy_returns = signals[:-1] * returns[1:]
+
+        # Drop any remaining NaNs (can occur if signals/returns length < 2)
+        strategy_returns = strategy_returns[~np.isnan(strategy_returns)]
 
         # Calculate metrics
         if len(strategy_returns) == 0 or np.std(strategy_returns) == 0:

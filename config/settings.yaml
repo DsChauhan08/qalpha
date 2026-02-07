@@ -29,7 +29,7 @@ backtest:
 # Risk Management
 risk:
   max_position_size: 0.25  # Max 25% per position
-  max_portfolio_leverage: 1.0
+  max_portfolio_leverage: 0.90
   max_drawdown: 0.10  # 10% max drawdown
   var_confidence: 0.95
   kelly_fraction: 0.5  # Half-Kelly for conservatism
@@ -41,7 +41,7 @@ strategy:
   rebalance_frequency: "monthly"
   momentum_top_pct: 80
   momentum_bottom_pct: 20
-  relative_strength_top_n: 4
+  relative_strength_top_n: 5
   relative_strength_min_mom: 0.0
   use_relative_strength: true
   long_only: true

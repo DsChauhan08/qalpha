@@ -23,6 +23,7 @@ from quantum_alpha.strategy.signals import (
     MomentumStrategy,
     CompositeStrategy,
     AdaptiveCompositeStrategy,
+    EnhancedCompositeStrategy,
 )
 from quantum_alpha.backtesting.engine import Backtester, OrderSide, OrderType
 from quantum_alpha.backtesting.validation import MCPT, BootstrapAnalysis
@@ -30,8 +31,12 @@ from quantum_alpha.backtesting.performance_metrics import (
     compute_metrics,
     compute_metrics_from_returns,
 )
-from quantum_alpha.backtesting.performance_gate import evaluate_gate, aggregate_fundamentals
+from quantum_alpha.backtesting.performance_gate import (
+    evaluate_gate,
+    aggregate_fundamentals,
+)
 from quantum_alpha.risk.position_sizing import PositionSizer, VaRCalculator
+from quantum_alpha.risk.drawdown_control import DrawdownController
 from quantum_alpha.execution.paper_trader import PaperTrader
 from quantum_alpha.config.validator import (
     validate_settings,
@@ -100,7 +105,14 @@ def _load_optional_yaml(path: Path) -> Optional[Dict]:
 
 def _apply_signal_lag(df: pd.DataFrame, lag: int = 1) -> pd.DataFrame:
     """Lag signals and sizing features to avoid lookahead."""
-    for col in ("signal", "signal_confidence", "position_signal", "atr_pct", "mom_12m", "mom_3m"):
+    for col in (
+        "signal",
+        "signal_confidence",
+        "position_signal",
+        "atr_pct",
+        "mom_12m",
+        "mom_3m",
+    ):
         if col in df.columns:
             df[col] = df[col].shift(lag)
 
@@ -152,7 +164,9 @@ def _format_symbols(symbols: list) -> str:
     return f"{len(symbols)} symbols (e.g., {head}, ...)"
 
 
-def _should_rebalance(ts: datetime, last_ts: Optional[datetime], frequency: str) -> bool:
+def _should_rebalance(
+    ts: datetime, last_ts: Optional[datetime], frequency: str
+) -> bool:
     if last_ts is None:
         return True
 
@@ -163,9 +177,14 @@ def _should_rebalance(ts: datetime, last_ts: Optional[datetime], frequency: str)
         ts_iso = ts.isocalendar()
         last_iso = last_ts.isocalendar()
         return (ts_iso.year, ts_iso.week) != (last_iso.year, last_iso.week)
+    if freq == "biweekly":
+        # Rebalance every 2 weeks (10 trading days)
+        delta = (ts - last_ts).days
+        return delta >= 14
     if freq == "monthly":
         return (ts.year, ts.month) != (last_ts.year, last_ts.month)
     return True
+
 
 def run_backtest(
     symbols: list,
@@ -239,10 +258,12 @@ def run_backtest(
         strategy = MomentumStrategy()
     elif strategy_type == "composite":
         strategy = CompositeStrategy()
-    elif strategy_type == "adaptive":
-        strategy = AdaptiveCompositeStrategy()
+    elif strategy_type in ("adaptive", "enhanced"):
+        strategy = EnhancedCompositeStrategy()
     else:
         strategy = MomentumStrategy()
+
+    use_enhanced = isinstance(strategy, EnhancedCompositeStrategy)
 
     position_sizer = PositionSizer(
         max_position=max_position,
@@ -260,7 +281,7 @@ def run_backtest(
         market_df = collector.fetch_ohlcv(market_benchmark, start_date, end_date)
         m_close = market_df["close"]
         m_ma = m_close.rolling(200).mean()
-        market_trend = (m_close.shift(1) > m_ma.shift(1))
+        market_trend = m_close.shift(1) > m_ma.shift(1)
     except Exception:
         market_df = None
         market_trend = None
@@ -270,20 +291,33 @@ def run_backtest(
         print("Collecting price data...")
 
     data = {}
+    raw_featured = {}  # For enhanced strategy: feature-generated but pre-signal
     for symbol in symbols:
         try:
             df = collector.fetch_ohlcv(symbol, start_date, end_date)
             df = cleaner.clean(df)
             df = imputer.impute(df)
             df = feature_gen.generate(df)
-            df = strategy.generate_signals(df)
-            df = _apply_signal_lag(df)
-            data[symbol] = df
+            raw_featured[symbol] = df
+            if not use_enhanced:
+                df = strategy.generate_signals(df)
+                df = _apply_signal_lag(df)
+                data[symbol] = df
             if verbose:
                 print(f"  {symbol}: {len(df)} bars")
         except Exception as e:
             if verbose:
                 print(f"  {symbol}: FAILED - {e}")
+
+    # Enhanced strategy: fit cross-asset signals, then generate per-symbol
+    if use_enhanced and raw_featured:
+        if verbose:
+            print("  Computing cross-asset signals...")
+        strategy.fit_cross_asset(raw_featured)
+        for symbol, df in raw_featured.items():
+            df = strategy.generate_signals(df, symbol=symbol)
+            df = _apply_signal_lag(df)
+            data[symbol] = df
 
     if not data:
         return {"error": "No data collected"}
@@ -300,10 +334,40 @@ def run_backtest(
         "last_rebalance": None,
     }
 
+    # Dynamic drawdown control — soft scaling only, no circuit breaker.
+    # Thresholds are wide enough for multi-decade equity backtests where
+    # 20-30% drawdowns are normal (e.g. 2008, 2020, 2022).
+    dd_warning = float(risk_cfg.get("dd_warning", 0.15))
+    dd_critical = float(risk_cfg.get("dd_critical", 0.25))
+    dd_breaker = float(risk_cfg.get("dd_circuit_breaker", 0.40))
+    dd_limit = float(risk_cfg.get("dd_max_limit", 0.50))
+    dd_controller = DrawdownController(
+        warning_threshold=dd_warning,
+        critical_threshold=dd_critical,
+        circuit_breaker_threshold=dd_breaker,
+        max_drawdown_limit=dd_limit,
+        scaling_method="linear",
+        min_exposure=0.25,
+        cooldown_days=10,
+    )
+    dd_controller.reset(initial_capital)
+
     def trading_strategy(timestamp, bars, bt):
         """Strategy execution function."""
-        if not _should_rebalance(timestamp, state["last_rebalance"], rebalance_frequency):
-            equity = bt._total_equity()
+        equity = bt._total_equity()
+
+        # Update drawdown controller every bar
+        dd_metrics = dd_controller.update(equity, timestamp)
+
+        # Soft exposure scaling only — no hard circuit breaker that closes
+        # all positions.  The exposure_multiplier already approaches zero
+        # as drawdown deepens, which achieves the same effect without the
+        # all-or-nothing slam that destroys multi-decade backtests.
+        exposure_mult = dd_metrics.exposure_multiplier
+
+        if not _should_rebalance(
+            timestamp, state["last_rebalance"], rebalance_frequency
+        ):
             state["peak_equity"] = max(state["peak_equity"], equity)
             state["current_drawdown"] = (equity - state["peak_equity"]) / state[
                 "peak_equity"
@@ -338,11 +402,7 @@ def run_backtest(
             bottom_cut = np.nanpercentile(vals, momentum_bottom_pct)
             if use_relative_strength and rs_top_n > 0:
                 ranked = sorted(mom_scores.items(), key=lambda x: x[1], reverse=True)
-                top_syms = {
-                    sym for sym, val in ranked[:rs_top_n] if val >= rs_min_mom
-                }
-
-        use_rp_allocation = top_syms is not None
+                top_syms = {sym for sym, val in ranked[:rs_top_n] if val >= rs_min_mom}
 
         use_rp_allocation = top_syms is not None
 
@@ -361,7 +421,19 @@ def run_backtest(
                 else row.get("signal", 0)
             )
             if top_syms is not None:
-                signal = 1.0 if symbol in top_syms else 0.0
+                if use_enhanced:
+                    # Enhanced strategy: use top_syms as universe filter,
+                    # but preserve strategy's signal magnitude & direction
+                    if symbol not in top_syms:
+                        signal = 0.0
+                    else:
+                        # Ensure long-only compliance; keep magnitude
+                        signal = max(signal, 0.0) if long_only else signal
+                        # Floor at a small positive so selected symbols trade
+                        if signal == 0.0:
+                            signal = 0.5
+                else:
+                    signal = 1.0 if symbol in top_syms else 0.0
             else:
                 if signal < 0 and not allow_shorts:
                     signal = 0.0
@@ -369,7 +441,9 @@ def run_backtest(
                     mom_val = mom_scores.get(symbol)
                     if signal > 0 and (mom_val is None or mom_val < top_cut):
                         signal = 0.0
-                    if signal < 0 and (mom_val is None or mom_val > bottom_cut or long_only):
+                    if signal < 0 and (
+                        mom_val is None or mom_val > bottom_cut or long_only
+                    ):
                         signal = 0.0
             volatility = row.get("atr_pct", 0.02)
             if pd.isna(volatility) or volatility <= 0:
@@ -401,8 +475,14 @@ def run_backtest(
             target_positions[symbol] = sizing["position_size"]
 
         if use_rp_allocation:
-            if volatilities:
-                inv = {s: 1 / v for s, v in volatilities.items()}
+            # Only allocate to symbols selected by relative strength
+            selected_vols = {
+                s: v
+                for s, v in volatilities.items()
+                if top_syms is None or s in top_syms
+            }
+            if selected_vols:
+                inv = {s: 1 / v for s, v in selected_vols.items()}
                 total_inv = sum(inv.values())
                 if total_inv > 0:
                     target_positions = {
@@ -430,6 +510,12 @@ def run_backtest(
         if total_abs > max_leverage and total_abs > 0:
             scale = max_leverage / total_abs
             target_positions = {s: w * scale for s, w in target_positions.items()}
+
+        # Apply drawdown-based exposure scaling
+        if exposure_mult < 1.0:
+            target_positions = {
+                s: w * exposure_mult for s, w in target_positions.items()
+            }
 
         equity = bt._total_equity()
         for symbol, target_position in target_positions.items():
@@ -573,6 +659,30 @@ def run_backtest(
             print(f"Gate Ratio:      {metrics['gate_ratio_good'] * 100:>9.2f}%")
         print(f"{'=' * 60}\n")
 
+        # Print gate detail breakdown
+        if gate_details:
+            print(f"{'GATE DETAIL BREAKDOWN':^60}")
+            print(f"{'Metric':<28} {'Value':>8} {'Market':>8} {'Quant':>8} {'Pass':>6}")
+            print("-" * 60)
+            for m, d in sorted(gate_details.items()):
+                if d.get("reason") == "missing":
+                    continue
+                v = d.get("value")
+                mk = d.get("market")
+                qt = d.get("quant")
+                ok = d.get("good", False)
+                fmt = (
+                    lambda x: f"{x:>8.4f}"
+                    if x is not None and abs(x) < 100
+                    else f"{x:>8.1f}"
+                    if x is not None
+                    else f"{'N/A':>8}"
+                )
+                print(
+                    f"{m:<28} {fmt(v)} {fmt(mk)} {fmt(qt)} {'  YES' if ok else '   NO':>6}"
+                )
+            print()
+
     results = {
         "metrics": metrics,
         "gate_details": gate_details,
@@ -641,6 +751,13 @@ def run_paper(
     max_drawdown = float(risk_cfg.get("max_drawdown", 0.10))
     kelly_fraction = float(risk_cfg.get("kelly_fraction", 0.5))
     rebalance_frequency = str(strategy_cfg.get("rebalance_frequency", "daily"))
+    momentum_top_pct = float(strategy_cfg.get("momentum_top_pct", 80))
+    momentum_bottom_pct = float(strategy_cfg.get("momentum_bottom_pct", 20))
+    rs_top_n = int(strategy_cfg.get("relative_strength_top_n", 0))
+    rs_min_mom = float(strategy_cfg.get("relative_strength_min_mom", 0.0))
+    use_relative_strength = bool(strategy_cfg.get("use_relative_strength", False))
+    long_only = bool(strategy_cfg.get("long_only", False))
+    risk_off_cash = bool(strategy_cfg.get("risk_off_cash", False))
     if max_leverage <= 0:
         max_leverage = 1.0
 
@@ -656,18 +773,18 @@ def run_paper(
     elif strategy_type == "composite":
         strategy = CompositeStrategy()
     elif strategy_type == "adaptive":
-        strategy = AdaptiveCompositeStrategy()
+        strategy = EnhancedCompositeStrategy()
     else:
         strategy = MomentumStrategy()
+
+    use_enhanced = isinstance(strategy, EnhancedCompositeStrategy)
 
     position_sizer = PositionSizer(
         max_position=max_position,
         kelly_fraction=kelly_fraction,
         max_drawdown=max_drawdown,
     )
-    paper_trader = PaperTrader(
-        initial_capital=initial_capital, paper_bars=paper_bars
-    )
+    paper_trader = PaperTrader(initial_capital=initial_capital, paper_bars=paper_bars)
 
     bench_cfg = settings.get("benchmarks", {})
     market_benchmark = bench_cfg.get("market", "SPY")
@@ -677,7 +794,7 @@ def run_paper(
         market_df = collector.fetch_ohlcv(market_benchmark, start_date, end_date)
         m_close = market_df["close"]
         m_ma = m_close.rolling(200).mean()
-        market_trend = (m_close.shift(1) > m_ma.shift(1))
+        market_trend = m_close.shift(1) > m_ma.shift(1)
     except Exception:
         market_df = None
         market_trend = None
@@ -716,7 +833,9 @@ def run_paper(
     }
 
     def trading_strategy(timestamp, bars, bt):
-        if not _should_rebalance(timestamp, state["last_rebalance"], rebalance_frequency):
+        if not _should_rebalance(
+            timestamp, state["last_rebalance"], rebalance_frequency
+        ):
             equity = bt._total_equity()
             state["peak_equity"] = max(state["peak_equity"], equity)
             state["current_drawdown"] = (equity - state["peak_equity"]) / state[
@@ -752,9 +871,8 @@ def run_paper(
             bottom_cut = np.nanpercentile(vals, momentum_bottom_pct)
             if use_relative_strength and rs_top_n > 0:
                 ranked = sorted(mom_scores.items(), key=lambda x: x[1], reverse=True)
-                top_syms = {
-                    sym for sym, val in ranked[:rs_top_n] if val >= rs_min_mom
-                }
+                top_syms = {sym for sym, val in ranked[:rs_top_n] if val >= rs_min_mom}
+        use_rp_allocation = top_syms is not None
         for symbol, bar in bars.items():
             if symbol not in data:
                 continue
@@ -778,7 +896,9 @@ def run_paper(
                     mom_val = mom_scores.get(symbol)
                     if signal > 0 and (mom_val is None or mom_val < top_cut):
                         signal = 0.0
-                    if signal < 0 and (mom_val is None or mom_val > bottom_cut or long_only):
+                    if signal < 0 and (
+                        mom_val is None or mom_val > bottom_cut or long_only
+                    ):
                         signal = 0.0
             volatility = row.get("atr_pct", 0.02)
             if pd.isna(volatility) or volatility <= 0:
@@ -808,8 +928,14 @@ def run_paper(
             target_positions[symbol] = sizing["position_size"]
 
         if use_rp_allocation:
-            if volatilities:
-                inv = {s: 1 / v for s, v in volatilities.items()}
+            # Only allocate to symbols selected by relative strength
+            selected_vols = {
+                s: v
+                for s, v in volatilities.items()
+                if top_syms is None or s in top_syms
+            }
+            if selected_vols:
+                inv = {s: 1 / v for s, v in selected_vols.items()}
                 total_inv = sum(inv.values())
                 if total_inv > 0:
                     target_positions = {
@@ -919,7 +1045,7 @@ def main():
     parser.add_argument("--end", type=str, default=None, help="End date (YYYY-MM-DD)")
     parser.add_argument(
         "--strategy",
-        choices=["momentum", "mean_reversion", "composite", "adaptive"],
+        choices=["momentum", "mean_reversion", "composite", "adaptive", "enhanced"],
         default="momentum",
         help="Strategy type",
     )
@@ -974,11 +1100,15 @@ def main():
         alert_manager.add_rule(rule)
 
     if args.firm_mode and args.mode != "live":
-        print("Firm mode requested, but live execution is not enabled. Firm mode disabled.")
+        print(
+            "Firm mode requested, but live execution is not enabled. Firm mode disabled."
+        )
         args.firm_mode = False
 
     if args.firm_mode and args.mode == "live":
-        print("Firm mode requested, but live execution is not implemented in this phase.")
+        print(
+            "Firm mode requested, but live execution is not implemented in this phase."
+        )
         return None
 
     if args.dashboard:

@@ -236,7 +236,7 @@ def run_backtest(
         # Tighter cadence in paper mode to reduce drift
         rebalance_frequency = "weekly"
     momentum_top_pct = float(strategy_cfg.get("momentum_top_pct", 80))
-    momentum_bottom_pct = float(strategy_cfg.get("momentum_bottom_pct", 20))
+    momentum_bottom_pct = float(strategy_cfg.get("momentum_bottom_pct", 30))
     rs_top_n = int(strategy_cfg.get("relative_strength_top_n", 0))
     rs_min_mom = float(strategy_cfg.get("relative_strength_min_mom", 0.0))
     use_relative_strength = bool(strategy_cfg.get("use_relative_strength", False))
@@ -251,8 +251,8 @@ def run_backtest(
     risk_off_cash = bool(strategy_cfg.get("risk_off_cash", False))
     if max_leverage <= 0:
         max_leverage = 1.0
-    # Volatility target for scaling (annualized)
-    target_vol = float(risk_cfg.get("target_volatility", 0.12))
+    # Volatility target for scaling (annualized) - nudged up to restore exposure
+    target_vol = float(risk_cfg.get("target_volatility", 0.15))
 
     # Initialize components
     collector = DataCollector()
@@ -776,6 +776,12 @@ def run_paper(
         strategy = CompositeStrategy()
     elif strategy_type == "adaptive":
         strategy = EnhancedCompositeStrategy()
+    elif strategy_type == "sentiment":
+        from quantum_alpha.strategy.sentiment_strategies import SocialSentimentStrategy
+        strategy = SocialSentimentStrategy()
+    elif strategy_type == "ml":
+        from quantum_alpha.strategy.ml_strategies import MLTradingStrategy
+        strategy = MLTradingStrategy()
     else:
         strategy = MomentumStrategy()
 
@@ -1048,7 +1054,15 @@ def main():
     parser.add_argument("--end", type=str, default=None, help="End date (YYYY-MM-DD)")
     parser.add_argument(
         "--strategy",
-        choices=["momentum", "mean_reversion", "composite", "adaptive", "enhanced"],
+        choices=[
+            "momentum",
+            "mean_reversion",
+            "composite",
+            "adaptive",
+            "enhanced",
+            "sentiment",
+            "ml",
+        ],
         default="momentum",
         help="Strategy type",
     )

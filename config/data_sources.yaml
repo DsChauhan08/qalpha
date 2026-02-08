@@ -25,6 +25,9 @@ social:
   primary: "reddit"
   reddit:
     enabled: false
+  local_cache:
+    enabled: true
+    path: ".cache/social_sentiment"
 
 macro:
   primary: "fred"
@@ -34,3 +37,22 @@ macro:
 
 options_flow:
   enabled: false
+  local_cache:
+    enabled: true
+    path: ".cache/options_sentiment"
+
+insider_trades:
+  primary: "edgar"
+  edgar:
+    enabled: true
+  local_cache:
+    enabled: true
+    path: ".cache/insider"
+
+congress_trades:
+  primary: "senate_house_disclosures"
+  senate_house_disclosures:
+    enabled: true
+  local_cache:
+    enabled: true
+    path: ".cache/congress"

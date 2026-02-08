@@ -39,6 +39,7 @@ strategy:
   lookback_window: 60
   signal_threshold: 0.3  # Min signal strength to trade
   rebalance_frequency: "monthly"
+  paper_rebalance_frequency: "weekly"
   momentum_top_pct: 80
   momentum_bottom_pct: 20
   relative_strength_top_n: 5

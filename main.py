@@ -251,6 +251,8 @@ def run_backtest(
     risk_off_cash = bool(strategy_cfg.get("risk_off_cash", False))
     if max_leverage <= 0:
         max_leverage = 1.0
+    # Volatility target for scaling (annualized)
+    target_vol = float(risk_cfg.get("target_volatility", 0.12))
 
     # Initialize components
     collector = DataCollector()
@@ -427,9 +429,6 @@ def run_backtest(
                 else row.get("signal", 0)
             )
             confidence = float(row.get("signal_confidence", 0.5))
-            # Drop extremely low-confidence signals; keep strength otherwise
-            if confidence < 0.1:
-                signal = 0.0
             if top_syms is not None:
                 if use_enhanced:
                     # Enhanced strategy: use top_syms as universe filter,
@@ -793,18 +792,14 @@ def run_paper(
     market_benchmark = bench_cfg.get("market", "SPY")
     market_df = None
     market_trend = None
-    market_high_vol = None
     try:
         market_df = collector.fetch_ohlcv(market_benchmark, start_date, end_date)
         m_close = market_df["close"]
         m_ma = m_close.rolling(200).mean()
         market_trend = m_close.shift(1) > m_ma.shift(1)
-        m_ret = m_close.pct_change()
-        market_high_vol = (m_ret.rolling(63).std() * np.sqrt(252)) > 0.25
     except Exception:
         market_df = None
         market_trend = None
-        market_high_vol = None
 
     if verbose:
         print("Collecting price data...")
@@ -859,9 +854,6 @@ def run_paper(
         market_risk_on = True
         if market_trend is not None and timestamp in market_trend.index:
             market_risk_on = bool(market_trend.loc[timestamp])
-        high_vol = False
-        if market_high_vol is not None and timestamp in market_high_vol.index:
-            high_vol = bool(market_high_vol.loc[timestamp])
         allow_shorts = not long_only
         if not market_risk_on:
             allow_shorts = False
@@ -898,8 +890,6 @@ def run_paper(
                 else row.get("signal", 0)
             )
             confidence = float(row.get("signal_confidence", 0.5))
-            if confidence < 0.1:
-                signal = 0.0
             if top_syms is not None:
                 signal = 1.0 if symbol in top_syms else 0.0
             else:
@@ -956,8 +946,7 @@ def run_paper(
                     }
             if not target_positions:
                 return
-        risk_off_now = (risk_off_cash and not market_risk_on) or high_vol
-        if risk_off_now:
+        if risk_off_cash and not market_risk_on:
             target_positions = {s: 0.0 for s in bars.keys()}
         elif not target_positions:
             return

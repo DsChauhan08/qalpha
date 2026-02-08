@@ -31,3 +31,35 @@ strategies:
         momentum: 0.4
         mean_reversion: 0.3
         trend: 0.3
+
+  sentiment:
+    enabled: true
+    social:
+      sentiment_window: 7
+      sentiment_threshold: 0.3
+      volume_threshold: 100
+    options:
+      lookback: 20
+      pc_ratio_upper: 1.5
+      pc_ratio_lower: 0.5
+      volume_z_threshold: 2.0
+    insider:
+      lookback_days: 90
+      min_transaction_value: 10000
+      buy_threshold: 0.5
+      sell_threshold: -0.5
+    congress:
+      min_amount: 10000
+    earnings:
+      surprise_threshold: 0.05
+      sue_threshold: 1.5
+    short_interest:
+      squeeze_threshold: 1.5
+      bearish_threshold: 0.1
+      mode: squeeze
+
+  ml:
+    enabled: true
+    model_type: xgboost
+    horizon: 1
+    threshold: 0.0

@@ -147,6 +147,50 @@ class MCPT:
             "statistic_type": self.statistic,
         }
 
+    def run_on_returns(
+        self, returns: np.ndarray, show_progress: bool = True
+    ) -> Dict:
+        """
+        Run MCPT directly on a vector of realized returns (e.g., equity
+        curve pct changes). This avoids re-generating signals and uses
+        the full backtester path.
+
+        Args:
+            returns: 1D array of strategy returns
+            show_progress: Whether to display progress bar
+
+        Returns:
+            Dict with permutation p-value and statistics
+        """
+        clean_returns = np.nan_to_num(returns.astype(float), nan=0.0, posinf=0.0, neginf=0.0)
+        actual_stat = self._calc_statistic(clean_returns)
+
+        iterator = range(self.n_perm)
+        if show_progress:
+            iterator = tqdm(iterator, desc="Running MCPT")
+
+        perm_stats = []
+        better_count = 1  # Conservative: count actual path
+
+        for _ in iterator:
+            perm = np.random.permutation(clean_returns)
+            perm_stat = self._calc_statistic(perm)
+            perm_stats.append(perm_stat)
+            if perm_stat >= actual_stat:
+                better_count += 1
+
+        p_value = better_count / (self.n_perm + 1)
+
+        return {
+            "actual_statistic": actual_stat,
+            "p_value": p_value,
+            "is_significant": p_value < 0.05,
+            "permutation_stats": perm_stats,
+            "percentile": 100 * (1 - p_value),
+            "n_permutations": self.n_perm,
+            "statistic_type": self.statistic,
+        }
+
 
 class BootstrapAnalysis:
     """

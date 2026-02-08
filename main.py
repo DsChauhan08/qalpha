@@ -229,6 +229,12 @@ def run_backtest(
     max_drawdown = float(risk_cfg.get("max_drawdown", 0.10))
     kelly_fraction = float(risk_cfg.get("kelly_fraction", 0.5))
     rebalance_frequency = str(strategy_cfg.get("rebalance_frequency", "daily"))
+    paper_rebalance = strategy_cfg.get("paper_rebalance_frequency")
+    if paper_rebalance:
+        rebalance_frequency = str(paper_rebalance)
+    elif rebalance_frequency.lower() == "monthly":
+        # Tighter cadence in paper mode to reduce drift
+        rebalance_frequency = "weekly"
     momentum_top_pct = float(strategy_cfg.get("momentum_top_pct", 80))
     momentum_bottom_pct = float(strategy_cfg.get("momentum_bottom_pct", 20))
     rs_top_n = int(strategy_cfg.get("relative_strength_top_n", 0))
@@ -420,6 +426,10 @@ def run_backtest(
                 if "position_signal" in row
                 else row.get("signal", 0)
             )
+            confidence = float(row.get("signal_confidence", 0.5))
+            # Drop extremely low-confidence signals; keep strength otherwise
+            if confidence < 0.1:
+                signal = 0.0
             if top_syms is not None:
                 if use_enhanced:
                     # Enhanced strategy: use top_syms as universe filter,
@@ -696,18 +706,11 @@ def run_backtest(
         if verbose:
             print("Running MCPT validation...")
 
-        # Use first symbol for MCPT
-        symbol = list(data.keys())[0]
-        df = data[symbol]
-
-        def strategy_func(price_df):
-            feat_df = feature_gen.generate(price_df)
-            sig_df = strategy.generate_signals(feat_df)
-            sig_df = _apply_signal_lag(sig_df)
-            return sig_df["signal"].fillna(0).values
+        equity_series = backtester.get_equity_series()
+        returns = equity_series.pct_change().dropna().values
 
         mcpt = MCPT(n_permutations=500, test_statistic="sharpe")
-        mcpt_results = mcpt.run(df, strategy_func)
+        mcpt_results = mcpt.run_on_returns(returns, show_progress=verbose)
 
         results["mcpt"] = mcpt_results
 
@@ -790,14 +793,18 @@ def run_paper(
     market_benchmark = bench_cfg.get("market", "SPY")
     market_df = None
     market_trend = None
+    market_high_vol = None
     try:
         market_df = collector.fetch_ohlcv(market_benchmark, start_date, end_date)
         m_close = market_df["close"]
         m_ma = m_close.rolling(200).mean()
         market_trend = m_close.shift(1) > m_ma.shift(1)
+        m_ret = m_close.pct_change()
+        market_high_vol = (m_ret.rolling(63).std() * np.sqrt(252)) > 0.25
     except Exception:
         market_df = None
         market_trend = None
+        market_high_vol = None
 
     if verbose:
         print("Collecting price data...")
@@ -852,6 +859,9 @@ def run_paper(
         market_risk_on = True
         if market_trend is not None and timestamp in market_trend.index:
             market_risk_on = bool(market_trend.loc[timestamp])
+        high_vol = False
+        if market_high_vol is not None and timestamp in market_high_vol.index:
+            high_vol = bool(market_high_vol.loc[timestamp])
         allow_shorts = not long_only
         if not market_risk_on:
             allow_shorts = False
@@ -887,6 +897,9 @@ def run_paper(
                 if "position_signal" in row
                 else row.get("signal", 0)
             )
+            confidence = float(row.get("signal_confidence", 0.5))
+            if confidence < 0.1:
+                signal = 0.0
             if top_syms is not None:
                 signal = 1.0 if symbol in top_syms else 0.0
             else:
@@ -943,7 +956,8 @@ def run_paper(
                     }
             if not target_positions:
                 return
-        if risk_off_cash and not market_risk_on:
+        risk_off_now = (risk_off_cash and not market_risk_on) or high_vol
+        if risk_off_now:
             target_positions = {s: 0.0 for s in bars.keys()}
         elif not target_positions:
             return

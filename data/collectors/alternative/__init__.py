@@ -17,3 +17,16 @@ __all__ = [
     "RedditCollector",
     "RedditSentimentFallback",
 ]
+from .minimal_loaders import (
+    load_social_sentiment,
+    load_options_sentiment,
+    load_insider_trades,
+    load_congress_trades,
+)
+
+__all__ = [
+    "load_social_sentiment",
+    "load_options_sentiment",
+    "load_insider_trades",
+    "load_congress_trades",
+]

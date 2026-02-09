@@ -34,6 +34,12 @@ strategies:
 
   sentiment:
     enabled: true
+    signal_threshold: 0.15
+    combined_weights:
+      social: 0.4
+      options: 0.2
+      insider: 0.2
+      congress: 0.2
     social:
       sentiment_window: 7
       sentiment_threshold: 0.3

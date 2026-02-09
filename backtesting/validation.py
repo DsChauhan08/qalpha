@@ -148,7 +148,11 @@ class MCPT:
         }
 
     def run_on_returns(
-        self, returns: np.ndarray, show_progress: bool = True
+        self,
+        returns: np.ndarray,
+        show_progress: bool = True,
+        block_size: int = 20,
+        method: str = "block_bootstrap",
     ) -> Dict:
         """
         Run MCPT directly on a vector of realized returns (e.g., equity
@@ -172,8 +176,19 @@ class MCPT:
         perm_stats = []
         better_count = 1  # Conservative: count actual path
 
+        n = len(clean_returns)
+        block = max(2, min(int(block_size), n))
+
         for _ in iterator:
-            perm = np.random.permutation(clean_returns)
+            if method == "sign_flip":
+                signs = np.random.choice([-1.0, 1.0], size=n)
+                perm = clean_returns * signs
+            else:
+                resampled = []
+                while len(resampled) < n:
+                    start = np.random.randint(0, n - block + 1)
+                    resampled.extend(clean_returns[start : start + block])
+                perm = np.array(resampled[:n])
             perm_stat = self._calc_statistic(perm)
             perm_stats.append(perm_stat)
             if perm_stat >= actual_stat:

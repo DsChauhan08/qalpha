@@ -36,7 +36,7 @@ from quantum_alpha.backtesting.performance_gate import (
     aggregate_fundamentals,
 )
 from quantum_alpha.risk.position_sizing import PositionSizer, VaRCalculator
-from quantum_alpha.risk.drawdown_control import DrawdownController
+from quantum_alpha.risk.drawdown_control import DrawdownController, DrawdownState
 from quantum_alpha.execution.paper_trader import PaperTrader
 from quantum_alpha.config.validator import (
     validate_settings,
@@ -132,6 +132,64 @@ def _apply_signal_lag(df: pd.DataFrame, lag: int = 1) -> pd.DataFrame:
     return df
 
 
+def _realized_vol_from_equity(equity_curve, window: int = 63) -> Optional[float]:
+    """Compute annualized realized vol from equity curve entries."""
+    if not equity_curve or len(equity_curve) < 2:
+        return None
+    eq = np.array([row["equity"] for row in equity_curve], dtype=float)
+    if len(eq) < 2:
+        return None
+    window = min(window, len(eq) - 1)
+    if window < 2:
+        return None
+    eq = eq[-(window + 1) :]
+    rets = np.diff(eq) / eq[:-1]
+    if rets.std() == 0:
+        return None
+    return float(rets.std() * np.sqrt(252))
+
+
+def _vol_of_vol_from_equity(
+    equity_curve, short_window: int = 21, long_window: int = 63
+) -> Optional[float]:
+    """Estimate volatility of volatility from equity curve."""
+    if not equity_curve or len(equity_curve) < (long_window + 2):
+        return None
+    eq = np.array([row["equity"] for row in equity_curve], dtype=float)
+    rets = np.diff(eq) / eq[:-1]
+    if len(rets) < long_window:
+        return None
+    vol_series = (
+        pd.Series(rets)
+        .rolling(short_window)
+        .std()
+        .dropna()
+    )
+    if len(vol_series) < long_window // 2:
+        return None
+    return float(vol_series.tail(long_window).std())
+
+
+def _align_signal_frame(
+    sig_df: pd.DataFrame, index: pd.Index, limit: int = 10
+) -> pd.DataFrame:
+    """Align sparse signal frames to price index with a short forward fill."""
+    if sig_df.empty:
+        return pd.DataFrame({"signal": np.zeros(len(index)), "signal_confidence": np.zeros(len(index))}, index=index)
+    frame = sig_df.copy()
+    if "timestamp" in frame.columns:
+        frame = frame.set_index("timestamp")
+    frame.index = pd.to_datetime(frame.index)
+    frame = frame.sort_index()
+    signal = frame["signal"].reindex(index, method="ffill", limit=limit).fillna(0.0)
+    confidence = (
+        frame.get("signal_confidence", pd.Series(0.5, index=frame.index))
+        .reindex(index, method="ffill", limit=limit)
+        .fillna(0.0)
+    )
+    return pd.DataFrame({"signal": signal, "signal_confidence": confidence}, index=index)
+
+
 def _resolve_symbols(
     symbols: Optional[list],
     collector: DataCollector,
@@ -224,6 +282,11 @@ def run_backtest(
     settings = load_config(config_path)
     risk_cfg = settings.get("risk", {}) if settings else {}
     strategy_cfg = settings.get("strategy", {}) if settings else {}
+    config_dir = _resolve_config_dir(config_path)
+    strategies_cfg = _load_optional_yaml(config_dir / "strategies.yaml")
+    sentiment_cfg = {}
+    if strategies_cfg and "strategies" in strategies_cfg:
+        sentiment_cfg = strategies_cfg["strategies"].get("sentiment", {})
     max_position = float(risk_cfg.get("max_position_size", 0.25))
     max_leverage = float(risk_cfg.get("max_portfolio_leverage", 1.0))
     max_drawdown = float(risk_cfg.get("max_drawdown", 0.10))
@@ -232,18 +295,14 @@ def run_backtest(
     paper_rebalance = strategy_cfg.get("paper_rebalance_frequency")
     if paper_rebalance:
         rebalance_frequency = str(paper_rebalance)
-    elif rebalance_frequency.lower() == "monthly":
-        # Tighter cadence in paper mode to reduce drift
-        rebalance_frequency = "weekly"
-    momentum_top_pct = float(strategy_cfg.get("momentum_top_pct", 80))
-    momentum_bottom_pct = float(strategy_cfg.get("momentum_bottom_pct", 30))
-    rs_top_n = int(strategy_cfg.get("relative_strength_top_n", 0))
-    rs_min_mom = float(strategy_cfg.get("relative_strength_min_mom", 0.0))
-    use_relative_strength = bool(strategy_cfg.get("use_relative_strength", False))
-    long_only = bool(strategy_cfg.get("long_only", False))
-    risk_off_cash = bool(strategy_cfg.get("risk_off_cash", False))
-    momentum_top_pct = float(strategy_cfg.get("momentum_top_pct", 80))
-    momentum_bottom_pct = float(strategy_cfg.get("momentum_bottom_pct", 20))
+    momentum_top_pct = float(strategy_cfg.get("momentum_top_pct", 65))
+    momentum_bottom_pct = float(strategy_cfg.get("momentum_bottom_pct", 35))
+    signal_threshold = float(strategy_cfg.get("signal_threshold", 0.3))
+    signal_scale = float(strategy_cfg.get("signal_scale", 1.0))
+    min_long_signal = float(strategy_cfg.get("min_long_signal", 0.0))
+    market_off_scale = float(strategy_cfg.get("market_off_scale", 1.0))
+    vol_of_vol_threshold = float(risk_cfg.get("vol_of_vol_threshold", 0.03))
+    vol_of_vol_scale = float(risk_cfg.get("vol_of_vol_scale", 0.7))
     rs_top_n = int(strategy_cfg.get("relative_strength_top_n", 0))
     rs_min_mom = float(strategy_cfg.get("relative_strength_min_mom", 0.0))
     use_relative_strength = bool(strategy_cfg.get("use_relative_strength", False))
@@ -253,6 +312,9 @@ def run_backtest(
         max_leverage = 1.0
     # Volatility target for scaling (annualized) - nudged up to restore exposure
     target_vol = float(risk_cfg.get("target_volatility", 0.15))
+    dd_leverage_cap_warning = float(risk_cfg.get("dd_leverage_cap_warning", 1.0))
+    dd_leverage_cap_critical = float(risk_cfg.get("dd_leverage_cap_critical", 1.0))
+    market_off_leverage_cap = float(risk_cfg.get("market_off_leverage_cap", 1.0))
 
     # Initialize components
     collector = DataCollector()
@@ -268,10 +330,83 @@ def run_backtest(
         strategy = CompositeStrategy()
     elif strategy_type in ("adaptive", "enhanced"):
         strategy = EnhancedCompositeStrategy()
+    elif strategy_type == "sentiment":
+        from quantum_alpha.strategy.sentiment_strategies import SocialSentimentStrategy
+        strategy = SocialSentimentStrategy()
+    elif strategy_type == "ml":
+        from quantum_alpha.strategy.ml_strategies import MLTradingStrategy
+        strategy = MLTradingStrategy()
     else:
         strategy = MomentumStrategy()
 
     use_enhanced = isinstance(strategy, EnhancedCompositeStrategy)
+    use_sentiment = strategy_type == "sentiment"
+
+    if use_sentiment:
+        from quantum_alpha.data.collectors.alternative import (
+            load_social_sentiment,
+            load_options_sentiment,
+            load_insider_trades,
+            load_congress_trades,
+        )
+        from quantum_alpha.strategy.sentiment_strategies import (
+            SocialSentimentStrategy,
+            OptionsSentimentStrategy,
+            InsiderTradingStrategy,
+            CongressTradingStrategy,
+        )
+
+        social_strategy = SocialSentimentStrategy(
+            **sentiment_cfg.get("social", {})
+        )
+        options_strategy = OptionsSentimentStrategy(
+            **sentiment_cfg.get("options", {})
+        )
+        insider_strategy = InsiderTradingStrategy(
+            **sentiment_cfg.get("insider", {})
+        )
+        congress_strategy = CongressTradingStrategy(
+            **sentiment_cfg.get("congress", {})
+        )
+        sentiment_weights = sentiment_cfg.get(
+            "combined_weights",
+            {"social": 0.4, "options": 0.2, "insider": 0.2, "congress": 0.2},
+        )
+    use_sentiment = strategy_type == "sentiment"
+
+    if use_sentiment:
+        from quantum_alpha.data.collectors.alternative import (
+            load_social_sentiment,
+            load_options_sentiment,
+            load_insider_trades,
+            load_congress_trades,
+        )
+        from quantum_alpha.strategy.sentiment_strategies import (
+            SocialSentimentStrategy,
+            OptionsSentimentStrategy,
+            InsiderTradingStrategy,
+            CongressTradingStrategy,
+        )
+
+        social_strategy = SocialSentimentStrategy(
+            **sentiment_cfg.get("social", {})
+        )
+        options_strategy = OptionsSentimentStrategy(
+            **sentiment_cfg.get("options", {})
+        )
+        insider_strategy = InsiderTradingStrategy(
+            **sentiment_cfg.get("insider", {})
+        )
+        congress_strategy = CongressTradingStrategy(
+            **sentiment_cfg.get("congress", {})
+        )
+        sentiment_weights = sentiment_cfg.get(
+            "combined_weights",
+            {"social": 0.4, "options": 0.2, "insider": 0.2, "congress": 0.2},
+        )
+
+    if use_sentiment:
+        signal_threshold = float(sentiment_cfg.get("signal_threshold", signal_threshold))
 
     position_sizer = PositionSizer(
         max_position=max_position,
@@ -307,7 +442,74 @@ def run_backtest(
             df = imputer.impute(df)
             df = feature_gen.generate(df)
             raw_featured[symbol] = df
-            if not use_enhanced:
+            if use_sentiment:
+                social_df = load_social_sentiment(symbol, use_live=False)
+                options_df = load_options_sentiment(symbol, use_live=False)
+                insider_df = load_insider_trades(symbol, use_live=True)
+                congress_df = load_congress_trades(symbol, use_live=True)
+
+                if "symbol" in social_df.columns:
+                    social_df = social_df[social_df["symbol"] == symbol]
+                if "symbol" in options_df.columns:
+                    options_df = options_df[options_df["symbol"] == symbol]
+                if "symbol" in insider_df.columns:
+                    insider_df = insider_df[insider_df["symbol"] == symbol]
+                if "symbol" in congress_df.columns:
+                    congress_df = congress_df[congress_df["symbol"] == symbol]
+
+                frames = {}
+                if not social_df.empty:
+                    frames["social"] = _align_signal_frame(
+                        social_strategy.generate_signals(social_df), df.index
+                    )
+                if not options_df.empty:
+                    if "timestamp" in options_df.columns:
+                        options_df = options_df.copy()
+                        options_df["timestamp"] = pd.to_datetime(options_df["timestamp"])
+                        options_df = options_df.set_index("timestamp")
+                    elif "date" in options_df.columns:
+                        options_df = options_df.copy()
+                        options_df["date"] = pd.to_datetime(options_df["date"])
+                        options_df = options_df.set_index("date")
+                    options_sig = options_strategy.generate_signals(options_df)
+                    frames["options"] = _align_signal_frame(options_sig, df.index)
+                if not insider_df.empty:
+                    frames["insider"] = _align_signal_frame(
+                        insider_strategy.generate_signals(insider_df), df.index, limit=20
+                    )
+                if not congress_df.empty:
+                    frames["congress"] = _align_signal_frame(
+                        congress_strategy.generate_signals(congress_df), df.index, limit=20
+                    )
+
+                combined_signal = pd.Series(0.0, index=df.index)
+                combined_conf = pd.Series(0.0, index=df.index)
+                total_w = 0.0
+                for key, sig_frame in frames.items():
+                    weight = float(sentiment_weights.get(key, 0.0))
+                    if weight <= 0:
+                        continue
+                    total_w += weight
+                    combined_signal += weight * sig_frame["signal"]
+                    combined_conf += weight * sig_frame["signal_confidence"]
+
+                if total_w > 0:
+                    combined_signal = combined_signal / total_w
+                    combined_conf = combined_conf / total_w
+                else:
+                    combined_signal = combined_signal * 0.0
+                    combined_conf = combined_conf * 0.0
+
+                df["signal"] = combined_signal
+                df["signal_confidence"] = combined_conf
+                df["position_signal"] = np.where(
+                    np.abs(df["signal"]) >= signal_threshold,
+                    np.sign(df["signal"]),
+                    0.0,
+                )
+                df = _apply_signal_lag(df)
+                data[symbol] = df
+            elif not use_enhanced:
                 df = strategy.generate_signals(df)
                 df = _apply_signal_lag(df)
                 data[symbol] = df
@@ -349,13 +551,14 @@ def run_backtest(
     dd_critical = float(risk_cfg.get("dd_critical", 0.25))
     dd_breaker = float(risk_cfg.get("dd_circuit_breaker", 0.40))
     dd_limit = float(risk_cfg.get("dd_max_limit", 0.50))
+    dd_min_exposure = float(risk_cfg.get("dd_min_exposure", 0.25))
     dd_controller = DrawdownController(
         warning_threshold=dd_warning,
         critical_threshold=dd_critical,
         circuit_breaker_threshold=dd_breaker,
         max_drawdown_limit=dd_limit,
         scaling_method="linear",
-        min_exposure=0.25,
+        min_exposure=dd_min_exposure,
         cooldown_days=10,
     )
     dd_controller.reset(initial_capital)
@@ -388,6 +591,23 @@ def run_backtest(
         trade_history = (
             np.array([t["pnl"] for t in bt.trades]) if bt.trades else np.array([0])
         )
+        realized_vol = _realized_vol_from_equity(bt.equity_curve)
+        vol_of_vol = _vol_of_vol_from_equity(bt.equity_curve)
+        vol_scale = 1.0
+        if realized_vol and realized_vol > 0:
+            vol_scale = float(np.clip(target_vol / realized_vol, 0.5, 1.5))
+        if (
+            vol_of_vol is not None
+            and vol_of_vol > vol_of_vol_threshold
+            and dd_metrics.state
+            in {
+                DrawdownState.WARNING,
+                DrawdownState.CRITICAL,
+                DrawdownState.RECOVERY,
+                DrawdownState.CIRCUIT_BREAKER,
+            }
+        ):
+            vol_scale *= vol_of_vol_scale
         market_risk_on = True
         if market_trend is not None and timestamp in market_trend.index:
             market_risk_on = bool(market_trend.loc[timestamp])
@@ -454,12 +674,15 @@ def run_backtest(
                         mom_val is None or mom_val > bottom_cut or long_only
                     ):
                         signal = 0.0
+            if signal_scale != 1.0 and signal != 0.0:
+                signal = float(np.clip(signal * signal_scale, -1.0, 1.0))
+            if long_only and signal > 0 and min_long_signal > 0:
+                signal = max(signal, min_long_signal)
             volatility = row.get("atr_pct", 0.02)
             if pd.isna(volatility) or volatility <= 0:
                 volatility = 0.02
             volatility = volatility * np.sqrt(252)
             volatilities[symbol] = max(volatility, 1e-6)
-
             if use_rp_allocation:
                 continue
 
@@ -503,6 +726,10 @@ def run_backtest(
             target_positions = {s: 0.0 for s in bars.keys()}
         elif not target_positions:
             return
+        if not market_risk_on and market_off_scale < 1.0:
+            target_positions = {
+                s: w * market_off_scale for s, w in target_positions.items()
+            }
 
         if volatilities and not use_rp_allocation:
             inv = {s: 1 / v for s, v in volatilities.items()}
@@ -516,8 +743,15 @@ def run_backtest(
                 }
 
         total_abs = sum(abs(w) for w in target_positions.values())
-        if total_abs > max_leverage and total_abs > 0:
-            scale = max_leverage / total_abs
+        cap = max_leverage
+        if dd_metrics.state == DrawdownState.WARNING:
+            cap = min(cap, dd_leverage_cap_warning)
+        elif dd_metrics.state in {DrawdownState.CRITICAL, DrawdownState.RECOVERY}:
+            cap = min(cap, dd_leverage_cap_critical)
+        if not market_risk_on:
+            cap = min(cap, market_off_leverage_cap)
+        if total_abs > cap and total_abs > 0:
+            scale = cap / total_abs
             target_positions = {s: w * scale for s, w in target_positions.items()}
 
         # Apply drawdown-based exposure scaling
@@ -525,6 +759,10 @@ def run_backtest(
             target_positions = {
                 s: w * exposure_mult for s, w in target_positions.items()
             }
+
+        # Volatility targeting overlay
+        if vol_scale != 1.0:
+            target_positions = {s: w * vol_scale for s, w in target_positions.items()}
 
         equity = bt._total_equity()
         for symbol, target_position in target_positions.items():
@@ -709,7 +947,9 @@ def run_backtest(
         returns = equity_series.pct_change().dropna().values
 
         mcpt = MCPT(n_permutations=500, test_statistic="sharpe")
-        mcpt_results = mcpt.run_on_returns(returns, show_progress=verbose)
+        mcpt_results = mcpt.run_on_returns(
+            returns, show_progress=verbose, block_size=5, method="sign_flip"
+        )
 
         results["mcpt"] = mcpt_results
 
@@ -748,18 +988,28 @@ def run_paper(
     settings = load_config(None)
     risk_cfg = settings.get("risk", {}) if settings else {}
     strategy_cfg = settings.get("strategy", {}) if settings else {}
+    config_dir = _resolve_config_dir(None)
+    strategies_cfg = _load_optional_yaml(config_dir / "strategies.yaml")
+    sentiment_cfg = {}
+    if strategies_cfg and "strategies" in strategies_cfg:
+        sentiment_cfg = strategies_cfg["strategies"].get("sentiment", {})
     max_position = float(risk_cfg.get("max_position_size", 0.25))
     max_leverage = float(risk_cfg.get("max_portfolio_leverage", 1.0))
     max_drawdown = float(risk_cfg.get("max_drawdown", 0.10))
     kelly_fraction = float(risk_cfg.get("kelly_fraction", 0.5))
     rebalance_frequency = str(strategy_cfg.get("rebalance_frequency", "daily"))
     momentum_top_pct = float(strategy_cfg.get("momentum_top_pct", 80))
-    momentum_bottom_pct = float(strategy_cfg.get("momentum_bottom_pct", 20))
+    momentum_bottom_pct = float(strategy_cfg.get("momentum_bottom_pct", 35))
+    signal_threshold = float(strategy_cfg.get("signal_threshold", 0.3))
+    signal_scale = float(strategy_cfg.get("signal_scale", 1.0))
+    min_long_signal = float(strategy_cfg.get("min_long_signal", 0.0))
+    market_off_scale = float(strategy_cfg.get("market_off_scale", 1.0))
     rs_top_n = int(strategy_cfg.get("relative_strength_top_n", 0))
     rs_min_mom = float(strategy_cfg.get("relative_strength_min_mom", 0.0))
     use_relative_strength = bool(strategy_cfg.get("use_relative_strength", False))
     long_only = bool(strategy_cfg.get("long_only", False))
     risk_off_cash = bool(strategy_cfg.get("risk_off_cash", False))
+    target_vol = float(risk_cfg.get("target_volatility", 0.15))
     if max_leverage <= 0:
         max_leverage = 1.0
 
@@ -786,6 +1036,39 @@ def run_paper(
         strategy = MomentumStrategy()
 
     use_enhanced = isinstance(strategy, EnhancedCompositeStrategy)
+    use_sentiment = strategy_type == "sentiment"
+
+    if use_sentiment:
+        from quantum_alpha.data.collectors.alternative import (
+            load_social_sentiment,
+            load_options_sentiment,
+            load_insider_trades,
+            load_congress_trades,
+        )
+        from quantum_alpha.strategy.sentiment_strategies import (
+            SocialSentimentStrategy,
+            OptionsSentimentStrategy,
+            InsiderTradingStrategy,
+            CongressTradingStrategy,
+        )
+
+        social_strategy = SocialSentimentStrategy(
+            **sentiment_cfg.get("social", {})
+        )
+        options_strategy = OptionsSentimentStrategy(
+            **sentiment_cfg.get("options", {})
+        )
+        insider_strategy = InsiderTradingStrategy(
+            **sentiment_cfg.get("insider", {})
+        )
+        congress_strategy = CongressTradingStrategy(
+            **sentiment_cfg.get("congress", {})
+        )
+        sentiment_weights = sentiment_cfg.get(
+            "combined_weights",
+            {"social": 0.4, "options": 0.2, "insider": 0.2, "congress": 0.2},
+        )
+        signal_threshold = float(sentiment_cfg.get("signal_threshold", signal_threshold))
 
     position_sizer = PositionSizer(
         max_position=max_position,
@@ -817,9 +1100,77 @@ def run_paper(
             df = cleaner.clean(df)
             df = imputer.impute(df)
             df = feature_gen.generate(df)
-            df = strategy.generate_signals(df)
-            df = _apply_signal_lag(df)
-            data[symbol] = df
+            if use_sentiment:
+                social_df = load_social_sentiment(symbol, use_live=True)
+                options_df = load_options_sentiment(symbol, use_live=True)
+                insider_df = load_insider_trades(symbol, use_live=True)
+                congress_df = load_congress_trades(symbol, use_live=True)
+
+                if "symbol" in social_df.columns:
+                    social_df = social_df[social_df["symbol"] == symbol]
+                if "symbol" in options_df.columns:
+                    options_df = options_df[options_df["symbol"] == symbol]
+                if "symbol" in insider_df.columns:
+                    insider_df = insider_df[insider_df["symbol"] == symbol]
+                if "symbol" in congress_df.columns:
+                    congress_df = congress_df[congress_df["symbol"] == symbol]
+
+                frames = {}
+                if not social_df.empty:
+                    frames["social"] = _align_signal_frame(
+                        social_strategy.generate_signals(social_df), df.index
+                    )
+                if not options_df.empty:
+                    if "timestamp" in options_df.columns:
+                        options_df = options_df.copy()
+                        options_df["timestamp"] = pd.to_datetime(options_df["timestamp"])
+                        options_df = options_df.set_index("timestamp")
+                    elif "date" in options_df.columns:
+                        options_df = options_df.copy()
+                        options_df["date"] = pd.to_datetime(options_df["date"])
+                        options_df = options_df.set_index("date")
+                    options_sig = options_strategy.generate_signals(options_df)
+                    frames["options"] = _align_signal_frame(options_sig, df.index)
+                if not insider_df.empty:
+                    frames["insider"] = _align_signal_frame(
+                        insider_strategy.generate_signals(insider_df), df.index, limit=20
+                    )
+                if not congress_df.empty:
+                    frames["congress"] = _align_signal_frame(
+                        congress_strategy.generate_signals(congress_df), df.index, limit=20
+                    )
+
+                combined_signal = pd.Series(0.0, index=df.index)
+                combined_conf = pd.Series(0.0, index=df.index)
+                total_w = 0.0
+                for key, sig_frame in frames.items():
+                    weight = float(sentiment_weights.get(key, 0.0))
+                    if weight <= 0:
+                        continue
+                    total_w += weight
+                    combined_signal += weight * sig_frame["signal"]
+                    combined_conf += weight * sig_frame["signal_confidence"]
+
+                if total_w > 0:
+                    combined_signal = combined_signal / total_w
+                    combined_conf = combined_conf / total_w
+                else:
+                    combined_signal = combined_signal * 0.0
+                    combined_conf = combined_conf * 0.0
+
+                df["signal"] = combined_signal
+                df["signal_confidence"] = combined_conf
+                df["position_signal"] = np.where(
+                    np.abs(df["signal"]) >= signal_threshold,
+                    np.sign(df["signal"]),
+                    0.0,
+                )
+                df = _apply_signal_lag(df)
+                data[symbol] = df
+            else:
+                df = strategy.generate_signals(df)
+                df = _apply_signal_lag(df)
+                data[symbol] = df
             if verbose:
                 print(f"  {symbol}: {len(df)} bars")
         except Exception as e:
@@ -857,6 +1208,10 @@ def run_paper(
         trade_history = (
             np.array([t["pnl"] for t in bt.trades]) if bt.trades else np.array([0])
         )
+        realized_vol = _realized_vol_from_equity(bt.equity_curve)
+        vol_scale = 1.0
+        if realized_vol and realized_vol > 0:
+            vol_scale = float(np.clip(target_vol / realized_vol, 0.5, 1.5))
         market_risk_on = True
         if market_trend is not None and timestamp in market_trend.index:
             market_risk_on = bool(market_trend.loc[timestamp])
@@ -909,12 +1264,15 @@ def run_paper(
                         mom_val is None or mom_val > bottom_cut or long_only
                     ):
                         signal = 0.0
+            if signal_scale != 1.0 and signal != 0.0:
+                signal = float(np.clip(signal * signal_scale, -1.0, 1.0))
+            if long_only and signal > 0 and min_long_signal > 0:
+                signal = max(signal, min_long_signal)
             volatility = row.get("atr_pct", 0.02)
             if pd.isna(volatility) or volatility <= 0:
                 volatility = 0.02
             volatility = volatility * np.sqrt(252)
             volatilities[symbol] = max(volatility, 1e-6)
-
             if use_rp_allocation:
                 continue
 
@@ -956,6 +1314,10 @@ def run_paper(
             target_positions = {s: 0.0 for s in bars.keys()}
         elif not target_positions:
             return
+        if not market_risk_on and market_off_scale < 1.0:
+            target_positions = {
+                s: w * market_off_scale for s, w in target_positions.items()
+            }
 
         if volatilities and not use_rp_allocation:
             inv = {s: 1 / v for s, v in volatilities.items()}
@@ -968,9 +1330,19 @@ def run_paper(
                     for s in target_positions
                 }
 
+        if vol_scale != 1.0:
+            target_positions = {s: w * vol_scale for s, w in target_positions.items()}
+
         total_abs = sum(abs(w) for w in target_positions.values())
-        if total_abs > max_leverage and total_abs > 0:
-            scale = max_leverage / total_abs
+        cap = max_leverage
+        if dd_metrics.state == DrawdownState.WARNING:
+            cap = min(cap, dd_leverage_cap_warning)
+        elif dd_metrics.state in {DrawdownState.CRITICAL, DrawdownState.RECOVERY}:
+            cap = min(cap, dd_leverage_cap_critical)
+        if not market_risk_on:
+            cap = min(cap, market_off_leverage_cap)
+        if total_abs > cap and total_abs > 0:
+            scale = cap / total_abs
             target_positions = {s: w * scale for s, w in target_positions.items()}
 
         equity = bt._total_equity()

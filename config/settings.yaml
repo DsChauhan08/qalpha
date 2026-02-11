@@ -41,20 +41,20 @@ risk:
   dd_circuit_breaker: 0.40
   dd_max_limit: 0.50
   dd_min_exposure: 0.25
-  dd_leverage_cap_warning: 0.9
+  dd_leverage_cap_warning: 0.85
   dd_leverage_cap_critical: 0.8
   market_off_leverage_cap: 0.85
 
 # Strategy
 strategy:
   lookback_window: 60
-  signal_threshold: 0.3  # Min signal strength to trade
+  signal_threshold: 0.28  # Min signal strength to trade
   rebalance_frequency: "monthly"
   paper_rebalance_frequency: "weekly"
-  momentum_top_pct: 65
+  momentum_top_pct: 80
   momentum_bottom_pct: 35
-  relative_strength_top_n: 8
-  relative_strength_min_mom: 0.0
+  relative_strength_top_n: 5
+  relative_strength_min_mom: -0.02
   use_relative_strength: true
   long_only: true
   risk_off_cash: false

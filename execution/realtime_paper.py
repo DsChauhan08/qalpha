@@ -41,6 +41,7 @@ class SessionConfig:
     long_only: bool
     commission_rate: float
     slippage_bps: float
+    min_commission: float
     min_trade_notional: float
     output_dir: Path
 
@@ -51,11 +52,13 @@ class PaperAccount:
         initial_capital: float,
         commission_rate: float = 0.001,
         slippage_bps: float = 5.0,
+        min_commission: float = 1.0,
     ) -> None:
         self.cash = float(initial_capital)
         self.positions: Dict[str, float] = {}
         self.commission_rate = float(commission_rate)
         self.slippage = float(slippage_bps) / 10000.0
+        self.min_commission = float(min_commission)
         self.trades: List[Dict] = []
 
     def equity(self, prices: Dict[str, float]) -> float:
@@ -95,7 +98,7 @@ class PaperAccount:
             )
             qty = abs(delta_value) / exec_price
             notional = qty * exec_price
-            commission = max(1.0, notional * self.commission_rate)
+            commission = max(self.min_commission, notional * self.commission_rate)
 
             if side == "BUY":
                 max_affordable = max(self.cash - commission, 0.0)
@@ -103,7 +106,7 @@ class PaperAccount:
                     continue
                 qty = min(qty, max_affordable / exec_price)
                 notional = qty * exec_price
-                commission = max(1.0, notional * self.commission_rate)
+                commission = max(self.min_commission, notional * self.commission_rate)
                 total_cost = notional + commission
                 if qty <= 0 or total_cost > self.cash:
                     continue
@@ -181,8 +184,21 @@ def _build_config(args: argparse.Namespace) -> SessionConfig:
         signal_threshold=float(strategy_cfg.get("signal_threshold", 0.3)),
         min_long_signal=float(strategy_cfg.get("min_long_signal", 0.0)),
         long_only=bool(strategy_cfg.get("long_only", True)),
-        commission_rate=float(backtest_cfg.get("commission_rate", 0.001)),
-        slippage_bps=float(backtest_cfg.get("slippage_bps", 5)),
+        commission_rate=float(
+            args.commission_rate
+            if args.commission_rate is not None
+            else backtest_cfg.get("commission_rate", 0.001)
+        ),
+        slippage_bps=float(
+            args.slippage_bps
+            if args.slippage_bps is not None
+            else backtest_cfg.get("slippage_bps", 5)
+        ),
+        min_commission=float(
+            args.min_commission
+            if args.min_commission is not None
+            else backtest_cfg.get("min_commission", 1.0)
+        ),
         min_trade_notional=float(args.min_trade_notional),
         output_dir=out_dir,
     )
@@ -332,6 +348,7 @@ def run_realtime_paper(cfg: SessionConfig) -> Dict:
         initial_capital=cfg.capital,
         commission_rate=cfg.commission_rate,
         slippage_bps=cfg.slippage_bps,
+        min_commission=cfg.min_commission,
     )
 
     session_start = datetime.now(timezone.utc)
@@ -463,6 +480,10 @@ def run_realtime_paper(cfg: SessionConfig) -> Dict:
         "return_pct": return_pct,
         "trades": len(account.trades),
         "open_positions": account.positions,
+        "commission_rate": cfg.commission_rate,
+        "slippage_bps": cfg.slippage_bps,
+        "min_commission": cfg.min_commission,
+        "min_trade_notional": cfg.min_trade_notional,
         "output_dir": str(cfg.output_dir),
     }
 
@@ -505,6 +526,24 @@ def main() -> None:
         "--output-dir", type=str, default="artifacts", help="Output directory for session files"
     )
     parser.add_argument(
+        "--commission-rate",
+        type=float,
+        default=None,
+        help="Override commission rate (e.g. 0.0 for commission-free paper)",
+    )
+    parser.add_argument(
+        "--slippage-bps",
+        type=float,
+        default=None,
+        help="Override slippage in basis points",
+    )
+    parser.add_argument(
+        "--min-commission",
+        type=float,
+        default=None,
+        help="Override minimum commission per order",
+    )
+    parser.add_argument(
         "--min-trade-notional",
         type=float,
         default=1000.0,
@@ -516,7 +555,8 @@ def main() -> None:
     print(
         f"Starting realtime paper session: symbols={cfg.symbols} interval={cfg.interval} "
         f"duration={cfg.duration_minutes}m poll={cfg.poll_seconds}s "
-        f"min_notional=${cfg.min_trade_notional:,.0f}"
+        f"min_notional=${cfg.min_trade_notional:,.0f} comm={cfg.commission_rate} "
+        f"min_comm=${cfg.min_commission:.2f} slip={cfg.slippage_bps:.1f}bps"
     , flush=True)
     summary = run_realtime_paper(cfg)
     print(json.dumps(summary, indent=2), flush=True)

@@ -30,6 +30,28 @@ from quantum_alpha.data.collectors.news_collector import (
 
 logger = logging.getLogger(__name__)
 
+# Lazy import — only used when use_real_sentiment=True
+_SentimentPipeline = None
+_REAL_FEATURE_COLS = None
+_ALL_FEATURE_COLS = None
+
+
+def _get_real_sentiment_imports():
+    """Lazy-load the real sentiment pipeline to avoid heavy imports at module level."""
+    global _SentimentPipeline, _REAL_FEATURE_COLS, _ALL_FEATURE_COLS
+    if _SentimentPipeline is None:
+        from quantum_alpha.data.collectors.sentiment_pipeline import (
+            SentimentPipeline,
+            REAL_SENTIMENT_FEATURE_COLS,
+            ALL_FEATURE_COLS,
+        )
+
+        _SentimentPipeline = SentimentPipeline
+        _REAL_FEATURE_COLS = REAL_SENTIMENT_FEATURE_COLS
+        _ALL_FEATURE_COLS = ALL_FEATURE_COLS
+    return _SentimentPipeline, _REAL_FEATURE_COLS, _ALL_FEATURE_COLS
+
+
 try:
     import torch
 
@@ -65,6 +87,7 @@ class NewsLSTMStrategy:
         confidence_threshold: float = 0.10,
         use_mc_dropout: bool = False,
         mc_iterations: int = 30,
+        use_real_sentiment: bool = None,
     ):
         """
         Args:
@@ -74,6 +97,9 @@ class NewsLSTMStrategy:
             confidence_threshold: Min confidence to emit a trade signal
             use_mc_dropout: Use Monte Carlo dropout for uncertainty
             mc_iterations: Number of MC forward passes
+            use_real_sentiment: If True, use FinBERT sentiment from DB.
+                If None (default), auto-detect from checkpoint name
+                (checkpoints with '_real_' use real sentiment).
         """
         self.checkpoint_name = checkpoint_name
         self.checkpoint_dir = checkpoint_dir or str(
@@ -83,12 +109,14 @@ class NewsLSTMStrategy:
         self.confidence_threshold = confidence_threshold
         self.use_mc_dropout = use_mc_dropout
         self.mc_iterations = mc_iterations
+        self._use_real_sentiment = use_real_sentiment
 
         self._model = None
         self._scaler_params = None
         self._config = None
         self._loaded = False
         self._collector = NewsCollector()
+        self._pipeline = None  # Lazy-loaded SentimentPipeline
 
     def _load_model(self):
         """Lazy-load the trained model and scaler."""
@@ -103,13 +131,15 @@ class NewsLSTMStrategy:
             return
 
         if self.checkpoint_name is None:
-            # Try to find the latest checkpoint
+            # Find the latest checkpoint by MODIFICATION TIME (not alphabetical)
             ckpt_dir = Path(self.checkpoint_dir)
             if ckpt_dir.exists():
-                pt_files = sorted(ckpt_dir.glob("*.pt"))
+                pt_files = list(ckpt_dir.glob("*.pt"))
                 # Filter out config files
                 pt_files = [f for f in pt_files if "_config" not in f.stem]
                 if pt_files:
+                    # Sort by modification time, newest last
+                    pt_files.sort(key=lambda f: f.stat().st_mtime)
                     self.checkpoint_name = pt_files[-1].stem
                     logger.info("Auto-detected checkpoint: %s", self.checkpoint_name)
 
@@ -117,6 +147,15 @@ class NewsLSTMStrategy:
             warnings.warn("No checkpoint found. Strategy will output hold signals.")
             self._loaded = True
             return
+
+        # Auto-detect use_real_sentiment from checkpoint name
+        if self._use_real_sentiment is None:
+            self._use_real_sentiment = "_real_" in self.checkpoint_name
+            if self._use_real_sentiment:
+                logger.info(
+                    "Auto-detected real sentiment model from checkpoint name: %s",
+                    self.checkpoint_name,
+                )
 
         try:
             from quantum_alpha.models.lstm_v4.news_lstm import (
@@ -213,11 +252,12 @@ class NewsLSTMStrategy:
             )
             return df
 
-        # Step 1: Build sentiment features
-        features_df = self._collector.build_training_features(df, symbol)
+        # Step 1: Build features — real sentiment or price-proxy
+        if self._use_real_sentiment:
+            features_df, feature_cols = self._build_real_sentiment_features(df, symbol)
+        else:
+            features_df, feature_cols = self._build_proxy_features(df, symbol)
 
-        # Step 2: Extract feature columns
-        feature_cols = SENTIMENT_FEATURE_COLS
         available = [c for c in feature_cols if c in features_df.columns]
         if len(available) < 10:
             logger.warning("Only %d features available, need 10+", len(available))
@@ -320,6 +360,42 @@ class NewsLSTMStrategy:
         )
 
         return df
+
+    def _build_proxy_features(
+        self, df: pd.DataFrame, symbol: str
+    ) -> tuple[pd.DataFrame, list]:
+        """Build price-proxy sentiment features (legacy path)."""
+        features_df = self._collector.build_training_features(df, symbol)
+        return features_df, SENTIMENT_FEATURE_COLS
+
+    def _build_real_sentiment_features(
+        self, df: pd.DataFrame, symbol: str
+    ) -> tuple[pd.DataFrame, list]:
+        """
+        Build real FinBERT sentiment features from the SQLite DB.
+
+        Uses SentimentPipeline.build_training_features() which:
+        - Fetches scored articles from the DB
+        - Aggregates into 16 daily sentiment features
+        - Adds 5 price context features
+        - Lags sentiment by 1 day (no lookahead)
+
+        Returns:
+            (features_df, feature_cols) tuple
+        """
+        SentimentPipeline, _, ALL_FEAT_COLS = _get_real_sentiment_imports()
+
+        if self._pipeline is None:
+            self._pipeline = SentimentPipeline()
+
+        features_df = self._pipeline.build_training_features(
+            price_df=df,
+            symbol=symbol,
+            forward_period=1,  # targets not used at inference, but needed for dropna
+            use_real_sentiment=True,
+        )
+
+        return features_df, ALL_FEAT_COLS
 
     def generate_signals_live(
         self,

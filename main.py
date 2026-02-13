@@ -253,6 +253,7 @@ def run_backtest(
     validate: bool = False,
     verbose: bool = True,
     config_path: Optional[str] = None,
+    checkpoint_name: Optional[str] = None,
 ) -> Dict:
     """
     Run a complete backtest.
@@ -265,6 +266,8 @@ def run_backtest(
         strategy_type: 'momentum', 'mean_reversion', 'composite'
         validate: Whether to run MCPT validation
         verbose: Print progress
+        config_path: Path to config directory or settings.yaml
+        checkpoint_name: Model checkpoint name (for news_lstm strategy)
 
     Returns:
         Dict with backtest results

@@ -344,7 +344,7 @@ def run_backtest(
     elif strategy_type == "news_lstm":
         from quantum_alpha.strategy.news_lstm_strategy import NewsLSTMStrategy
 
-        strategy = NewsLSTMStrategy()
+        strategy = NewsLSTMStrategy(checkpoint_name=checkpoint_name)
     else:
         strategy = MomentumStrategy()
 
@@ -511,7 +511,11 @@ def run_backtest(
                 df = _apply_signal_lag(df)
                 data[symbol] = df
             elif not use_enhanced:
-                df = strategy.generate_signals(df)
+                # Pass symbol for strategies that accept it (e.g. news_lstm)
+                try:
+                    df = strategy.generate_signals(df, symbol=symbol)
+                except TypeError:
+                    df = strategy.generate_signals(df)
                 df = _apply_signal_lag(df)
                 data[symbol] = df
             if verbose:

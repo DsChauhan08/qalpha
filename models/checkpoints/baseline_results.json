@@ -1,0 +1,52 @@
+{
+  "timestamp": "2026-02-13T13:14:33.160383",
+  "config": {
+    "symbols": [
+      "SPY",
+      "QQQ",
+      "AAPL",
+      "MSFT",
+      "NVDA",
+      "TSLA"
+    ],
+    "forward_period": 1,
+    "n_classes": 2,
+    "seq_len": 1,
+    "n_train": 944,
+    "n_val": 234
+  },
+  "baseline_acc": 0.5384615384615384,
+  "lstm_v14_acc": 0.6,
+  "results": [
+    {
+      "model": "Logistic Regression",
+      "val_acc": 0.47435897435897434,
+      "edge": -0.0641025641025641
+    },
+    {
+      "model": "Random Forest",
+      "val_acc": 0.48717948717948717,
+      "edge": -0.051282051282051266
+    },
+    {
+      "model": "Gradient Boosting",
+      "val_acc": 0.5042735042735043,
+      "edge": -0.03418803418803418
+    },
+    {
+      "model": "Threshold (sentiment_momentum_3d)",
+      "val_acc": 0.48717948717948717,
+      "edge": -0.051282051282051266
+    },
+    {
+      "model": "Threshold (mean_sentiment)",
+      "val_acc": 0.47863247863247865,
+      "edge": -0.05982905982905978
+    },
+    {
+      "model": "Threshold (weighted_sentiment)",
+      "val_acc": 0.5085470085470085,
+      "edge": -0.02991452991452992
+    }
+  ]
+}

@@ -51,6 +51,7 @@ def run_news_lstm_backtest(
         validate=validate,
         verbose=verbose,
         config_path=config_path,
+        checkpoint_name=checkpoint_name,
     )
 
 

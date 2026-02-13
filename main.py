@@ -159,12 +159,7 @@ def _vol_of_vol_from_equity(
     rets = np.diff(eq) / eq[:-1]
     if len(rets) < long_window:
         return None
-    vol_series = (
-        pd.Series(rets)
-        .rolling(short_window)
-        .std()
-        .dropna()
-    )
+    vol_series = pd.Series(rets).rolling(short_window).std().dropna()
     if len(vol_series) < long_window // 2:
         return None
     return float(vol_series.tail(long_window).std())
@@ -175,7 +170,10 @@ def _align_signal_frame(
 ) -> pd.DataFrame:
     """Align sparse signal frames to price index with a short forward fill."""
     if sig_df.empty:
-        return pd.DataFrame({"signal": np.zeros(len(index)), "signal_confidence": np.zeros(len(index))}, index=index)
+        return pd.DataFrame(
+            {"signal": np.zeros(len(index)), "signal_confidence": np.zeros(len(index))},
+            index=index,
+        )
     frame = sig_df.copy()
     if "timestamp" in frame.columns:
         frame = frame.set_index("timestamp")
@@ -187,7 +185,9 @@ def _align_signal_frame(
         .reindex(index, method="ffill", limit=limit)
         .fillna(0.0)
     )
-    return pd.DataFrame({"signal": signal, "signal_confidence": confidence}, index=index)
+    return pd.DataFrame(
+        {"signal": signal, "signal_confidence": confidence}, index=index
+    )
 
 
 def _resolve_symbols(
@@ -332,10 +332,16 @@ def run_backtest(
         strategy = EnhancedCompositeStrategy()
     elif strategy_type == "sentiment":
         from quantum_alpha.strategy.sentiment_strategies import SocialSentimentStrategy
+
         strategy = SocialSentimentStrategy()
     elif strategy_type == "ml":
         from quantum_alpha.strategy.ml_strategies import MLTradingStrategy
+
         strategy = MLTradingStrategy()
+    elif strategy_type == "news_lstm":
+        from quantum_alpha.strategy.news_lstm_strategy import NewsLSTMStrategy
+
+        strategy = NewsLSTMStrategy()
     else:
         strategy = MomentumStrategy()
 
@@ -356,18 +362,10 @@ def run_backtest(
             CongressTradingStrategy,
         )
 
-        social_strategy = SocialSentimentStrategy(
-            **sentiment_cfg.get("social", {})
-        )
-        options_strategy = OptionsSentimentStrategy(
-            **sentiment_cfg.get("options", {})
-        )
-        insider_strategy = InsiderTradingStrategy(
-            **sentiment_cfg.get("insider", {})
-        )
-        congress_strategy = CongressTradingStrategy(
-            **sentiment_cfg.get("congress", {})
-        )
+        social_strategy = SocialSentimentStrategy(**sentiment_cfg.get("social", {}))
+        options_strategy = OptionsSentimentStrategy(**sentiment_cfg.get("options", {}))
+        insider_strategy = InsiderTradingStrategy(**sentiment_cfg.get("insider", {}))
+        congress_strategy = CongressTradingStrategy(**sentiment_cfg.get("congress", {}))
         sentiment_weights = sentiment_cfg.get(
             "combined_weights",
             {"social": 0.4, "options": 0.2, "insider": 0.2, "congress": 0.2},
@@ -388,25 +386,19 @@ def run_backtest(
             CongressTradingStrategy,
         )
 
-        social_strategy = SocialSentimentStrategy(
-            **sentiment_cfg.get("social", {})
-        )
-        options_strategy = OptionsSentimentStrategy(
-            **sentiment_cfg.get("options", {})
-        )
-        insider_strategy = InsiderTradingStrategy(
-            **sentiment_cfg.get("insider", {})
-        )
-        congress_strategy = CongressTradingStrategy(
-            **sentiment_cfg.get("congress", {})
-        )
+        social_strategy = SocialSentimentStrategy(**sentiment_cfg.get("social", {}))
+        options_strategy = OptionsSentimentStrategy(**sentiment_cfg.get("options", {}))
+        insider_strategy = InsiderTradingStrategy(**sentiment_cfg.get("insider", {}))
+        congress_strategy = CongressTradingStrategy(**sentiment_cfg.get("congress", {}))
         sentiment_weights = sentiment_cfg.get(
             "combined_weights",
             {"social": 0.4, "options": 0.2, "insider": 0.2, "congress": 0.2},
         )
 
     if use_sentiment:
-        signal_threshold = float(sentiment_cfg.get("signal_threshold", signal_threshold))
+        signal_threshold = float(
+            sentiment_cfg.get("signal_threshold", signal_threshold)
+        )
 
     position_sizer = PositionSizer(
         max_position=max_position,
@@ -465,7 +457,9 @@ def run_backtest(
                 if not options_df.empty:
                     if "timestamp" in options_df.columns:
                         options_df = options_df.copy()
-                        options_df["timestamp"] = pd.to_datetime(options_df["timestamp"])
+                        options_df["timestamp"] = pd.to_datetime(
+                            options_df["timestamp"]
+                        )
                         options_df = options_df.set_index("timestamp")
                     elif "date" in options_df.columns:
                         options_df = options_df.copy()
@@ -475,11 +469,15 @@ def run_backtest(
                     frames["options"] = _align_signal_frame(options_sig, df.index)
                 if not insider_df.empty:
                     frames["insider"] = _align_signal_frame(
-                        insider_strategy.generate_signals(insider_df), df.index, limit=20
+                        insider_strategy.generate_signals(insider_df),
+                        df.index,
+                        limit=20,
                     )
                 if not congress_df.empty:
                     frames["congress"] = _align_signal_frame(
-                        congress_strategy.generate_signals(congress_df), df.index, limit=20
+                        congress_strategy.generate_signals(congress_df),
+                        df.index,
+                        limit=20,
                     )
 
                 combined_signal = pd.Series(0.0, index=df.index)
@@ -1028,9 +1026,11 @@ def run_paper(
         strategy = EnhancedCompositeStrategy()
     elif strategy_type == "sentiment":
         from quantum_alpha.strategy.sentiment_strategies import SocialSentimentStrategy
+
         strategy = SocialSentimentStrategy()
     elif strategy_type == "ml":
         from quantum_alpha.strategy.ml_strategies import MLTradingStrategy
+
         strategy = MLTradingStrategy()
     else:
         strategy = MomentumStrategy()
@@ -1052,23 +1052,17 @@ def run_paper(
             CongressTradingStrategy,
         )
 
-        social_strategy = SocialSentimentStrategy(
-            **sentiment_cfg.get("social", {})
-        )
-        options_strategy = OptionsSentimentStrategy(
-            **sentiment_cfg.get("options", {})
-        )
-        insider_strategy = InsiderTradingStrategy(
-            **sentiment_cfg.get("insider", {})
-        )
-        congress_strategy = CongressTradingStrategy(
-            **sentiment_cfg.get("congress", {})
-        )
+        social_strategy = SocialSentimentStrategy(**sentiment_cfg.get("social", {}))
+        options_strategy = OptionsSentimentStrategy(**sentiment_cfg.get("options", {}))
+        insider_strategy = InsiderTradingStrategy(**sentiment_cfg.get("insider", {}))
+        congress_strategy = CongressTradingStrategy(**sentiment_cfg.get("congress", {}))
         sentiment_weights = sentiment_cfg.get(
             "combined_weights",
             {"social": 0.4, "options": 0.2, "insider": 0.2, "congress": 0.2},
         )
-        signal_threshold = float(sentiment_cfg.get("signal_threshold", signal_threshold))
+        signal_threshold = float(
+            sentiment_cfg.get("signal_threshold", signal_threshold)
+        )
 
     position_sizer = PositionSizer(
         max_position=max_position,
@@ -1123,7 +1117,9 @@ def run_paper(
                 if not options_df.empty:
                     if "timestamp" in options_df.columns:
                         options_df = options_df.copy()
-                        options_df["timestamp"] = pd.to_datetime(options_df["timestamp"])
+                        options_df["timestamp"] = pd.to_datetime(
+                            options_df["timestamp"]
+                        )
                         options_df = options_df.set_index("timestamp")
                     elif "date" in options_df.columns:
                         options_df = options_df.copy()
@@ -1133,11 +1129,15 @@ def run_paper(
                     frames["options"] = _align_signal_frame(options_sig, df.index)
                 if not insider_df.empty:
                     frames["insider"] = _align_signal_frame(
-                        insider_strategy.generate_signals(insider_df), df.index, limit=20
+                        insider_strategy.generate_signals(insider_df),
+                        df.index,
+                        limit=20,
                     )
                 if not congress_df.empty:
                     frames["congress"] = _align_signal_frame(
-                        congress_strategy.generate_signals(congress_df), df.index, limit=20
+                        congress_strategy.generate_signals(congress_df),
+                        df.index,
+                        limit=20,
                     )
 
                 combined_signal = pd.Series(0.0, index=df.index)
@@ -1434,6 +1434,7 @@ def main():
             "enhanced",
             "sentiment",
             "ml",
+            "news_lstm",
         ],
         default="momentum",
         help="Strategy type",

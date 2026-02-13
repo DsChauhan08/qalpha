@@ -1,0 +1,35 @@
+{
+  "config": {
+    "n_sentiment_features": 11,
+    "n_price_features": 5,
+    "sequence_length": 30,
+    "lstm_units": [
+      64,
+      32
+    ],
+    "dropout": 0.3,
+    "use_attention": true,
+    "learning_rate": 0.001,
+    "batch_size": 32,
+    "epochs": 100,
+    "early_stopping_patience": 15,
+    "signal_threshold": 0.6,
+    "min_sentiment_strength": 0.3
+  },
+  "metrics": {
+    "accuracy": 0.5237113402061856,
+    "class_accuracy": {
+      "sell": 0.03225806451612903,
+      "hold": 0.7729083665338645,
+      "buy": 0.40425531914893614
+    },
+    "trade_accuracy": 0.0,
+    "hold_accuracy": 1.0,
+    "n_trades": 0,
+    "n_samples": 485,
+    "selectivity": 0.0
+  },
+  "buy_threshold": 0.005,
+  "sell_threshold": -0.005,
+  "timestamp": "2026-02-12T08:21:52.611771"
+}

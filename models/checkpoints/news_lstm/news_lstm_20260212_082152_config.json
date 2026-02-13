@@ -1,0 +1,17 @@
+{
+  "n_sentiment_features": 11,
+  "n_price_features": 5,
+  "sequence_length": 30,
+  "lstm_units": [
+    64,
+    32
+  ],
+  "dropout": 0.3,
+  "use_attention": true,
+  "learning_rate": 0.001,
+  "batch_size": 32,
+  "epochs": 100,
+  "early_stopping_patience": 15,
+  "signal_threshold": 0.6,
+  "min_sentiment_strength": 0.3
+}

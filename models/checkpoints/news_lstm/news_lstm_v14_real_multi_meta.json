@@ -2,7 +2,7 @@
   "config": {
     "n_sentiment_features": 16,
     "n_price_features": 5,
-    "sequence_length": 20,
+    "sequence_length": 15,
     "lstm_units": [
       32
     ],
@@ -10,25 +10,25 @@
     "use_attention": false,
     "n_classes": 2,
     "learning_rate": 0.002,
-    "batch_size": 16,
-    "epochs": 100,
+    "batch_size": 32,
+    "epochs": 200,
     "early_stopping_patience": 25,
     "signal_threshold": 0.35,
     "min_sentiment_strength": 0.2
   },
   "metrics": {
-    "accuracy": 0.5294117647058824,
+    "accuracy": 0.6,
     "class_accuracy": {
-      "down": 0.8461538461538461,
-      "up": 0.3333333333333333
+      "down": 0.944954128440367,
+      "up": 0.22772277227722773
     },
-    "trade_accuracy": 0.5294117647058824,
+    "trade_accuracy": 0.6,
     "hold_accuracy": 0.0,
-    "n_trades": 34,
-    "n_samples": 34,
+    "n_trades": 210,
+    "n_samples": 210,
     "selectivity": 1.0
   },
   "buy_threshold": 0.005,
   "sell_threshold": -0.005,
-  "timestamp": "2026-02-13T12:56:38.279471"
+  "timestamp": "2026-02-13T13:00:29.962363"
 }

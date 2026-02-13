@@ -4,7 +4,7 @@ News-Driven LSTM Training Script.
 
 End-to-end script that:
 1. Fetches historical price data via yfinance
-2. Builds sentiment proxy features
+2. Builds sentiment features (real FinBERT or price-proxy)
 3. Trains the NewsDrivenLSTM model
 4. Evaluates on a held-out validation set
 5. Saves checkpoint for use by NewsLSTMStrategy
@@ -13,6 +13,10 @@ Usage:
     python train_news_lstm.py
     python train_news_lstm.py --symbols SPY QQQ AAPL --years 10
     python train_news_lstm.py --epochs 150 --seq-len 20
+
+    # With REAL FinBERT sentiment (requires news in DB):
+    python train_news_lstm.py --real-sentiment
+    python train_news_lstm.py --real-sentiment --fetch-news  # fetch first, then train
 """
 
 import argparse
@@ -354,6 +358,234 @@ def train_multi_symbol(
     }
 
 
+def train_with_real_sentiment(
+    price_data: dict,
+    config: NewsLSTMConfig,
+    buy_threshold: float = 0.005,
+    sell_threshold: float = -0.005,
+    forward_period: int = 5,
+    fetch_news: bool = False,
+    verbose: int = 1,
+) -> dict:
+    """
+    Train using REAL FinBERT sentiment features from the sentiment pipeline.
+
+    This replaces price-proxy features with actual news headline sentiment
+    scored by FinBERT and stored in SQLite.
+
+    Args:
+        price_data: dict of symbol -> price DataFrame
+        config: NewsLSTMConfig
+        buy_threshold: Forward return threshold for BUY label
+        sell_threshold: Forward return threshold for SELL label
+        forward_period: Days ahead for labelling
+        fetch_news: If True, fetch and score news before training
+        verbose: Verbosity level
+    """
+    from quantum_alpha.data.collectors.sentiment_pipeline import (
+        SentimentPipeline,
+        REAL_SENTIMENT_FEATURE_COLS,
+        ALL_FEATURE_COLS,
+    )
+
+    print(f"\n{'=' * 60}")
+    print(f"REAL SENTIMENT TRAINING ({len(price_data)} symbols)")
+    print(f"Forward period: {forward_period}d | Classes: {config.n_classes}")
+    print(f"{'=' * 60}")
+
+    pipeline = SentimentPipeline()
+
+    # Optionally fetch news first
+    if fetch_news:
+        for symbol in price_data:
+            pipeline.collect_and_score(
+                symbol, include_gdelt=False, google_lookback="1y"
+            )
+
+    print(pipeline.summary())
+
+    seq_len = config.sequence_length
+    n_classes = config.n_classes
+
+    # Build features per symbol
+    all_X = []
+    all_y_signal = []
+    all_y_conf = []
+    scaler_data_parts = []
+
+    for symbol, price_df in price_data.items():
+        print(f"\n--- Building features for {symbol} ---")
+
+        features = pipeline.build_training_features(
+            price_df,
+            symbol=symbol,
+            forward_period=forward_period,
+            use_real_sentiment=True,
+        )
+
+        if len(features) < seq_len + 10:
+            print(f"  SKIP: only {len(features)} samples (need {seq_len + 10})")
+            continue
+
+        # Compute forward return + labels
+        features["forward_return"] = (
+            features["close"].pct_change(forward_period).shift(-forward_period)
+        )
+        features = features.dropna()
+
+        # Feature columns
+        feature_cols = ALL_FEATURE_COLS
+        available = [c for c in feature_cols if c in features.columns]
+        print(f"  Features: {len(available)} | Samples: {len(features)}")
+
+        if len(available) < 10:
+            print(f"  SKIP: only {len(available)} features")
+            continue
+
+        X_raw = features[available].values
+        scaler_data_parts.append(X_raw)
+
+        # Labels
+        fwd = features["forward_return"].values
+        if n_classes == 2:
+            labels = (fwd > 0).astype(np.int64)
+        else:
+            labels = np.ones(len(features), dtype=np.int64)
+            labels[fwd > buy_threshold] = 2
+            labels[fwd < sell_threshold] = 0
+        confidence = np.clip(np.abs(fwd) * 20, 0, 1).astype(np.float32)
+
+        # Windowing
+        n_windows = len(X_raw) - seq_len
+        if n_windows <= 0:
+            print(f"  SKIP: not enough data for windowing")
+            continue
+
+        X_sym = np.zeros((n_windows, seq_len, len(available)), dtype=np.float32)
+        y_sig_sym = np.zeros(n_windows, dtype=np.int64)
+        y_conf_sym = np.zeros(n_windows, dtype=np.float32)
+
+        for i in range(n_windows):
+            X_sym[i] = X_raw[i : i + seq_len]
+            y_sig_sym[i] = labels[i + seq_len]
+            y_conf_sym[i] = confidence[i + seq_len]
+
+        all_X.append(X_sym)
+        all_y_signal.append(y_sig_sym)
+        all_y_conf.append(y_conf_sym)
+
+    if not all_X:
+        raise ValueError("No usable data from any symbol")
+
+    # Global scaler
+    all_raw = np.concatenate(scaler_data_parts, axis=0)
+    scaler_params = {
+        "mean": np.nanmean(all_raw, axis=0),
+        "std": np.nanstd(all_raw, axis=0),
+    }
+    scaler_params["std"] = np.where(
+        scaler_params["std"] < 1e-8, 1.0, scaler_params["std"]
+    )
+
+    # Apply scaling to all windows
+    for k in range(len(all_X)):
+        for t in range(all_X[k].shape[1]):
+            all_X[k][:, t, :] = (
+                all_X[k][:, t, :] - scaler_params["mean"]
+            ) / scaler_params["std"]
+        all_X[k] = np.nan_to_num(all_X[k], nan=0.0)
+
+    # Chronological split per symbol (last 20% of each symbol for val)
+    train_X_parts, val_X_parts = [], []
+    train_ys_parts, val_ys_parts = [], []
+    train_yc_parts, val_yc_parts = [], []
+
+    for X_sym, ys_sym, yc_sym in zip(all_X, all_y_signal, all_y_conf):
+        n_val = max(1, int(len(X_sym) * 0.2))
+        train_X_parts.append(X_sym[:-n_val])
+        val_X_parts.append(X_sym[-n_val:])
+        train_ys_parts.append(ys_sym[:-n_val])
+        val_ys_parts.append(ys_sym[-n_val:])
+        train_yc_parts.append(yc_sym[:-n_val])
+        val_yc_parts.append(yc_sym[-n_val:])
+
+    X_train = np.concatenate(train_X_parts, axis=0)
+    X_val = np.concatenate(val_X_parts, axis=0)
+    y_sig_train = np.concatenate(train_ys_parts, axis=0)
+    y_sig_val = np.concatenate(val_ys_parts, axis=0)
+    y_conf_train = np.concatenate(train_yc_parts, axis=0)
+    y_conf_val = np.concatenate(val_yc_parts, axis=0)
+
+    # Shuffle training set only
+    rng = np.random.default_rng(42)
+    train_idx = rng.permutation(len(X_train))
+    X_train = X_train[train_idx]
+    y_sig_train = y_sig_train[train_idx]
+    y_conf_train = y_conf_train[train_idx]
+
+    # Update config dimensions
+    n_sent = len(REAL_SENTIMENT_FEATURE_COLS)
+    config.n_sentiment_features = n_sent
+    config.n_price_features = X_train.shape[2] - n_sent
+
+    print(
+        f"\nFeatures: {n_sent} sentiment + {config.n_price_features} price = {X_train.shape[2]} total"
+    )
+    print(f"X_train: {X_train.shape} | X_val: {X_val.shape}")
+
+    for name, y in [("Train", y_sig_train), ("Val", y_sig_val)]:
+        total = len(y)
+        if n_classes == 2:
+            downs = (y == 0).sum()
+            ups = (y == 1).sum()
+            print(
+                f"{name}: {total} | down={downs} ({100 * downs / total:.1f}%) up={ups} ({100 * ups / total:.1f}%)"
+            )
+        else:
+            sells = (y == 0).sum()
+            holds = (y == 1).sum()
+            buys = (y == 2).sum()
+            print(
+                f"{name}: {total} | sell={sells} ({100 * sells / total:.1f}%) hold={holds} ({100 * holds / total:.1f}%) buy={buys} ({100 * buys / total:.1f}%)"
+            )
+
+    # Train
+    trainer = NewsLSTMTrainer(
+        config=config,
+        buy_threshold=buy_threshold,
+        sell_threshold=sell_threshold,
+    )
+    trainer.scaler_params = scaler_params
+
+    history = trainer.train(
+        X_train,
+        y_sig_train,
+        y_conf_train,
+        X_val,
+        y_sig_val,
+        y_conf_val,
+        verbose=verbose,
+    )
+
+    # Evaluate
+    metrics = trainer.evaluate(X_val, y_sig_val, y_conf_val)
+
+    print(f"\n--- Real Sentiment Evaluation ---")
+    print(f"Accuracy:       {metrics['accuracy']:.4f}")
+    print(f"Trade Accuracy: {metrics['trade_accuracy']:.4f}")
+    print(f"Hold Accuracy:  {metrics['hold_accuracy']:.4f}")
+    print(f"Selectivity:    {metrics['selectivity']:.4f}")
+    print(f"N Trades (val): {metrics['n_trades']}")
+    for cls, acc in metrics["class_accuracy"].items():
+        print(f"  {cls:>5} acc: {acc:.4f}")
+
+    return {
+        "trainer": trainer,
+        "metrics": metrics,
+        "history": history,
+    }
+
+
 def main():
     parser = argparse.ArgumentParser(description="Train the News-Driven LSTM model")
     parser.add_argument(
@@ -428,6 +660,16 @@ def main():
         default=1,
         help="Verbosity level (0=silent, 1=progress, 2=debug)",
     )
+    parser.add_argument(
+        "--real-sentiment",
+        action="store_true",
+        help="Use real FinBERT sentiment from news DB (instead of price proxies)",
+    )
+    parser.add_argument(
+        "--fetch-news",
+        action="store_true",
+        help="Fetch and score news before training (requires --real-sentiment)",
+    )
 
     args = parser.parse_args()
 
@@ -446,6 +688,8 @@ def main():
         f"N classes:      {args.n_classes} ({'binary' if args.n_classes == 2 else 'ternary'})"
     )
     print(f"Forward period: {args.forward_period} day(s)")
+    print(f"Real sentiment: {args.real_sentiment}")
+    print(f"Fetch news:     {args.fetch_news}")
 
     # Build config
     config = NewsLSTMConfig(
@@ -455,16 +699,30 @@ def main():
         n_classes=args.n_classes,
     )
 
-    # Fetch data
+    # Fetch price data
     print(f"\n--- Fetching Price Data ---")
-    price_data = fetch_price_data(args.symbols, years=args.years)
+    # Limit to 1 year for real sentiment (that's our news coverage)
+    years = 1 if args.real_sentiment else args.years
+    if args.real_sentiment and args.years != 10:
+        years = args.years  # User explicitly set years, respect it
+    price_data = fetch_price_data(args.symbols, years=years)
 
     if not price_data:
         print("ERROR: No price data fetched. Exiting.")
         sys.exit(1)
 
     # Train
-    if args.multi and len(price_data) > 1:
+    if args.real_sentiment:
+        result = train_with_real_sentiment(
+            price_data,
+            config,
+            buy_threshold=args.buy_threshold,
+            sell_threshold=args.sell_threshold,
+            forward_period=args.forward_period,
+            fetch_news=args.fetch_news,
+            verbose=args.verbose,
+        )
+    elif args.multi and len(price_data) > 1:
         result = train_multi_symbol(
             price_data,
             config,

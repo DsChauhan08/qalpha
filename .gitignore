@@ -1,2 +1,6 @@
 /models
 data_store/
+.cache/
+__pycache__/
+*.pyc
+*.db

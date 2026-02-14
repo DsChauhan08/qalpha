@@ -434,7 +434,8 @@ def check_results(trade_date: str | None = None):
 
     print(f"\n  Portfolio return: {total_pnl_pct:+.4%}")
     print(f"  Accuracy: {n_correct}/{n_total} = {n_correct / max(n_total, 1):.0%}")
-    print(f"  On $100,000: {total_pnl_pct * 100_000:+$,.0f}")
+    pnl_dollars = total_pnl_pct * 100_000
+    print(f"  On $100,000: ${pnl_dollars:+,.0f}")
     print("=" * 65)
 
 

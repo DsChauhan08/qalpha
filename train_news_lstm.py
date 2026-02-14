@@ -427,14 +427,54 @@ def train_with_real_sentiment(
             print(f"  SKIP: only {len(features)} samples (need {seq_len + 10})")
             continue
 
+        # Add MC/Padé features (curated subset for LSTM)
+        try:
+            from quantum_alpha.features.mc_pade_features import MCPadeFeatureGenerator
+
+            if not hasattr(train_with_real_sentiment, "_mc_gen"):
+                train_with_real_sentiment._mc_gen = MCPadeFeatureGenerator()
+            mc_result = train_with_real_sentiment._mc_gen.generate_features_fast(
+                features
+            )
+            # Select curated MC/Padé features (keep it manageable for LSTM)
+            MC_PADE_LSTM_COLS = [
+                "mc_5d_prob_up",
+                "mc_5d_mean_return",
+                "mc_5d_var_5",
+                "mc_5d_cvar_5",
+                "mc_5d_gain_loss_ratio",
+                "mc_5d_prob_touch_up_3pct",
+                "mc_5d_prob_touch_down_3pct",
+                "jd_5d_prob_up",
+                "jd_5d_skew",
+                "jd_5d_kurt",
+                "mc_est_mu",
+                "mc_est_sigma",
+                "pade_prob_down_2pct",
+                "pade_prob_up_2pct",
+                "pade_tail_ratio",
+                "pade_es_5pct",
+            ]
+            mc_available = [c for c in MC_PADE_LSTM_COLS if c in mc_result.columns]
+            for c in mc_available:
+                features[c] = mc_result[c]
+            print(f"  MC/Padé features added: {len(mc_available)}")
+        except Exception as e:
+            print(f"  MC/Padé features skipped: {e}")
+            mc_available = []
+
         # Compute forward return + labels
         features["forward_return"] = (
             features["close"].pct_change(forward_period).shift(-forward_period)
         )
         features = features.dropna()
 
-        # Feature columns
-        feature_cols = ALL_FEATURE_COLS
+        # Feature columns — base sentiment+price + MC/Padé
+        feature_cols = list(ALL_FEATURE_COLS)
+        # Add MC/Padé columns (they are "price" features, not "sentiment")
+        for c in mc_available:
+            if c not in feature_cols:
+                feature_cols.append(c)
         available = [c for c in feature_cols if c in features.columns]
         print(f"  Features: {len(available)} | Samples: {len(features)}")
 

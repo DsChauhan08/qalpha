@@ -254,6 +254,7 @@ def run_backtest(
     verbose: bool = True,
     config_path: Optional[str] = None,
     checkpoint_name: Optional[str] = None,
+    strategy_kwargs: Optional[Dict] = None,
 ) -> Dict:
     """
     Run a complete backtest.
@@ -268,6 +269,7 @@ def run_backtest(
         verbose: Print progress
         config_path: Path to config directory or settings.yaml
         checkpoint_name: Model checkpoint name (for news_lstm strategy)
+        strategy_kwargs: Extra keyword arguments passed to the strategy constructor
 
     Returns:
         Dict with backtest results
@@ -345,6 +347,10 @@ def run_backtest(
         from quantum_alpha.strategy.news_lstm_strategy import NewsLSTMStrategy
 
         strategy = NewsLSTMStrategy(checkpoint_name=checkpoint_name)
+    elif strategy_type == "meta_ensemble":
+        from quantum_alpha.strategy.meta_ensemble_strategy import MetaEnsembleStrategy
+
+        strategy = MetaEnsembleStrategy(**(strategy_kwargs or {}))
     else:
         strategy = MomentumStrategy()
 

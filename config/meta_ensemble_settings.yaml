@@ -1,0 +1,79 @@
+# Meta-Ensemble Strategy Configuration
+# ======================================
+# Optimized for the meta-ensemble model's own signal generation.
+# - Daily rebalancing (model predicts daily direction)
+# - No momentum/relative-strength filter (model has its own signals)
+# - Long+short allowed (model signals both directions)
+# - signal_scale=1.0 (model probabilities are already calibrated)
+version: "1.0.0"
+
+# Data Sources
+data:
+  primary_source: "yfinance"
+  cache_enabled: true
+  cache_ttl_hours: 24
+  universe_limit: 25
+  default_universe:
+    - "SPY"
+    - "AAPL"
+    - "MSFT"
+    - "GOOGL"
+    - "AMZN"
+    - "META"
+
+# Backtesting
+backtest:
+  initial_capital: 100000
+  commission_rate: 0.001
+  slippage_bps: 5
+  min_commission: 1.0
+
+# Risk Management
+risk:
+  max_position_size: 0.25
+  max_portfolio_leverage: 1.0
+  max_drawdown: 0.15
+  var_confidence: 0.95
+  kelly_fraction: 0.5
+  target_volatility: 0.10
+  vol_of_vol_threshold: 0.03
+  vol_of_vol_scale: 0.6
+  dd_warning: 0.15
+  dd_critical: 0.25
+  dd_circuit_breaker: 0.40
+  dd_max_limit: 0.50
+  dd_min_exposure: 0.25
+
+# Strategy — tuned for meta-ensemble
+strategy:
+  lookback_window: 60
+  signal_threshold: 0.01
+  rebalance_frequency: "daily"
+  use_relative_strength: false
+  long_only: true
+  risk_off_cash: false
+  signal_scale: 1.0
+  min_long_signal: 0.0
+  market_off_scale: 1.0
+
+# Technical Indicators
+indicators:
+  rsi_period: 14
+  macd_fast: 12
+  macd_slow: 26
+  macd_signal: 9
+  bb_period: 20
+  bb_std: 2
+  atr_period: 14
+
+# Logging
+logging:
+  level: "INFO"
+  file: "quantum_alpha.log"
+
+# Benchmarks
+benchmarks:
+  market: "SPY"
+  quant_composite:
+    - "QQQ"
+    - "IWM"

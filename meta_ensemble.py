@@ -47,6 +47,7 @@ sys.path.insert(0, "/home/regulus/Trade")
 
 warnings.filterwarnings("ignore", category=FutureWarning)
 warnings.filterwarnings("ignore", category=UserWarning)
+warnings.filterwarnings("ignore", category=pd.errors.PerformanceWarning)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -165,6 +166,31 @@ ALL_FEATURE_COLS = (
     + CROSS_SECTIONAL_FEATURES
     + PRICE_DERIVED_FEATURES
 )
+
+# MC/Padé features — dynamically generated from MCPadeFeatureGenerator
+# These are added to ALL_FEATURE_COLS after import
+MC_PADE_FEATURES: List[str] = []
+_mc_pade_gen = None
+
+
+def _get_mc_pade_generator():
+    """Lazy-initialize the MC/Padé feature generator."""
+    global _mc_pade_gen, MC_PADE_FEATURES, ALL_FEATURE_COLS
+    if _mc_pade_gen is None:
+        try:
+            from quantum_alpha.features.mc_pade_features import MCPadeFeatureGenerator
+
+            _mc_pade_gen = MCPadeFeatureGenerator()
+            MC_PADE_FEATURES = _mc_pade_gen.get_feature_names()
+            # Extend ALL_FEATURE_COLS if not already done
+            for f in MC_PADE_FEATURES:
+                if f not in ALL_FEATURE_COLS:
+                    ALL_FEATURE_COLS.append(f)
+            logger.info(f"MC/Padé features loaded: {len(MC_PADE_FEATURES)} features")
+        except Exception as e:
+            logger.warning(f"MC/Padé features unavailable: {e}")
+            _mc_pade_gen = False  # Sentinel to avoid retrying
+    return _mc_pade_gen if _mc_pade_gen is not False else None
 
 
 # =====================================================================
@@ -542,7 +568,15 @@ def compute_features_single_symbol(
         # Step 4: Price-derived features
         featured = compute_price_derived_features(featured)
 
-        # Step 5: Target — next-day direction (1 = up, 0 = down)
+        # Step 5: MC/Padé features (analytical, fast)
+        mc_gen = _get_mc_pade_generator()
+        if mc_gen is not None:
+            try:
+                featured = mc_gen.generate_features_fast(featured)
+            except Exception as e:
+                logger.debug(f"MC/Padé features failed for {symbol}: {e}")
+
+        # Step 6: Target -- next-day direction (1 = up, 0 = down)
         future_return = (
             featured["close"].pct_change(FORWARD_PERIOD).shift(-FORWARD_PERIOD)
         )

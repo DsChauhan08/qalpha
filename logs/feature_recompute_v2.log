@@ -1,0 +1,20 @@
+04:47:36 [INFO] Meta-Ensemble Pipeline: phase=features, n_symbols=100
+04:47:36 [INFO] 
+============================================================
+04:47:36 [INFO] PHASE 2: Computing Features
+04:47:36 [INFO] ============================================================
+04:47:37 [INFO] Fetched 102 S&P 500 symbols from Wikipedia
+04:47:37 [INFO] Loaded 99 symbols from cache
+04:47:37 [INFO] Computing features for 99 symbols...
+04:47:37 [INFO] Computing cross-sectional features...
+04:47:46 [INFO] MC/Padé features loaded: 165 features
+04:52:58 [INFO]   [20/99] Features computed, 3048 samples from ABBV
+04:58:48 [INFO]   [40/99] Features computed, 5061 samples from HON
+05:04:27 [INFO]   [60/99] Features computed, 5061 samples from BKNG
+05:10:15 [INFO]   [80/99] Features computed, 5061 samples from DE
+05:15:39 [INFO] Feature matrix: 485428 samples, 233 columns
+05:15:39 [INFO]   Date range: 2006-01-03 00:00:00 to 2026-02-13 00:00:00
+05:15:39 [INFO]   Symbols: 99
+05:15:39 [INFO]   Target distribution: up=51.9%, down=48.1%
+05:15:39 [INFO]   Available features: 230 / 230
+05:15:40 [INFO]   Saved to /home/regulus/Trade/quantum_alpha/data_store/meta_ensemble/features/feature_matrix.pkl (907.3 MB)

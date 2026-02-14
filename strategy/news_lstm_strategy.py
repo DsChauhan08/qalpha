@@ -380,6 +380,9 @@ class NewsLSTMStrategy:
         - Adds 5 price context features
         - Lags sentiment by 1 day (no lookahead)
 
+        Then optionally adds MC/Padé features if the loaded model was
+        trained with them (detected via scaler dimension > 21).
+
         Returns:
             (features_df, feature_cols) tuple
         """
@@ -395,7 +398,72 @@ class NewsLSTMStrategy:
             use_real_sentiment=True,
         )
 
-        return features_df, ALL_FEAT_COLS
+        feature_cols = list(ALL_FEAT_COLS)
+
+        # Add MC/Padé features if the model was trained with them.
+        # Detection: if the scaler has more dimensions than the base 21 features,
+        # the model expects MC/Padé features.
+        n_base = len(ALL_FEAT_COLS)
+        scaler_dim = (
+            len(self._scaler_params["mean"]) if self._scaler_params is not None else 0
+        )
+        needs_mc_pade = scaler_dim > n_base
+
+        if needs_mc_pade:
+            features_df, mc_cols = self._add_mc_pade_features(features_df)
+            for c in mc_cols:
+                if c not in feature_cols:
+                    feature_cols.append(c)
+            logger.info(
+                "MC/Padé features added for inference: %d cols (scaler expects %d, base %d)",
+                len(mc_cols),
+                scaler_dim,
+                n_base,
+            )
+
+        return features_df, feature_cols
+
+    def _add_mc_pade_features(
+        self, features_df: pd.DataFrame
+    ) -> tuple[pd.DataFrame, list]:
+        """
+        Compute the same curated MC/Padé features used during LSTM training.
+
+        Returns:
+            (features_df with MC/Padé columns, list of MC/Padé column names added)
+        """
+        MC_PADE_LSTM_COLS = [
+            "mc_5d_prob_up",
+            "mc_5d_mean_return",
+            "mc_5d_var_5",
+            "mc_5d_cvar_5",
+            "mc_5d_gain_loss_ratio",
+            "mc_5d_prob_touch_up_3pct",
+            "mc_5d_prob_touch_down_3pct",
+            "jd_5d_prob_up",
+            "jd_5d_skew",
+            "jd_5d_kurt",
+            "mc_est_mu",
+            "mc_est_sigma",
+            "pade_prob_down_2pct",
+            "pade_prob_up_2pct",
+            "pade_tail_ratio",
+            "pade_es_5pct",
+        ]
+        try:
+            from quantum_alpha.features.mc_pade_features import MCPadeFeatureGenerator
+
+            if not hasattr(self, "_mc_gen"):
+                self._mc_gen = MCPadeFeatureGenerator()
+            mc_result = self._mc_gen.generate_features_fast(features_df)
+            mc_available = [c for c in MC_PADE_LSTM_COLS if c in mc_result.columns]
+            for c in mc_available:
+                features_df[c] = mc_result[c]
+            logger.info("MC/Padé inference features: %d added", len(mc_available))
+            return features_df, mc_available
+        except Exception as e:
+            logger.warning("MC/Padé features skipped at inference: %s", e)
+            return features_df, []
 
     def generate_signals_live(
         self,

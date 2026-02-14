@@ -511,10 +511,13 @@ def run_backtest(
                 df = _apply_signal_lag(df)
                 data[symbol] = df
             elif not use_enhanced:
-                # Pass symbol for strategies that accept it (e.g. news_lstm)
-                try:
+                # Pass symbol kwarg for strategies that need it (e.g. news_lstm)
+                import inspect
+
+                sig = inspect.signature(strategy.generate_signals)
+                if "symbol" in sig.parameters:
                     df = strategy.generate_signals(df, symbol=symbol)
-                except TypeError:
+                else:
                     df = strategy.generate_signals(df)
                 df = _apply_signal_lag(df)
                 data[symbol] = df

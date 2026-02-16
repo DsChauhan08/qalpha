@@ -159,12 +159,26 @@ PRICE_DERIVED_FEATURES = [
     "up_days_ratio_21d",
 ]
 
+SENTIMENT_PROXY_FEATURES = [
+    "sent_overnight_gap_zscore",
+    "sent_proxy",
+    "sent_ma3",
+    "sent_ma7",
+    "sent_momentum",
+    "sent_news_intensity",
+    "sent_fear_greed",
+    "sent_vol_price_divergence",
+    "sent_gap_fill_rate",
+    "sent_return_acceleration",
+]
+
 ALL_FEATURE_COLS = (
     TECHNICAL_FEATURES
     + STRATEGY_FEATURES
     + REGIME_FEATURES
     + CROSS_SECTIONAL_FEATURES
     + PRICE_DERIVED_FEATURES
+    + SENTIMENT_PROXY_FEATURES
 )
 
 # MC/Padé features — dynamically generated from MCPadeFeatureGenerator
@@ -199,117 +213,127 @@ def _get_mc_pade_generator():
 
 
 def get_symbol_universe(n_symbols: int = 100) -> List[str]:
-    """Get S&P 500 symbols, limited to n_symbols."""
-    try:
-        from quantum_alpha.data.collectors.market_data import DataCollector
+    """Get stock universe symbols, limited to n_symbols.
 
-        dc = DataCollector()
-        symbols = dc.get_sp500_symbols()
-        logger.info(f"Fetched {len(symbols)} S&P 500 symbols from Wikipedia")
-    except Exception as e:
-        logger.warning(f"Could not fetch S&P 500 list: {e}, using fallback")
-        symbols = [
-            "AAPL",
-            "MSFT",
-            "AMZN",
-            "GOOGL",
-            "META",
-            "NVDA",
-            "TSLA",
-            "BRK-B",
-            "JPM",
-            "V",
-            "UNH",
-            "XOM",
-            "PG",
-            "MA",
-            "HD",
-            "AVGO",
-            "LLY",
-            "COST",
-            "ABBV",
-            "WMT",
-            "DIS",
-            "KO",
-            "PEP",
-            "BAC",
-            "ADBE",
-            "CRM",
-            "NFLX",
-            "ORCL",
-            "CSCO",
-            "INTC",
-            "QCOM",
-            "TXN",
-            "TMO",
-            "LIN",
-            "ACN",
-            "MCD",
-            "NKE",
-            "UPS",
-            "HON",
-            "UNP",
-            "CAT",
-            "GE",
-            "IBM",
-            "AMD",
-            "AMAT",
-            "GS",
-            "MS",
-            "C",
-            "BA",
-            "RTX",
-            "LMT",
-            "GM",
-            "F",
-            "CVX",
-            "COP",
-            "SLB",
-            "SPGI",
-            "BKNG",
-            "SBUX",
-            "T",
-            "VZ",
-            "PFE",
-            "MRK",
-            "ABT",
-            "CVS",
-            "DHR",
-            "LOW",
-            "ISRG",
-            "GILD",
-            "MDT",
-            "INTU",
-            "NOW",
-            "PYPL",
-            "SNPS",
-            "VRTX",
-            "ADP",
-            "BLK",
-            "DE",
-            "MO",
-            "SO",
-            "DUK",
-            "NEE",
-            "PLD",
-            "AMT",
-            "CCI",
-            "SCHW",
-            "USB",
-            "AXP",
-            "TGT",
-            "CME",
-            "CB",
-            "ZTS",
-            "FDX",
-            "PNC",
-            "APD",
-            "EOG",
-            "LRCX",
-            "KLAC",
-            "REGN",
-            "ETN",
-        ]
+    Pulls from the unified universe module (S&P 500 + MidCap 400).
+    Falls back to Wikipedia, then to hardcoded list.
+    """
+    try:
+        from quantum_alpha.universe import get_sp500
+
+        symbols = get_sp500()
+        logger.info(f"Loaded {len(symbols)} S&P 500 symbols from universe module")
+    except ImportError:
+        try:
+            from quantum_alpha.data.collectors.market_data import DataCollector
+
+            dc = DataCollector()
+            symbols = dc.get_sp500_symbols()
+            logger.info(f"Fetched {len(symbols)} S&P 500 symbols from Wikipedia")
+        except Exception as e:
+            logger.warning(f"Could not fetch S&P 500 list: {e}, using fallback")
+            symbols = [
+                "AAPL",
+                "MSFT",
+                "AMZN",
+                "GOOGL",
+                "META",
+                "NVDA",
+                "TSLA",
+                "BRK-B",
+                "JPM",
+                "V",
+                "UNH",
+                "XOM",
+                "PG",
+                "MA",
+                "HD",
+                "AVGO",
+                "LLY",
+                "COST",
+                "ABBV",
+                "WMT",
+                "DIS",
+                "KO",
+                "PEP",
+                "BAC",
+                "ADBE",
+                "CRM",
+                "NFLX",
+                "ORCL",
+                "CSCO",
+                "INTC",
+                "QCOM",
+                "TXN",
+                "TMO",
+                "LIN",
+                "ACN",
+                "MCD",
+                "NKE",
+                "UPS",
+                "HON",
+                "UNP",
+                "CAT",
+                "GE",
+                "IBM",
+                "AMD",
+                "AMAT",
+                "GS",
+                "MS",
+                "C",
+                "BA",
+                "RTX",
+                "LMT",
+                "GM",
+                "F",
+                "CVX",
+                "COP",
+                "SLB",
+                "SPGI",
+                "BKNG",
+                "SBUX",
+                "T",
+                "VZ",
+                "PFE",
+                "MRK",
+                "ABT",
+                "CVS",
+                "DHR",
+                "LOW",
+                "ISRG",
+                "GILD",
+                "MDT",
+                "INTU",
+                "NOW",
+                "PYPL",
+                "SNPS",
+                "VRTX",
+                "ADP",
+                "BLK",
+                "DE",
+                "MO",
+                "SO",
+                "DUK",
+                "NEE",
+                "PLD",
+                "AMT",
+                "CCI",
+                "SCHW",
+                "USB",
+                "AXP",
+                "TGT",
+                "CME",
+                "CB",
+                "ZTS",
+                "FDX",
+                "PNC",
+                "APD",
+                "EOG",
+                "LRCX",
+                "KLAC",
+                "REGN",
+                "ETN",
+            ]
 
     # Also include SPY as the market benchmark
     if "SPY" not in symbols:
@@ -543,6 +567,124 @@ def compute_price_derived_features(df: pd.DataFrame) -> pd.DataFrame:
     return result
 
 
+def compute_sentiment_proxy_features(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Compute sentiment proxy features from price/volume data.
+
+    These features capture market reactions to news events (overnight gaps,
+    volume surges, fear/greed) even though we don't have the actual headlines.
+    During 2008 and 2022 crashes, these features show distinctive patterns:
+    - Large negative overnight gaps (panic selling on bad news)
+    - Extreme volume spikes (institutional selling)
+    - Persistent negative sentiment momentum (narrative shift)
+    - High news intensity (breaking news days)
+
+    ALL features are LAGGED by 1 day to prevent lookahead bias:
+    the model sees yesterday's sentiment proxy to predict today's move.
+
+    These are intentionally DIFFERENT from the existing price-derived features:
+    - `gap` exists but is raw; we add z-scored gap (distributional context)
+    - `volume_ratio_20d` exists; we add volume-gap interaction (sentiment proxy)
+    - We add composite indicators that combine multiple signals
+
+    Returns DataFrame with 10 sentiment proxy columns added.
+    """
+    result = df.copy()
+    close = df["close"]
+    open_ = df.get("open", close)
+    high = df.get("high", close)
+    low = df.get("low", close)
+    volume = df.get("volume", pd.Series(0, index=df.index))
+
+    returns = close.pct_change()
+
+    # ── Raw building blocks (not added to features, just intermediates) ──
+
+    # Overnight gap
+    overnight_gap = (open_ - close.shift(1)) / close.shift(1).clip(lower=1e-8)
+    overnight_gap_abs = overnight_gap.abs()
+
+    # Gap z-score (how unusual is today's gap vs recent history)
+    gap_mean = overnight_gap.rolling(20).mean()
+    gap_std = overnight_gap.rolling(20).std().clip(lower=1e-8)
+
+    # Volume surprise
+    vol_sma20 = volume.rolling(20).mean().clip(lower=1)
+    vol_surprise = (volume / vol_sma20) - 1.0
+
+    # Intraday range surprise
+    intraday_range = (high - low) / close.clip(lower=1e-8)
+    range_ma20 = intraday_range.rolling(20).mean().clip(lower=1e-8)
+    range_surprise = (intraday_range / range_ma20) - 1.0
+
+    # ── Sentiment proxy features (10 total) ──
+
+    # 1. Overnight gap z-score (how unusual is the gap)
+    # Different from raw `gap` — this normalizes by recent distribution
+    result["sent_overnight_gap_zscore"] = (overnight_gap - gap_mean) / gap_std
+
+    # 2. Composite sentiment proxy
+    # Positive gap + high volume = positive news; negative gap + high volume = negative news
+    sent_proxy = np.where(
+        vol_surprise > 0.5,  # High volume day
+        np.sign(overnight_gap) * overnight_gap_abs * 10,
+        overnight_gap * 5,
+    )
+    result["sent_proxy"] = pd.Series(sent_proxy, index=df.index).clip(-3, 3)
+
+    # 3-4. Sentiment moving averages (trend of sentiment)
+    result["sent_ma3"] = result["sent_proxy"].rolling(3).mean()
+    result["sent_ma7"] = result["sent_proxy"].rolling(7).mean()
+
+    # 5. Sentiment momentum (short-term vs medium-term sentiment)
+    # During crashes: ma3 << ma7 (accelerating negative sentiment)
+    result["sent_momentum"] = result["sent_ma3"] - result["sent_ma7"]
+
+    # 6. News intensity proxy (high volume + high range = major news day)
+    # Captures breaking-news events regardless of direction
+    news_intensity = vol_surprise.clip(lower=0) * range_surprise.clip(lower=0)
+    result["sent_news_intensity"] = news_intensity.clip(0, 10)
+
+    # 7. Fear/greed proxy
+    # Negative return + high volume + high range = fear (crash detection!)
+    # Positive return + high volume + high range = greed
+    fear_greed = np.where(
+        returns < 0,
+        -range_surprise.clip(lower=0) * vol_surprise.clip(lower=0),
+        range_surprise.clip(lower=0) * vol_surprise.clip(lower=0),
+    )
+    result["sent_fear_greed"] = pd.Series(fear_greed, index=df.index)
+
+    # 8. Volume-price divergence (smart money signal)
+    # High volume + negative return = distribution (insiders selling)
+    # High volume + positive return = accumulation (insiders buying)
+    result["sent_vol_price_divergence"] = vol_surprise * np.sign(-returns)
+
+    # 9. Gap fill rate (market reaction pattern)
+    # Gaps that fill = market disagreed with overnight news
+    gap_fill = np.where(
+        overnight_gap > 0,
+        (close < open_).astype(float),
+        (close > open_).astype(float),
+    )
+    result["sent_gap_fill_rate"] = (
+        pd.Series(gap_fill, index=df.index).rolling(20).mean()
+    )
+
+    # 10. Return acceleration (narrative shift detection)
+    # Sudden acceleration = new information hitting the market
+    result["sent_return_acceleration"] = returns - returns.shift(1)
+
+    # ── LAG ALL sentiment features by 1 day ──
+    # This is CRITICAL: prevents lookahead bias
+    # Model sees yesterday's sentiment to predict today's move
+    for col in SENTIMENT_PROXY_FEATURES:
+        if col in result.columns:
+            result[col] = result[col].shift(1)
+
+    return result
+
+
 def compute_features_single_symbol(
     symbol: str,
     df: pd.DataFrame,
@@ -575,6 +717,15 @@ def compute_features_single_symbol(
                 featured = mc_gen.generate_features_fast(featured)
             except Exception as e:
                 logger.debug(f"MC/Padé features failed for {symbol}: {e}")
+
+        # Step 5.5: Sentiment proxy features (price-implied news sentiment)
+        # These capture overnight gap reactions, volume-news interactions,
+        # fear/greed indicators, and narrative shift detection.
+        # ALL lagged by 1 day inside compute_sentiment_proxy_features().
+        try:
+            featured = compute_sentiment_proxy_features(featured)
+        except Exception as e:
+            logger.debug(f"Sentiment proxy features failed for {symbol}: {e}")
 
         # Step 6: Target -- next-day direction (1 = up, 0 = down)
         future_return = (
@@ -733,6 +884,12 @@ def build_feature_matrix(
     # Step 3: Concatenate
     combined = pd.concat(all_frames, axis=0)
     combined = combined.sort_index()
+
+    # Convert feature columns to float32 to reduce memory (~50% savings)
+    feature_cols = [c for c in combined.columns if c not in ["symbol"]]
+    for col in feature_cols:
+        if combined[col].dtype == np.float64:
+            combined[col] = combined[col].astype(np.float32)
 
     logger.info(
         f"Feature matrix: {len(combined)} samples, {len(combined.columns)} columns"

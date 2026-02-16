@@ -1,0 +1,334 @@
+13:26:24 [INFO] Feature list: 75 features (MC/Padé DISABLED)
+13:26:24 [INFO] Sentiment features: ['sent_overnight_gap_zscore', 'sent_proxy', 'sent_ma3', 'sent_ma7', 'sent_momentum', 'sent_news_intensity', 'sent_fear_greed', 'sent_vol_price_divergence', 'sent_gap_fill_rate', 'sent_return_acceleration']
+13:26:24 [INFO] Loaded 99 symbols from cache
+13:26:24 [INFO] Computing features for 99 symbols...
+13:26:24 [INFO] Computing cross-sectional features...
+13:28:47 [INFO]   [20/99] Features computed, 5061 samples from CAT
+13:30:53 [INFO]   [40/99] Features computed, 5061 samples from GOOGL
+13:33:02 [INFO]   [60/99] Features computed, 5061 samples from MO
+13:35:18 [INFO]   [80/99] Features computed, 5061 samples from SLB
+13:37:22 [INFO] Feature matrix: 485428 samples, 78 columns
+13:37:22 [INFO]   Date range: 2006-01-03 00:00:00 to 2026-02-13 00:00:00
+13:37:22 [INFO]   Symbols: 99
+13:37:22 [INFO]   Target distribution: up=51.9%, down=48.1%
+13:37:22 [INFO]   Available features: 75 / 75
+13:37:23 [INFO]   Saved to /home/regulus/Trade/quantum_alpha/data_store/meta_ensemble/features/feature_matrix.pkl (157.8 MB)
+13:37:23 [INFO] Feature computation took 11.0 minutes
+13:37:23 [INFO] Feature matrix memory: 180.6 MB
+13:37:23 [INFO] Sentiment features present: 10/10
+13:37:23 [INFO] Starting walk-forward training...
+13:37:25 [INFO] Training with 75 features on 485428 samples
+13:37:25 [INFO] Date range: 2006-01-03 00:00:00 to 2026-02-13 00:00:00 (5061 unique dates)
+13:37:25 [INFO] Walk-forward: 29 folds
+13:37:25 [INFO] 
+--- Fold 1/29 ---
+13:37:25 [INFO]   Train: ... to 2011-01-04
+13:37:25 [INFO]   Test:  2011-01-04 to 2012-01-04
+13:37:25 [INFO]   Train: 113606 samples, Test: 23440 samples
+13:37:25 [INFO]   Train target: up=50.5%, Test target: up=50.9%
+13:37:32 [INFO]   Accuracy: 50.7% (majority: 50.9%, edge: -0.2%)
+13:37:32 [INFO]   AUC: 0.5163, LogLoss: 0.6972
+13:37:32 [INFO]   Return: +405.58%, Sharpe: 0.83
+13:37:32 [INFO]   Train time: 6.8s, Iterations: 333
+13:37:32 [INFO] 
+--- Fold 2/29 ---
+13:37:32 [INFO]   Train: ... to 2011-07-06
+13:37:32 [INFO]   Test:  2011-07-06 to 2012-07-05
+13:37:32 [INFO]   Train: 125203 samples, Test: 23687 samples
+13:37:32 [INFO]   Train target: up=50.6%, Test target: up=50.8%
+13:37:44 [INFO]   Accuracy: 50.9% (majority: 50.8%, edge: +0.1%)
+13:37:44 [INFO]   AUC: 0.5156, LogLoss: 0.6985
+13:37:44 [INFO]   Return: +377.40%, Sharpe: 0.70
+13:37:44 [INFO]   Train time: 11.3s, Iterations: 446
+13:37:44 [INFO] 
+--- Fold 3/29 ---
+13:37:44 [INFO]   Train: ... to 2012-01-04
+13:37:44 [INFO]   Test:  2012-01-04 to 2013-01-07
+13:37:44 [INFO]   Train: 136952 samples, Test: 23782 samples
+13:37:44 [INFO]   Train target: up=50.5%, Test target: up=51.3%
+13:37:56 [INFO]   Accuracy: 51.5% (majority: 51.3%, edge: +0.2%)
+13:37:56 [INFO]   AUC: 0.5173, LogLoss: 0.6963
+13:37:56 [INFO]   Return: +74.47%, Sharpe: 0.22
+13:37:56 [INFO]   Train time: 10.8s, Iterations: 500
+13:37:56 [INFO] 
+--- Fold 4/29 ---
+13:37:56 [INFO]   Train: ... to 2012-07-05
+13:37:56 [INFO]   Test:  2012-07-05 to 2013-07-09
+13:37:56 [INFO]   Train: 148796 samples, Test: 23819 samples
+13:37:56 [INFO]   Train target: up=50.7%, Test target: up=52.7%
+13:38:09 [INFO]   Accuracy: 51.8% (majority: 52.7%, edge: -0.9%)
+13:38:09 [INFO]   AUC: 0.5267, LogLoss: 0.6933
+13:38:09 [INFO]   Return: +151.23%, Sharpe: 0.53
+13:38:09 [INFO]   Train time: 12.4s, Iterations: 500
+13:38:09 [INFO] 
+--- Fold 5/29 ---
+13:38:09 [INFO]   Train: ... to 2013-01-07
+13:38:09 [INFO]   Test:  2013-01-07 to 2014-01-07
+13:38:09 [INFO]   Train: 160640 samples, Test: 24075 samples
+13:38:09 [INFO]   Train target: up=50.6%, Test target: up=53.6%
+13:38:21 [INFO]   Accuracy: 51.1% (majority: 53.6%, edge: -2.4%)
+13:38:21 [INFO]   AUC: 0.5220, LogLoss: 0.6946
+13:38:21 [INFO]   Return: +134.15%, Sharpe: 0.51
+13:38:21 [INFO]   Train time: 11.2s, Iterations: 416
+13:38:21 [INFO] 
+--- Fold 6/29 ---
+13:38:21 [INFO]   Train: ... to 2013-07-09
+13:38:21 [INFO]   Test:  2013-07-09 to 2014-07-09
+13:38:21 [INFO]   Train: 172519 samples, Test: 24527 samples
+13:38:21 [INFO]   Train target: up=50.9%, Test target: up=52.6%
+13:38:34 [INFO]   Accuracy: 52.0% (majority: 52.6%, edge: -0.6%)
+13:38:34 [INFO]   AUC: 0.5201, LogLoss: 0.6943
+13:38:34 [INFO]   Return: +153.69%, Sharpe: 0.63
+13:38:34 [INFO]   Train time: 12.5s, Iterations: 468
+13:38:34 [INFO] 
+--- Fold 7/29 ---
+13:38:34 [INFO]   Train: ... to 2014-01-07
+13:38:34 [INFO]   Test:  2014-01-07 to 2015-01-07
+13:38:34 [INFO]   Train: 184618 samples, Test: 24776 samples
+13:38:34 [INFO]   Train target: up=51.0%, Test target: up=53.1%
+13:38:49 [INFO]   Accuracy: 51.5% (majority: 53.1%, edge: -1.6%)
+13:38:49 [INFO]   AUC: 0.5154, LogLoss: 0.6957
+13:38:49 [INFO]   Return: +102.15%, Sharpe: 0.40
+13:38:49 [INFO]   Train time: 14.7s, Iterations: 492
+13:38:49 [INFO] 
+--- Fold 8/29 ---
+13:38:49 [INFO]   Train: ... to 2014-07-09
+13:38:49 [INFO]   Test:  2014-07-09 to 2015-07-09
+13:38:49 [INFO]   Train: 196948 samples, Test: 24794 samples
+13:38:49 [INFO]   Train target: up=51.2%, Test target: up=51.4%
+13:39:05 [INFO]   Accuracy: 51.4% (majority: 51.4%, edge: +0.0%)
+13:39:05 [INFO]   AUC: 0.5165, LogLoss: 0.6958
+13:39:05 [INFO]   Return: +101.26%, Sharpe: 0.42
+13:39:05 [INFO]   Train time: 15.4s, Iterations: 500
+13:39:05 [INFO] 
+--- Fold 9/29 ---
+13:39:05 [INFO]   Train: ... to 2015-01-07
+13:39:05 [INFO]   Test:  2015-01-07 to 2016-01-07
+13:39:06 [INFO]   Train: 209296 samples, Test: 24794 samples
+13:39:06 [INFO]   Train target: up=51.2%, Test target: up=49.5%
+13:39:22 [INFO]   Accuracy: 51.2% (majority: 50.5%, edge: +0.8%)
+13:39:22 [INFO]   AUC: 0.5207, LogLoss: 0.6964
+13:39:22 [INFO]   Return: -36.47%, Sharpe: -0.12
+13:39:22 [INFO]   Train time: 15.8s, Iterations: 500
+13:39:22 [INFO] 
+--- Fold 10/29 ---
+13:39:22 [INFO]   Train: ... to 2015-07-09
+13:39:22 [INFO]   Test:  2015-07-09 to 2016-07-08
+13:39:22 [INFO]   Train: 221644 samples, Test: 24798 samples
+13:39:22 [INFO]   Train target: up=51.2%, Test target: up=52.1%
+13:39:40 [INFO]   Accuracy: 51.8% (majority: 52.1%, edge: -0.3%)
+13:39:40 [INFO]   AUC: 0.5226, LogLoss: 0.6952
+13:39:40 [INFO]   Return: +5.73%, Sharpe: 0.02
+13:39:40 [INFO]   Train time: 16.9s, Iterations: 500
+13:39:40 [INFO] 
+--- Fold 11/29 ---
+13:39:40 [INFO]   Train: ... to 2016-01-07
+13:39:40 [INFO]   Test:  2016-01-07 to 2017-01-06
+13:39:40 [INFO]   Train: 233992 samples, Test: 24924 samples
+13:39:40 [INFO]   Train target: up=51.1%, Test target: up=53.0%
+13:39:58 [INFO]   Accuracy: 51.4% (majority: 53.0%, edge: -1.6%)
+13:39:58 [INFO]   AUC: 0.5285, LogLoss: 0.6921
+13:39:58 [INFO]   Return: +152.24%, Sharpe: 0.51
+13:39:58 [INFO]   Train time: 17.2s, Iterations: 385
+13:39:58 [INFO] 
+--- Fold 12/29 ---
+13:39:58 [INFO]   Train: ... to 2016-07-08
+13:39:58 [INFO]   Test:  2016-07-08 to 2017-07-10
+13:39:59 [INFO]   Train: 246343 samples, Test: 25047 samples
+13:39:59 [INFO]   Train target: up=51.2%, Test target: up=52.5%
+13:40:21 [INFO]   Accuracy: 51.7% (majority: 52.5%, edge: -0.8%)
+13:40:21 [INFO]   AUC: 0.5204, LogLoss: 0.6938
+13:40:21 [INFO]   Return: +96.03%, Sharpe: 0.41
+13:40:21 [INFO]   Train time: 21.5s, Iterations: 496
+13:40:21 [INFO] 
+--- Fold 13/29 ---
+13:40:21 [INFO]   Train: ... to 2017-01-06
+13:40:21 [INFO]   Test:  2017-01-06 to 2018-01-08
+13:40:21 [INFO]   Train: 258817 samples, Test: 25047 samples
+13:40:21 [INFO]   Train target: up=51.3%, Test target: up=54.4%
+13:40:40 [INFO]   Accuracy: 50.8% (majority: 54.4%, edge: -3.6%)
+13:40:40 [INFO]   AUC: 0.5180, LogLoss: 0.6957
+13:40:40 [INFO]   Return: +59.34%, Sharpe: 0.30
+13:40:40 [INFO]   Train time: 18.0s, Iterations: 500
+13:40:40 [INFO] 
+--- Fold 14/29 ---
+13:40:40 [INFO]   Train: ... to 2017-07-10
+13:40:40 [INFO]   Test:  2017-07-10 to 2018-07-10
+13:40:40 [INFO]   Train: 271291 samples, Test: 25047 samples
+13:40:40 [INFO]   Train target: up=51.4%, Test target: up=54.2%
+13:41:00 [INFO]   Accuracy: 50.6% (majority: 54.2%, edge: -3.5%)
+13:41:00 [INFO]   AUC: 0.5119, LogLoss: 0.6952
+13:41:00 [INFO]   Return: +76.94%, Sharpe: 0.31
+13:41:00 [INFO]   Train time: 19.6s, Iterations: 500
+13:41:00 [INFO] 
+--- Fold 15/29 ---
+13:41:00 [INFO]   Train: ... to 2018-01-08
+13:41:00 [INFO]   Test:  2018-01-08 to 2019-01-09
+13:41:01 [INFO]   Train: 283765 samples, Test: 25047 samples
+13:41:01 [INFO]   Train target: up=51.5%, Test target: up=52.3%
+13:41:23 [INFO]   Accuracy: 51.2% (majority: 52.3%, edge: -1.1%)
+13:41:23 [INFO]   AUC: 0.5119, LogLoss: 0.6952
+13:41:23 [INFO]   Return: +226.65%, Sharpe: 0.57
+13:41:23 [INFO]   Train time: 21.3s, Iterations: 500
+13:41:23 [INFO] 
+--- Fold 16/29 ---
+13:41:23 [INFO]   Train: ... to 2018-07-10
+13:41:23 [INFO]   Test:  2018-07-10 to 2019-07-11
+13:41:23 [INFO]   Train: 296239 samples, Test: 25047 samples
+13:41:23 [INFO]   Train target: up=51.6%, Test target: up=54.0%
+13:41:42 [INFO]   Accuracy: 50.7% (majority: 54.0%, edge: -3.3%)
+13:41:42 [INFO]   AUC: 0.5036, LogLoss: 0.6961
+13:41:42 [INFO]   Return: +163.97%, Sharpe: 0.45
+13:41:42 [INFO]   Train time: 17.8s, Iterations: 417
+13:41:42 [INFO] 
+--- Fold 17/29 ---
+13:41:42 [INFO]   Train: ... to 2019-01-09
+13:41:42 [INFO]   Test:  2019-01-09 to 2020-01-09
+13:41:42 [INFO]   Train: 308713 samples, Test: 25047 samples
+13:41:42 [INFO]   Train target: up=51.6%, Test target: up=55.3%
+13:42:05 [INFO]   Accuracy: 50.9% (majority: 55.3%, edge: -4.4%)
+13:42:05 [INFO]   AUC: 0.5167, LogLoss: 0.6961
+13:42:05 [INFO]   Return: -4.33%, Sharpe: -0.02
+13:42:05 [INFO]   Train time: 21.7s, Iterations: 500
+13:42:05 [INFO] 
+--- Fold 18/29 ---
+13:42:05 [INFO]   Train: ... to 2019-07-11
+13:42:05 [INFO]   Test:  2019-07-11 to 2020-07-10
+13:42:05 [INFO]   Train: 321187 samples, Test: 25047 samples
+13:42:05 [INFO]   Train target: up=51.8%, Test target: up=52.6%
+13:42:30 [INFO]   Accuracy: 52.6% (majority: 52.6%, edge: -0.0%)
+13:42:30 [INFO]   AUC: 0.5359, LogLoss: 0.6953
+13:42:30 [INFO]   Return: +1054.86%, Sharpe: 0.92
+13:42:30 [INFO]   Train time: 24.0s, Iterations: 500
+13:42:30 [INFO] 
+--- Fold 19/29 ---
+13:42:30 [INFO]   Train: ... to 2020-01-09
+13:42:30 [INFO]   Test:  2020-01-09 to 2021-01-08
+13:42:30 [INFO]   Train: 333661 samples, Test: 25047 samples
+13:42:30 [INFO]   Train target: up=51.9%, Test target: up=52.0%
+13:42:54 [INFO]   Accuracy: 51.5% (majority: 52.0%, edge: -0.6%)
+13:42:54 [INFO]   AUC: 0.5291, LogLoss: 0.7007
+13:42:54 [INFO]   Return: +621.48%, Sharpe: 0.53
+13:42:54 [INFO]   Train time: 23.5s, Iterations: 500
+13:42:54 [INFO] 
+--- Fold 20/29 ---
+13:42:54 [INFO]   Train: ... to 2020-07-10
+13:42:54 [INFO]   Test:  2020-07-10 to 2021-07-12
+13:42:54 [INFO]   Train: 346135 samples, Test: 25047 samples
+13:42:54 [INFO]   Train target: up=51.9%, Test target: up=53.2%
+13:43:19 [INFO]   Accuracy: 51.9% (majority: 53.2%, edge: -1.2%)
+13:43:19 [INFO]   AUC: 0.5293, LogLoss: 0.6930
+13:43:19 [INFO]   Return: +193.34%, Sharpe: 0.54
+13:43:19 [INFO]   Train time: 23.9s, Iterations: 500
+13:43:19 [INFO] 
+--- Fold 21/29 ---
+13:43:19 [INFO]   Train: ... to 2021-01-08
+13:43:19 [INFO]   Test:  2021-01-08 to 2022-01-07
+13:43:19 [INFO]   Train: 358609 samples, Test: 25047 samples
+13:43:19 [INFO]   Train target: up=51.9%, Test target: up=53.0%
+13:43:46 [INFO]   Accuracy: 51.0% (majority: 53.0%, edge: -2.0%)
+13:43:46 [INFO]   AUC: 0.5058, LogLoss: 0.6951
+13:43:46 [INFO]   Return: +132.35%, Sharpe: 0.43
+13:43:46 [INFO]   Train time: 25.6s, Iterations: 500
+13:43:46 [INFO] 
+--- Fold 22/29 ---
+13:43:46 [INFO]   Train: ... to 2021-07-12
+13:43:46 [INFO]   Test:  2021-07-12 to 2022-07-12
+13:43:46 [INFO]   Train: 371083 samples, Test: 25047 samples
+13:43:46 [INFO]   Train target: up=52.0%, Test target: up=50.1%
+13:44:14 [INFO]   Accuracy: 49.7% (majority: 50.1%, edge: -0.4%)
+13:44:14 [INFO]   AUC: 0.4969, LogLoss: 0.7000
+13:44:14 [INFO]   Return: +19.81%, Sharpe: 0.05
+13:44:14 [INFO]   Train time: 26.6s, Iterations: 500
+13:44:14 [INFO] 
+--- Fold 23/29 ---
+13:44:14 [INFO]   Train: ... to 2022-01-07
+13:44:14 [INFO]   Test:  2022-01-07 to 2023-01-10
+13:44:14 [INFO]   Train: 383557 samples, Test: 25047 samples
+13:44:14 [INFO]   Train target: up=52.0%, Test target: up=49.6%
+13:44:40 [INFO]   Accuracy: 49.6% (majority: 50.4%, edge: -0.8%)
+13:44:40 [INFO]   AUC: 0.4948, LogLoss: 0.7024
+13:44:40 [INFO]   Return: +38.43%, Sharpe: 0.08
+13:44:40 [INFO]   Train time: 25.6s, Iterations: 500
+13:44:40 [INFO] 
+--- Fold 24/29 ---
+13:44:40 [INFO]   Train: ... to 2022-07-12
+13:44:40 [INFO]   Test:  2022-07-12 to 2023-07-13
+13:44:41 [INFO]   Train: 396031 samples, Test: 25047 samples
+13:44:41 [INFO]   Train target: up=51.8%, Test target: up=51.6%
+13:45:10 [INFO]   Accuracy: 49.9% (majority: 51.6%, edge: -1.7%)
+13:45:10 [INFO]   AUC: 0.4956, LogLoss: 0.6979
+13:45:10 [INFO]   Return: -7.07%, Sharpe: -0.02
+13:45:10 [INFO]   Train time: 28.4s, Iterations: 500
+13:45:10 [INFO] 
+--- Fold 25/29 ---
+13:45:10 [INFO]   Train: ... to 2023-01-10
+13:45:10 [INFO]   Test:  2023-01-10 to 2024-01-11
+13:45:10 [INFO]   Train: 408505 samples, Test: 25047 samples
+13:45:10 [INFO]   Train target: up=51.8%, Test target: up=52.1%
+13:45:40 [INFO]   Accuracy: 50.6% (majority: 52.1%, edge: -1.5%)
+13:45:40 [INFO]   AUC: 0.4999, LogLoss: 0.6957
+13:45:40 [INFO]   Return: -20.71%, Sharpe: -0.08
+13:45:40 [INFO]   Train time: 29.0s, Iterations: 500
+13:45:40 [INFO] 
+--- Fold 26/29 ---
+13:45:40 [INFO]   Train: ... to 2023-07-13
+13:45:40 [INFO]   Test:  2023-07-13 to 2024-07-15
+13:45:40 [INFO]   Train: 420979 samples, Test: 25047 samples
+13:45:40 [INFO]   Train target: up=51.8%, Test target: up=52.9%
+13:46:11 [INFO]   Accuracy: 50.2% (majority: 52.9%, edge: -2.7%)
+13:46:11 [INFO]   AUC: 0.4962, LogLoss: 0.6956
+13:46:11 [INFO]   Return: +0.87%, Sharpe: 0.00
+13:46:11 [INFO]   Train time: 30.0s, Iterations: 500
+13:46:11 [INFO] 
+--- Fold 27/29 ---
+13:46:11 [INFO]   Train: ... to 2024-01-11
+13:46:11 [INFO]   Test:  2024-01-11 to 2025-01-14
+13:46:12 [INFO]   Train: 433453 samples, Test: 25047 samples
+13:46:12 [INFO]   Train target: up=51.8%, Test target: up=53.0%
+13:46:52 [INFO]   Accuracy: 50.6% (majority: 53.0%, edge: -2.4%)
+13:46:52 [INFO]   AUC: 0.4980, LogLoss: 0.6953
+13:46:52 [INFO]   Return: +19.29%, Sharpe: 0.08
+13:46:52 [INFO]   Train time: 38.7s, Iterations: 500
+13:46:52 [INFO] 
+--- Fold 28/29 ---
+13:46:52 [INFO]   Train: ... to 2024-07-15
+13:46:52 [INFO]   Test:  2024-07-15 to 2025-07-17
+13:46:52 [INFO]   Train: 445927 samples, Test: 25047 samples
+13:46:52 [INFO]   Train target: up=51.9%, Test target: up=53.0%
+13:47:36 [INFO]   Accuracy: 51.0% (majority: 53.0%, edge: -2.0%)
+13:47:36 [INFO]   AUC: 0.5078, LogLoss: 0.6948
+13:47:36 [INFO]   Return: +17.30%, Sharpe: 0.05
+13:47:36 [INFO]   Train time: 42.5s, Iterations: 500
+13:47:36 [INFO] 
+--- Fold 29/29 ---
+13:47:36 [INFO]   Train: ... to 2025-01-14
+13:47:36 [INFO]   Test:  2025-01-14 to 2026-01-15
+13:47:36 [INFO]   Train: 458401 samples, Test: 25047 samples
+13:47:36 [INFO]   Train target: up=51.9%, Test target: up=52.7%
+13:48:13 [INFO]   Accuracy: 50.9% (majority: 52.7%, edge: -1.7%)
+13:48:13 [INFO]   AUC: 0.5061, LogLoss: 0.6955
+13:48:13 [INFO]   Return: +65.89%, Sharpe: 0.18
+13:48:13 [INFO]   Train time: 36.0s, Iterations: 500
+13:48:13 [INFO] 
+============================================================
+13:48:13 [INFO] WALK-FORWARD RESULTS (29 folds)
+13:48:13 [INFO] ============================================================
+13:48:13 [INFO]   Avg Accuracy:  51.1%
+13:48:13 [INFO]   Avg Edge:      -1.4%
+13:48:13 [INFO]   Avg AUC:       0.5138
+13:48:13 [INFO]   Avg Sharpe:    0.32
+13:48:13 [INFO]   Avg Return:    +150.89%
+13:48:14 [INFO] 
+Training final model on ALL 485428 samples...
+13:48:51 [INFO] Final model saved to /home/regulus/Trade/quantum_alpha/models/checkpoints/meta_ensemble/meta_ensemble_model.pkl
+13:48:51 [INFO] Results saved to /home/regulus/Trade/quantum_alpha/models/checkpoints/meta_ensemble/walk_forward_results.json
+13:48:51 [INFO] Predictions saved to /home/regulus/Trade/quantum_alpha/models/checkpoints/meta_ensemble/walk_forward_predictions.pkl
+13:48:51 [INFO] Total pipeline took 22.5 minutes
+13:48:51 [INFO] === RESULTS WITH SENTIMENT FEATURES ===
+13:48:51 [INFO]   Accuracy: 51.1%
+13:48:51 [INFO]   Edge:     -1.4%
+13:48:51 [INFO]   AUC:      0.5138
+13:48:51 [INFO]   Sharpe:   0.32
+13:48:51 [INFO]   Return:   +150.89%
+13:48:51 [INFO] TRAINING COMPLETE

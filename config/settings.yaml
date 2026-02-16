@@ -6,8 +6,9 @@ data:
   primary_source: "yfinance"
   cache_enabled: true
   cache_ttl_hours: 24
-  universe_limit: 25
+  universe_limit: 0  # 0 = no limit. Use --symbols SP500/FULL/LIQUID tokens in CLI
   default_universe:
+    # Quick-test preset (10 tickers). For full universe, use: --symbols FULL
     - "SPY"
     - "QQQ"
     - "IWM"

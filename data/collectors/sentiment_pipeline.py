@@ -55,9 +55,12 @@ DB_DIR = Path(__file__).parent.parent.parent / "data_store"
 DB_PATH = DB_DIR / "sentiment.db"
 
 # Symbol -> search queries for Google News
+# For symbols not in this dict, the fallback is: [f'"{symbol} stock"']
+# Only define entries here when the ticker alone gives poor search results.
 SYMBOL_QUERIES = {
     "SPY": ['"S&P 500"', '"SPY stock"', '"stock market"'],
     "QQQ": ['"Nasdaq"', '"QQQ stock"', '"tech stocks"'],
+    "IWM": ['"Russell 2000"', '"IWM ETF"', '"small cap stocks"'],
     "AAPL": ['"Apple stock"', '"AAPL"', '"Apple Inc"'],
     "MSFT": ['"Microsoft stock"', '"MSFT"', '"Microsoft Corp"'],
     "AMZN": ['"Amazon stock"', '"AMZN"', '"Amazon.com"'],
@@ -65,6 +68,30 @@ SYMBOL_QUERIES = {
     "TSLA": ['"Tesla stock"', '"TSLA"', '"Tesla Inc"'],
     "META": ['"Meta stock"', '"META"', '"Meta Platforms"'],
     "NVDA": ['"Nvidia stock"', '"NVDA"', '"Nvidia Corp"'],
+    "BRK-B": ['"Berkshire Hathaway"', '"BRK stock"', '"Warren Buffett"'],
+    "JPM": ['"JPMorgan stock"', '"JPM"', '"JPMorgan Chase"'],
+    "V": ['"Visa stock"', '"Visa Inc"'],
+    "UNH": ['"UnitedHealth stock"', '"UNH"', '"UnitedHealth Group"'],
+    "XOM": ['"Exxon stock"', '"XOM"', '"ExxonMobil"'],
+    "LLY": ['"Eli Lilly stock"', '"LLY"', '"Eli Lilly"'],
+    "AVGO": ['"Broadcom stock"', '"AVGO"', '"Broadcom Inc"'],
+    "MA": ['"Mastercard stock"', '"MA"', '"Mastercard Inc"'],
+    "HD": ['"Home Depot stock"', '"HD"', '"Home Depot"'],
+    "PG": ['"Procter Gamble stock"', '"PG"', '"Procter & Gamble"'],
+    "COST": ['"Costco stock"', '"COST"', '"Costco Wholesale"'],
+    "ABBV": ['"AbbVie stock"', '"ABBV"', '"AbbVie Inc"'],
+    "WMT": ['"Walmart stock"', '"WMT"', '"Walmart Inc"'],
+    "CRM": ['"Salesforce stock"', '"CRM"', '"Salesforce Inc"'],
+    "BAC": ['"Bank of America stock"', '"BAC"', '"Bank of America"'],
+    "AMD": ['"AMD stock"', '"AMD"', '"Advanced Micro Devices"'],
+    "NFLX": ['"Netflix stock"', '"NFLX"', '"Netflix Inc"'],
+    "DIS": ['"Disney stock"', '"DIS"', '"Walt Disney"'],
+    "KO": ['"Coca-Cola stock"', '"KO"', '"Coca-Cola Company"'],
+    "PEP": ['"PepsiCo stock"', '"PEP"', '"PepsiCo Inc"'],
+    "BA": ['"Boeing stock"', '"BA"', '"Boeing Company"'],
+    "GS": ['"Goldman Sachs stock"', '"GS"', '"Goldman Sachs"'],
+    "GM": ['"General Motors stock"', '"GM"', '"General Motors"'],
+    "F": ['"Ford stock"', '"Ford Motor"'],
 }
 
 # Source credibility weights

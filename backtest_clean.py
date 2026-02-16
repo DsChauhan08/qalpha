@@ -139,20 +139,25 @@ def backtest_equal_weight(
     end_date: str | None = None,
 ) -> dict:
     """
-    Simple equal-weight portfolio backtest (vectorized for speed).
+    Simple equal-weight portfolio backtest.
 
-    On each trading day:
+    When hold_days=1: Vectorized daily rebalance (fast).
+    When hold_days>1: Day-by-day simulation that holds positions for N days
+                      and only rebalances when positions expire.
+
+    On each rebalance day:
       1. Rank active signals by confidence
       2. Select top-K (or all, up to max_positions)
       3. Equal-weight allocation
-      4. Compute returns after transaction costs
+      4. Hold for hold_days trading days
+      5. Compute returns after transaction costs
 
     Args:
         df: DataFrame with 'date', 'symbol', 'raw_signal', 'confidence',
             'forward_return', 'y_proba', 'y_true'
         max_positions: Maximum concurrent positions
         commission_bps: Commission in basis points (each way). 0 = free.
-        hold_days: Minimum holding period in days
+        hold_days: Minimum holding period in days (rebalance every N days)
         top_k: If set, only trade top-K most confident signals per day
         initial_capital: Starting capital for equity curve
         start_date: Filter predictions from this date
@@ -172,9 +177,26 @@ def backtest_equal_weight(
     # Drop NaN forward returns
     df = df.dropna(subset=["forward_return"])
 
-    # --- Vectorized approach: rank within each day, filter top-K ---
+    if hold_days <= 1:
+        return _backtest_daily_rebalance(
+            df, max_positions, commission_bps, top_k, initial_capital
+        )
+    else:
+        return _backtest_hold_period(
+            df, max_positions, commission_bps, hold_days, top_k, initial_capital
+        )
 
-    # Only keep active signals
+
+def _backtest_daily_rebalance(
+    df: pd.DataFrame,
+    max_positions: int,
+    commission_bps: float,
+    top_k: int | None,
+    initial_capital: float,
+) -> dict:
+    """Original vectorized daily-rebalance backtest (hold_days=1)."""
+
+    # --- Vectorized approach: rank within each day, filter top-K ---
     active = df[df["raw_signal"] != 0.0].copy()
 
     if len(active) == 0:
@@ -185,7 +207,6 @@ def backtest_equal_weight(
         ascending=False, method="first"
     )
 
-    # Apply top-K and max_positions cap
     cap = max_positions
     if top_k is not None:
         cap = min(cap, top_k)
@@ -220,19 +241,16 @@ def backtest_equal_weight(
         .sort_index()
     )
 
-    # Fill missing dates (days with no active signals = 0 return)
+    # Fill missing dates
     all_dates = sorted(df["date"].unique())
     date_idx = pd.DatetimeIndex(all_dates)
     daily = daily.reindex(date_idx, fill_value=0)
     daily.index.name = "date"
 
     # --- Transaction costs ---
-    # Approximate turnover: for simplicity, compare active symbol sets
-    # between consecutive days. This is fast enough.
     commission_rate = commission_bps / 10_000.0
 
-    if commission_rate > 0 and hold_days <= 1:
-        # Build per-day symbol sets for turnover calculation
+    if commission_rate > 0:
         day_symbols = active.groupby("date").apply(
             lambda g: set(zip(g["symbol"], g["raw_signal"])), include_groups=False
         )
@@ -244,7 +262,6 @@ def backtest_equal_weight(
             curr_set = day_symbols.get(date, set()) or set()
             if not isinstance(curr_set, set):
                 curr_set = set()
-            # Turnover = positions that changed
             changed = len(curr_set.symmetric_difference(prev_set))
             n_pos = daily.iloc[i]["n_positions"]
             w = 1.0 / max(n_pos, 1)
@@ -281,7 +298,7 @@ def backtest_equal_weight(
     equity = initial_capital * np.cumprod(1 + daily_net_returns)
 
     n_dates = len(date_idx)
-    daily_turnover_arr = np.zeros(n_dates)  # simplified
+    daily_turnover_arr = np.zeros(n_dates)
     daily_n_positions = daily["n_positions"].values
 
     results = compute_metrics(
@@ -292,6 +309,177 @@ def backtest_equal_weight(
         trade_df,
         daily_n_positions,
         daily_turnover_arr,
+        initial_capital,
+        n_dates,
+    )
+
+    return results
+
+
+def _backtest_hold_period(
+    df: pd.DataFrame,
+    max_positions: int,
+    commission_bps: float,
+    hold_days: int,
+    top_k: int | None,
+    initial_capital: float,
+) -> dict:
+    """
+    Day-by-day simulation with proper hold period enforcement.
+
+    Rebalances only every hold_days trading days:
+    - On rebalance days: select new positions from available signals
+    - On non-rebalance days: hold existing positions, use their forward_return
+    - Track turnover properly for commission calculation
+    """
+    commission_rate = commission_bps / 10_000.0
+    cap = max_positions
+    if top_k is not None:
+        cap = min(cap, top_k)
+
+    # Build lookup: date -> list of (symbol, signal, confidence, forward_return, y_true)
+    active = df[df["raw_signal"] != 0.0].copy()
+    if len(active) == 0:
+        return {"error": "No active signals after filtering"}
+
+    all_dates = sorted(df["date"].unique())
+    n_dates = len(all_dates)
+
+    # Build return lookup: (date, symbol) -> forward_return
+    # This gives us the return for holding any symbol on any given day
+    return_lookup = {}
+    signal_lookup = {}
+    ytrue_lookup = {}
+    for _, row in df.iterrows():
+        key = (row["date"], row["symbol"])
+        return_lookup[key] = row["forward_return"]
+        signal_lookup[key] = row["raw_signal"]
+        ytrue_lookup[key] = row["y_true"]
+
+    # Build signal candidates by date
+    date_candidates = {}
+    for date in all_dates:
+        day_active = active[active["date"] == date].copy()
+        if len(day_active) == 0:
+            date_candidates[date] = []
+            continue
+        # Rank by confidence, take top-K
+        day_active = day_active.sort_values("confidence", ascending=False)
+        candidates = []
+        for _, row in day_active.head(cap).iterrows():
+            candidates.append(
+                {
+                    "symbol": row["symbol"],
+                    "signal": row["raw_signal"],
+                    "confidence": row["confidence"],
+                }
+            )
+        date_candidates[date] = candidates
+
+    # Day-by-day simulation
+    daily_returns = np.zeros(n_dates)
+    daily_costs = np.zeros(n_dates)
+    daily_n_positions = np.zeros(n_dates)
+    daily_turnover = np.zeros(n_dates)
+
+    current_positions = {}  # symbol -> {signal, entry_day_idx, confidence}
+    trade_records = []
+
+    for i, date in enumerate(all_dates):
+        # Check if we need to rebalance
+        rebalance = False
+        if i == 0:
+            rebalance = True
+        elif i % hold_days == 0:
+            rebalance = True
+        # Also rebalance if all positions expired
+        if not current_positions:
+            rebalance = True
+
+        if rebalance:
+            # Select new positions
+            new_candidates = date_candidates.get(date, [])
+            old_symbols = set(current_positions.keys())
+            new_positions = {}
+            for c in new_candidates:
+                new_positions[c["symbol"]] = {
+                    "signal": c["signal"],
+                    "entry_day_idx": i,
+                    "confidence": c["confidence"],
+                }
+
+            new_symbols = set(new_positions.keys())
+            # Turnover: positions that changed
+            changed = len(old_symbols.symmetric_difference(new_symbols))
+            # Also count signal direction changes for same symbol
+            for sym in old_symbols.intersection(new_symbols):
+                if current_positions[sym]["signal"] != new_positions[sym]["signal"]:
+                    changed += 1  # Direction flip counts as 2 trades (exit + re-enter)
+
+            current_positions = new_positions
+            n_pos = len(current_positions)
+
+            if n_pos > 0 and commission_rate > 0:
+                w = 1.0 / n_pos
+                daily_costs[i] = changed * w * commission_rate * 2
+                daily_turnover[i] = changed / max(n_pos, 1)
+
+        # Compute daily return from held positions
+        n_pos = len(current_positions)
+        daily_n_positions[i] = n_pos
+
+        if n_pos > 0:
+            w = 1.0 / n_pos
+            day_return = 0.0
+            for sym, pos in current_positions.items():
+                fwd_ret = return_lookup.get((date, sym), 0.0)
+                day_return += pos["signal"] * fwd_ret * w
+                # Track trades
+                trade_records.append(
+                    {
+                        "date": date,
+                        "symbol": sym,
+                        "signal": pos["signal"],
+                        "forward_return": fwd_ret,
+                        "weight": w,
+                        "pnl": pos["signal"] * fwd_ret * w,
+                        "correct": (pos["signal"] > 0)
+                        == (ytrue_lookup.get((date, sym), 0) == 1),
+                    }
+                )
+            daily_returns[i] = day_return
+
+    daily_net_returns = daily_returns - daily_costs
+
+    # Build trade log
+    trade_df = (
+        pd.DataFrame(trade_records)
+        if trade_records
+        else pd.DataFrame(
+            columns=[
+                "date",
+                "symbol",
+                "signal",
+                "forward_return",
+                "weight",
+                "pnl",
+                "correct",
+            ]
+        )
+    )
+
+    # Equity curve
+    equity = initial_capital * np.cumprod(1 + daily_net_returns)
+    date_idx = pd.DatetimeIndex(all_dates)
+
+    results = compute_metrics(
+        daily_net_returns,
+        daily_costs,
+        np.array(date_idx),
+        equity,
+        trade_df,
+        daily_n_positions,
+        daily_turnover,
         initial_capital,
         n_dates,
     )

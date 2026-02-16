@@ -203,11 +203,39 @@ def _resolve_symbols(
             return list(values)[:universe_limit]
         return list(values)
 
+    # Try to load from centralized universe module
+    try:
+        from quantum_alpha import universe as _u
+
+        _has_universe = True
+    except ImportError:
+        _has_universe = False
+
     if symbols:
         if len(symbols) == 1:
             token = symbols[0].upper()
             if token in {"SP500", "S&P500", "SPX"}:
+                if _has_universe:
+                    return _limit(_u.get_sp500())
                 return _limit(collector.get_sp500_symbols())
+            if token in {"SP400", "MIDCAP", "MID"}:
+                if _has_universe:
+                    return _limit(_u.get_sp400())
+                logger.warning(
+                    "universe.py not available; SP400 token unsupported, falling back to SP500"
+                )
+                return _limit(collector.get_sp500_symbols())
+            if token in {"FULL", "ALL", "UNIVERSE"}:
+                if _has_universe:
+                    return _limit(_u.get_stocks_only())
+                logger.warning(
+                    "universe.py not available; FULL token unsupported, falling back to SP500"
+                )
+                return _limit(collector.get_sp500_symbols())
+            if token in {"LIQUID", "LIQUID50"}:
+                if _has_universe:
+                    return _limit(_u.get_liquid_largecap())
+                return _limit(collector.get_sp500_symbols()[:50])
             if token in {"AUTO", "DEFAULT"}:
                 return _limit(data_cfg.get("default_universe", ["SPY"]))
         return symbols

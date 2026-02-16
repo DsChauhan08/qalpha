@@ -19,6 +19,7 @@ from quantum_alpha.data.storage.parquet_manager import ParquetManager
 
 logger = logging.getLogger(__name__)
 
+
 class RateLimiter:
     """Token bucket rate limiter."""
 
@@ -374,117 +375,58 @@ class DataCollector:
         """
         Get S&P 500 component symbols.
 
+        Priority: universe.py (cached, 502 tickers) -> Wikipedia scrape -> hardcoded fallback.
+
         Returns:
             List of ticker symbols
         """
+        # 1. Try centralized universe module (fastest, no network)
+        try:
+            from quantum_alpha.universe import get_sp500
+
+            return get_sp500()
+        except ImportError:
+            pass
+
+        # 2. Try live Wikipedia scrape
         try:
             tables = pd.read_html(
                 "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
             )
             return tables[0]["Symbol"].str.replace(".", "-").tolist()
         except Exception:
-            # Fallback to major symbols
-            return [
-                "AAPL",
-                "MSFT",
-                "AMZN",
-                "GOOGL",
-                "META",
-                "NVDA",
-                "TSLA",
-                "BRK-B",
-                "JPM",
-                "V",
-                "UNH",
-                "XOM",
-                "PG",
-                "MA",
-                "HD",
-                "AVGO",
-                "LLY",
-                "COST",
-                "ABBV",
-                "WMT",
-                "DIS",
-                "KO",
-                "PEP",
-                "BAC",
-                "ADBE",
-                "CRM",
-                "NFLX",
-                "ORCL",
-                "CSCO",
-                "INTC",
-                "QCOM",
-                "TXN",
-                "TMO",
-                "LIN",
-                "ACN",
-                "MCD",
-                "NKE",
-                "UPS",
-                "HON",
-                "UNP",
-                "CAT",
-                "MMM",
-                "GE",
-                "IBM",
-                "AMD",
-                "AMAT",
-                "GS",
-                "MS",
-                "C",
-                "BA",
-                "RTX",
-                "LMT",
-                "GM",
-                "F",
-                "CVX",
-                "COP",
-                "SLB",
-                "SPGI",
-                "BKNG",
-                "SBUX",
-                "T",
-                "VZ",
-                "PFE",
-                "MRK",
-                "ABT",
-                "CVS",
-                "DHR",
-                "LOW",
-                "ISRG",
-                "GILD",
-                "MDT",
-                "INTU",
-                "NOW",
-                "PYPL",
-                "SNPS",
-                "VRTX",
-                "ADP",
-                "BLK",
-                "DE",
-                "MO",
-                "SO",
-                "DUK",
-                "NEE",
-                "PLD",
-                "AMT",
-                "CCI",
-                "SCHW",
-                "USB",
-                "AXP",
-                "TGT",
-                "CME",
-                "CB",
-                "ZTS",
-                "MMM",
-                "FDX",
-                "PNC",
-                "APD",
-                "EOG",
-                "LRCX",
-                "KLAC",
-                "REGN",
-                "ETN",
-            ]
+            pass
+
+        # 3. Hardcoded fallback (top ~30 by market cap)
+        return [
+            "AAPL",
+            "MSFT",
+            "AMZN",
+            "GOOGL",
+            "META",
+            "NVDA",
+            "TSLA",
+            "BRK-B",
+            "JPM",
+            "V",
+            "UNH",
+            "XOM",
+            "PG",
+            "MA",
+            "HD",
+            "AVGO",
+            "LLY",
+            "COST",
+            "ABBV",
+            "WMT",
+            "DIS",
+            "KO",
+            "PEP",
+            "BAC",
+            "ADBE",
+            "CRM",
+            "NFLX",
+            "ORCL",
+            "CSCO",
+            "AMD",
+        ]

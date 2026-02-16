@@ -47,141 +47,31 @@ DATA_DIR = PROJECT_ROOT / "data_store" / "value_investing"
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 # --------------------------------------------------------------------------
-# S&P 500 symbols
+# S&P 500 + S&P MidCap 400 symbols (unified universe)
 # --------------------------------------------------------------------------
+from quantum_alpha.universe import (
+    get_sp500 as _get_sp500_universe,
+    get_sp400 as _get_sp400_universe,
+    get_stocks_only as _get_stocks_only,
+)
 
-SP500_CORE = [
-    # Tech
-    "AAPL",
-    "MSFT",
-    "AMZN",
-    "NVDA",
-    "GOOGL",
-    "META",
-    "TSLA",
-    "AVGO",
-    "ORCL",
-    "CRM",
-    "AMD",
-    "INTC",
-    "CSCO",
-    "ACN",
-    "ADBE",
-    "TXN",
-    "QCOM",
-    "IBM",
-    "NOW",
-    "AMAT",
-    "MU",
-    "LRCX",
-    "SNPS",
-    "CDNS",
-    "KLAC",
-    # Finance
-    "JPM",
-    "V",
-    "MA",
-    "BAC",
-    "WFC",
-    "GS",
-    "MS",
-    "BLK",
-    "SCHW",
-    "AXP",
-    "C",
-    "USB",
-    "PNC",
-    "TFC",
-    "COF",
-    "BK",
-    "CME",
-    # Healthcare
-    "UNH",
-    "JNJ",
-    "LLY",
-    "ABBV",
-    "MRK",
-    "TMO",
-    "ABT",
-    "PFE",
-    "DHR",
-    "BMY",
-    "AMGN",
-    "MDT",
-    "GILD",
-    "ISRG",
-    "SYK",
-    "CI",
-    "ELV",
-    # Consumer
-    "PG",
-    "KO",
-    "PEP",
-    "COST",
-    "WMT",
-    "MCD",
-    "NKE",
-    "SBUX",
-    "TGT",
-    "HD",
-    "LOW",
-    "TJX",
-    "DG",
-    "DLTR",
-    "CL",
-    "EL",
-    # Industrial
-    "CAT",
-    "BA",
-    "HON",
-    "UNP",
-    "GE",
-    "RTX",
-    "DE",
-    "LMT",
-    "MMM",
-    "FDX",
-    "UPS",
-    "WM",
-    "ETN",
-    "ITW",
-    "EMR",
-    # Energy
-    "XOM",
-    "CVX",
-    "COP",
-    "SLB",
-    "EOG",
-    "MPC",
-    "PSX",
-    "VLO",
-    "OXY",
-    # Utilities / Real Estate / Telecom
-    "NEE",
-    "DUK",
-    "SO",
-    "D",
-    "AEP",
-    "T",
-    "VZ",
-    "TMUS",
-    # Materials
-    "LIN",
-    "APD",
-    "SHW",
-    "DD",
-    "NEM",
-    "FCX",
-    # Other
-    "BRK-B",
-    "PM",
-    "DIS",
-]
+# Legacy alias — kept for backward compat, now pulls from universe.py
+SP500_CORE = _get_sp500_universe()
 
 
 def get_sp500_symbols() -> list[str]:
-    """Return S&P 500 symbol list."""
-    return SP500_CORE.copy()
+    """Return S&P 500 symbol list (502 tickers)."""
+    return _get_sp500_universe()
+
+
+def get_sp400_symbols() -> list[str]:
+    """Return S&P MidCap 400 symbol list (400 tickers)."""
+    return _get_sp400_universe()
+
+
+def get_all_symbols() -> list[str]:
+    """Return full universe: S&P 500 + MidCap 400 (902 stocks)."""
+    return _get_stocks_only()
 
 
 # --------------------------------------------------------------------------

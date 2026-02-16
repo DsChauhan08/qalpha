@@ -139,6 +139,7 @@ class MetaEnsembleStrategy:
             compute_strategy_signals,
             compute_regime_features,
             compute_price_derived_features,
+            compute_sentiment_proxy_features,
         )
 
         featured = compute_technical_features(df)
@@ -165,6 +166,13 @@ class MetaEnsembleStrategy:
                 featured = mc_gen.generate_features_fast(featured)
             except Exception as e:
                 logger.debug(f"MC/Padé features failed: {e}")
+
+        # Sentiment proxy features (price-implied news sentiment)
+        # Mirrors Step 5.5 in compute_features_single_symbol()
+        try:
+            featured = compute_sentiment_proxy_features(featured)
+        except Exception as e:
+            logger.debug(f"Sentiment proxy features failed: {e}")
 
         # Clean
         featured = featured.replace([np.inf, -np.inf], np.nan)

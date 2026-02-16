@@ -14,6 +14,7 @@ from typing import List, Dict, Any
 import itertools
 import json
 
+# Intraday LSTM trains on high-liquidity ETFs only (need minute-level volume)
 DEFAULT_SYMBOLS = ["SPY", "QQQ", "IWM"]
 
 
@@ -81,7 +82,9 @@ def _save_state(path: Path, state: Dict[str, Any]) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Run concurrent intraday LSTM training jobs")
+    parser = argparse.ArgumentParser(
+        description="Run concurrent intraday LSTM training jobs"
+    )
     parser.add_argument("--symbols", nargs="+", default=DEFAULT_SYMBOLS)
     parser.add_argument("--interval", default="5m")
     parser.add_argument("--lookback-days", type=int, default=45)
@@ -95,9 +98,19 @@ def main() -> None:
     parser.add_argument("--window-grid", nargs="*", default=None)
     parser.add_argument("--chunk-days", type=int, default=7)
     parser.add_argument("--end", type=str, default=None)
-    parser.add_argument("--checkpoint-root", type=str, default=str(Path(__file__).parent / "models" / "intraday_checkpoints"))
-    parser.add_argument("--log-dir", type=str, default=str(Path(__file__).parent / "reports" / "night_train_logs"))
-    parser.add_argument("--jobs", type=int, default=3, help="Number of concurrent jobs to launch")
+    parser.add_argument(
+        "--checkpoint-root",
+        type=str,
+        default=str(Path(__file__).parent / "models" / "intraday_checkpoints"),
+    )
+    parser.add_argument(
+        "--log-dir",
+        type=str,
+        default=str(Path(__file__).parent / "reports" / "night_train_logs"),
+    )
+    parser.add_argument(
+        "--jobs", type=int, default=3, help="Number of concurrent jobs to launch"
+    )
     parser.add_argument("--state-file", type=str, default=None)
     parser.add_argument("--wait", action="store_true")
     args = parser.parse_args()
@@ -141,7 +154,11 @@ def main() -> None:
         print("No jobs to run.")
         return
 
-    state_path = Path(args.state_file) if args.state_file else (Path(args.log_dir) / "night_train_state.json")
+    state_path = (
+        Path(args.state_file)
+        if args.state_file
+        else (Path(args.log_dir) / "night_train_state.json")
+    )
     state = _load_state(state_path)
     start_idx = int(state.get("index", 0)) % len(job_space)
     total_jobs = min(max(1, args.jobs), len(job_space))

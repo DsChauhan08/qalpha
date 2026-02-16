@@ -330,8 +330,8 @@ def main():
     parser.add_argument(
         "--symbols",
         nargs="+",
-        default=["SPY", "QQQ", "AAPL", "MSFT", "NVDA", "TSLA"],
-        help="Symbols (default: SPY QQQ AAPL MSFT NVDA TSLA)",
+        default=None,
+        help="Symbols (default: liquid largecap from universe.py, fallback: SPY QQQ AAPL MSFT NVDA TSLA)",
     )
     parser.add_argument(
         "--years",
@@ -360,6 +360,15 @@ def main():
     )
 
     args = parser.parse_args()
+
+    # Resolve symbols: try universe.py, then hardcoded fallback
+    if args.symbols is None:
+        try:
+            from quantum_alpha.universe import get_liquid_largecap
+
+            args.symbols = get_liquid_largecap()[:20]  # Top 20 liquid large-caps
+        except ImportError:
+            args.symbols = ["SPY", "QQQ", "AAPL", "MSFT", "NVDA", "TSLA"]
 
     print(f"\n{'#' * 60}")
     print("# BASELINE MODEL COMPARISON")

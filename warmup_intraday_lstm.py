@@ -12,23 +12,30 @@ from zoneinfo import ZoneInfo
 
 from quantum_alpha.train_intraday_lstm import train_intraday
 
+# Intraday LSTM trains on high-liquidity ETFs only (need minute-level volume)
 DEFAULT_SYMBOLS = ["SPY", "QQQ", "IWM"]
 
 
 def _next_warmup_time(now_et: datetime, run_at: dtime) -> datetime:
-    candidate = now_et.replace(hour=run_at.hour, minute=run_at.minute, second=0, microsecond=0)
+    candidate = now_et.replace(
+        hour=run_at.hour, minute=run_at.minute, second=0, microsecond=0
+    )
     if now_et.time() < run_at and now_et.weekday() < 5:
         return candidate
     days_ahead = 1
     while True:
         next_day = now_et + timedelta(days=days_ahead)
         if next_day.weekday() < 5:
-            return next_day.replace(hour=run_at.hour, minute=run_at.minute, second=0, microsecond=0)
+            return next_day.replace(
+                hour=run_at.hour, minute=run_at.minute, second=0, microsecond=0
+            )
         days_ahead += 1
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Warm up intraday LSTM checkpoints before open")
+    parser = argparse.ArgumentParser(
+        description="Warm up intraday LSTM checkpoints before open"
+    )
     parser.add_argument("--symbols", nargs="+", default=DEFAULT_SYMBOLS)
     parser.add_argument("--interval", default="5m")
     parser.add_argument("--lookback-days", type=int, default=5)
@@ -44,7 +51,9 @@ def main() -> None:
     )
     parser.add_argument("--run-at", type=str, default="09:10")
     parser.add_argument("--wait", action="store_true", help="Wait until run-at time")
-    parser.add_argument("--skip-if-past", action="store_true", help="Exit if run-at time has passed")
+    parser.add_argument(
+        "--skip-if-past", action="store_true", help="Exit if run-at time has passed"
+    )
     args = parser.parse_args()
 
     try:
@@ -64,7 +73,9 @@ def main() -> None:
         target = _next_warmup_time(now_et, run_at)
         wait_seconds = max(0, (target - now_et).total_seconds())
         if wait_seconds > 0:
-            print(f"Waiting until {target.strftime('%Y-%m-%d %H:%M')} ET for warm-up...")
+            print(
+                f"Waiting until {target.strftime('%Y-%m-%d %H:%M')} ET for warm-up..."
+            )
             time.sleep(wait_seconds)
 
     checkpoint_root = Path(args.checkpoint_root)

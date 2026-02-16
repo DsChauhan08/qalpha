@@ -149,9 +149,14 @@ def predict_single_symbol(
 
 
 def get_liquid_sp500(n: int = 50) -> list[str]:
-    """Get top-N most liquid S&P 500 symbols."""
-    # Hardcoded top-50 most liquid S&P 500 stocks by volume
-    # (to avoid slow Wikipedia scraping)
+    """Get top-N most liquid S&P 500 symbols from the unified universe."""
+    try:
+        from quantum_alpha.universe import get_liquid_largecap
+
+        return get_liquid_largecap(n)
+    except ImportError:
+        pass
+    # Fallback: hardcoded top-50 most liquid S&P 500 stocks
     top50 = [
         "AAPL",
         "MSFT",

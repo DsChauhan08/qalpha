@@ -331,6 +331,8 @@ def _backtest_hold_period(
     - On rebalance days: select new positions from available signals
     - On non-rebalance days: hold existing positions, use their forward_return
     - Track turnover properly for commission calculation
+
+    Optimized: uses vectorized dict-building and groupby instead of iterrows().
     """
     commission_rate = commission_bps / 10_000.0
     cap = max_positions
@@ -345,36 +347,30 @@ def _backtest_hold_period(
     all_dates = sorted(df["date"].unique())
     n_dates = len(all_dates)
 
-    # Build return lookup: (date, symbol) -> forward_return
-    # This gives us the return for holding any symbol on any given day
-    return_lookup = {}
-    signal_lookup = {}
-    ytrue_lookup = {}
-    for _, row in df.iterrows():
-        key = (row["date"], row["symbol"])
-        return_lookup[key] = row["forward_return"]
-        signal_lookup[key] = row["raw_signal"]
-        ytrue_lookup[key] = row["y_true"]
+    # Build return lookup: (date, symbol) -> forward_return  [VECTORIZED]
+    keys = list(zip(df["date"].values, df["symbol"].values))
+    return_lookup = dict(zip(keys, df["forward_return"].values))
+    ytrue_lookup = dict(zip(keys, df["y_true"].values))
 
-    # Build signal candidates by date
+    # Build signal candidates by date [VECTORIZED via groupby + rank]
+    active["conf_rank"] = active.groupby("date")["confidence"].rank(
+        ascending=False, method="first"
+    )
+    top_active = active[active["conf_rank"] <= cap].copy()
+
     date_candidates = {}
-    for date in all_dates:
-        day_active = active[active["date"] == date].copy()
-        if len(day_active) == 0:
-            date_candidates[date] = []
-            continue
-        # Rank by confidence, take top-K
-        day_active = day_active.sort_values("confidence", ascending=False)
-        candidates = []
-        for _, row in day_active.head(cap).iterrows():
-            candidates.append(
-                {
-                    "symbol": row["symbol"],
-                    "signal": row["raw_signal"],
-                    "confidence": row["confidence"],
-                }
+    if len(top_active) > 0:
+        # Group once, extract arrays per group
+        for date, grp in top_active.groupby("date"):
+            # Sort by rank (already ranked, just sort)
+            grp_sorted = grp.sort_values("conf_rank")
+            date_candidates[date] = list(
+                zip(
+                    grp_sorted["symbol"].values,
+                    grp_sorted["raw_signal"].values,
+                    grp_sorted["confidence"].values,
+                )
             )
-        date_candidates[date] = candidates
 
     # Day-by-day simulation
     daily_returns = np.zeros(n_dates)
@@ -382,38 +378,35 @@ def _backtest_hold_period(
     daily_n_positions = np.zeros(n_dates)
     daily_turnover = np.zeros(n_dates)
 
-    current_positions = {}  # symbol -> {signal, entry_day_idx, confidence}
-    trade_records = []
+    # current_positions: dict symbol -> (signal, confidence)
+    current_positions = {}
+    # Pre-allocate trade record arrays for speed
+    tr_dates = []
+    tr_symbols = []
+    tr_signals = []
+    tr_fwd_rets = []
+    tr_weights = []
+    tr_pnls = []
+    tr_corrects = []
 
     for i, date in enumerate(all_dates):
         # Check if we need to rebalance
-        rebalance = False
-        if i == 0:
-            rebalance = True
-        elif i % hold_days == 0:
-            rebalance = True
-        # Also rebalance if all positions expired
-        if not current_positions:
-            rebalance = True
+        rebalance = (i == 0) or (i % hold_days == 0) or (not current_positions)
 
         if rebalance:
             # Select new positions
-            new_candidates = date_candidates.get(date, [])
+            new_cands = date_candidates.get(date, [])
             old_symbols = set(current_positions.keys())
             new_positions = {}
-            for c in new_candidates:
-                new_positions[c["symbol"]] = {
-                    "signal": c["signal"],
-                    "entry_day_idx": i,
-                    "confidence": c["confidence"],
-                }
+            for sym, sig, conf in new_cands:
+                new_positions[sym] = (sig, conf)
 
             new_symbols = set(new_positions.keys())
             # Turnover: positions that changed
             changed = len(old_symbols.symmetric_difference(new_symbols))
             # Also count signal direction changes for same symbol
-            for sym in old_symbols.intersection(new_symbols):
-                if current_positions[sym]["signal"] != new_positions[sym]["signal"]:
+            for sym in old_symbols & new_symbols:
+                if current_positions[sym][0] != new_positions[sym][0]:
                     changed += 1  # Direction flip counts as 2 trades (exit + re-enter)
 
             current_positions = new_positions
@@ -431,31 +424,38 @@ def _backtest_hold_period(
         if n_pos > 0:
             w = 1.0 / n_pos
             day_return = 0.0
-            for sym, pos in current_positions.items():
+            for sym, (sig, _conf) in current_positions.items():
                 fwd_ret = return_lookup.get((date, sym), 0.0)
-                day_return += pos["signal"] * fwd_ret * w
-                # Track trades
-                trade_records.append(
-                    {
-                        "date": date,
-                        "symbol": sym,
-                        "signal": pos["signal"],
-                        "forward_return": fwd_ret,
-                        "weight": w,
-                        "pnl": pos["signal"] * fwd_ret * w,
-                        "correct": (pos["signal"] > 0)
-                        == (ytrue_lookup.get((date, sym), 0) == 1),
-                    }
-                )
+                pnl = sig * fwd_ret * w
+                day_return += pnl
+                # Track trades (append to lists, not dicts)
+                tr_dates.append(date)
+                tr_symbols.append(sym)
+                tr_signals.append(sig)
+                tr_fwd_rets.append(fwd_ret)
+                tr_weights.append(w)
+                tr_pnls.append(pnl)
+                yt = ytrue_lookup.get((date, sym), 0)
+                tr_corrects.append((sig > 0) == (yt == 1))
             daily_returns[i] = day_return
 
     daily_net_returns = daily_returns - daily_costs
 
-    # Build trade log
-    trade_df = (
-        pd.DataFrame(trade_records)
-        if trade_records
-        else pd.DataFrame(
+    # Build trade log from arrays (much faster than list-of-dicts)
+    if tr_dates:
+        trade_df = pd.DataFrame(
+            {
+                "date": tr_dates,
+                "symbol": tr_symbols,
+                "signal": tr_signals,
+                "forward_return": tr_fwd_rets,
+                "weight": tr_weights,
+                "pnl": tr_pnls,
+                "correct": tr_corrects,
+            }
+        )
+    else:
+        trade_df = pd.DataFrame(
             columns=[
                 "date",
                 "symbol",
@@ -466,7 +466,6 @@ def _backtest_hold_period(
                 "correct",
             ]
         )
-    )
 
     # Equity curve
     equity = initial_capital * np.cumprod(1 + daily_net_returns)

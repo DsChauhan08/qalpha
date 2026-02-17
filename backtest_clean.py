@@ -137,9 +137,10 @@ def backtest_equal_weight(
     initial_capital: float = 100_000.0,
     start_date: str | None = None,
     end_date: str | None = None,
+    confidence_weight: bool = False,
 ) -> dict:
     """
-    Simple equal-weight portfolio backtest.
+    Simple equal-weight portfolio backtest (or confidence-weighted if enabled).
 
     When hold_days=1: Vectorized daily rebalance (fast).
     When hold_days>1: Day-by-day simulation that holds positions for N days
@@ -148,7 +149,7 @@ def backtest_equal_weight(
     On each rebalance day:
       1. Rank active signals by confidence
       2. Select top-K (or all, up to max_positions)
-      3. Equal-weight allocation
+      3. Equal-weight or confidence-weighted allocation
       4. Hold for hold_days trading days
       5. Compute returns after transaction costs
 
@@ -162,6 +163,7 @@ def backtest_equal_weight(
         initial_capital: Starting capital for equity curve
         start_date: Filter predictions from this date
         end_date: Filter predictions to this date
+        confidence_weight: If True, weight positions by confidence instead of equal weight
     """
     df = df.copy()
     df["date"] = pd.to_datetime(df["date"])
@@ -179,11 +181,22 @@ def backtest_equal_weight(
 
     if hold_days <= 1:
         return _backtest_daily_rebalance(
-            df, max_positions, commission_bps, top_k, initial_capital
+            df,
+            max_positions,
+            commission_bps,
+            top_k,
+            initial_capital,
+            confidence_weight=confidence_weight,
         )
     else:
         return _backtest_hold_period(
-            df, max_positions, commission_bps, hold_days, top_k, initial_capital
+            df,
+            max_positions,
+            commission_bps,
+            hold_days,
+            top_k,
+            initial_capital,
+            confidence_weight=confidence_weight,
         )
 
 
@@ -193,6 +206,7 @@ def _backtest_daily_rebalance(
     commission_bps: float,
     top_k: int | None,
     initial_capital: float,
+    confidence_weight: bool = False,
 ) -> dict:
     """Original vectorized daily-rebalance backtest (hold_days=1)."""
 
@@ -215,11 +229,17 @@ def _backtest_daily_rebalance(
     # Count positions per day
     pos_counts = active.groupby("date").size()
 
-    # Equal weight per day: 1/N
+    # Position weighting: confidence-weighted or equal-weight
     active = active.merge(
         pos_counts.rename("n_pos").reset_index(), on="date", how="left"
     )
-    active["weight"] = 1.0 / active["n_pos"]
+    if confidence_weight:
+        # Weight by confidence, normalized within each day to sum to 1.0
+        active["weight"] = active.groupby("date")["confidence"].transform(
+            lambda c: c / c.sum() if c.sum() > 0 else 1.0 / len(c)
+        )
+    else:
+        active["weight"] = 1.0 / active["n_pos"]
 
     # Weighted return per position
     active["weighted_return"] = (
@@ -323,6 +343,7 @@ def _backtest_hold_period(
     hold_days: int,
     top_k: int | None,
     initial_capital: float,
+    confidence_weight: bool = False,
 ) -> dict:
     """
     Day-by-day simulation with proper hold period enforcement.
@@ -422,9 +443,20 @@ def _backtest_hold_period(
         daily_n_positions[i] = n_pos
 
         if n_pos > 0:
-            w = 1.0 / n_pos
+            # Compute weights: confidence-weighted or equal-weight
+            if confidence_weight:
+                conf_sum = sum(conf for (_, conf) in current_positions.values())
+                if conf_sum <= 0:
+                    conf_sum = 1.0  # Fallback to avoid division by zero
+            else:
+                conf_sum = 0.0  # Not used in equal-weight mode
+
             day_return = 0.0
-            for sym, (sig, _conf) in current_positions.items():
+            for sym, (sig, conf) in current_positions.items():
+                if confidence_weight:
+                    w = conf / conf_sum
+                else:
+                    w = 1.0 / n_pos
                 fwd_ret = return_lookup.get((date, sym), 0.0)
                 pnl = sig * fwd_ret * w
                 day_return += pnl
@@ -687,6 +719,7 @@ def run_year_by_year(
     commission_bps: float = 0.0,
     hold_days: int = 1,
     max_positions: int = 20,
+    confidence_weight: bool = False,
 ) -> pd.DataFrame:
     """Break down performance by calendar year."""
     df = df.copy()
@@ -724,6 +757,7 @@ def run_year_by_year(
             max_positions=max_positions,
             commission_bps=commission_bps,
             hold_days=hold_days,
+            confidence_weight=confidence_weight,
         )
 
         rows.append(
@@ -837,6 +871,11 @@ Examples:
         default=None,
         help="Filter to specific symbols",
     )
+    parser.add_argument(
+        "--conf-weight",
+        action="store_true",
+        help="Weight positions by confidence instead of equal weight",
+    )
 
     args = parser.parse_args()
 
@@ -871,6 +910,7 @@ Examples:
     print(f"    Top-K:              {args.top_k or 'all'}")
     print(f"    Max positions:      {args.max_positions}")
     print(f"    Long only:          {args.long_only}")
+    print(f"    Conf weight:        {args.conf_weight}")
     print(f"    Capital:            ${args.capital:,.0f}")
 
     if args.start_date:
@@ -933,6 +973,7 @@ Examples:
             commission_bps=args.commission,
             hold_days=args.hold_days,
             max_positions=args.max_positions,
+            confidence_weight=args.conf_weight,
         )
 
         print(
@@ -983,12 +1024,14 @@ Examples:
         initial_capital=args.capital,
         start_date=args.start_date,
         end_date=args.end_date,
+        confidence_weight=args.conf_weight,
     )
 
     config_label = (
         f"Signal >= {args.signal_threshold}, Confidence >= {args.confidence:.0%}, "
         f"Commission={args.commission:.0f}bps, Hold={args.hold_days}d, "
         f"{'Long Only' if args.long_only else 'Long+Short'}"
+        f"{', ConfWeight' if args.conf_weight else ''}"
     )
     print_results(results, config_label)
 
@@ -1005,6 +1048,7 @@ Examples:
                 initial_capital=args.capital,
                 start_date=args.start_date,
                 end_date=args.end_date,
+                confidence_weight=args.conf_weight,
             )
             print(
                 f"  @{c_bps:>2}bps commission: Return={res_c['total_return']:+.2%}, "

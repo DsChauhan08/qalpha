@@ -227,6 +227,22 @@ def run_predictions(
     if symbols is None:
         symbols = get_liquid_sp500(n_symbols)
 
+    # Refresh GDELT tone data for today's predictions
+    # The GDELT pickle may be stale (last fetched days ago).
+    # We reload the cached data into the meta_ensemble module so
+    # compute_features_single_symbol() uses the latest tone data.
+    try:
+        from quantum_alpha.meta_ensemble import _get_gdelt_data
+
+        gdelt = _get_gdelt_data()
+        if len(gdelt) > 0:
+            latest = gdelt["date"].max()
+            print(f"  GDELT tone data: {len(gdelt):,} records through {latest.date()}")
+        else:
+            print("  WARNING: No GDELT tone data available — features will be zero")
+    except Exception as e:
+        print(f"  WARNING: Could not load GDELT data: {e}")
+
     print(f"  Scanning {len(symbols)} symbols...")
     print()
 

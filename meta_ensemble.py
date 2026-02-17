@@ -159,17 +159,42 @@ PRICE_DERIVED_FEATURES = [
     "up_days_ratio_21d",
 ]
 
-SENTIMENT_PROXY_FEATURES = [
-    "sent_overnight_gap_zscore",
-    "sent_proxy",
-    "sent_ma3",
-    "sent_ma7",
-    "sent_momentum",
-    "sent_news_intensity",
-    "sent_fear_greed",
-    "sent_vol_price_divergence",
-    "sent_gap_fill_rate",
-    "sent_return_acceleration",
+GDELT_TONE_FEATURES = [
+    "gdelt_tone",
+    "gdelt_tone_ma5",
+    "gdelt_tone_ma20",
+    "gdelt_tone_zscore",
+    "gdelt_tone_momentum",
+    "gdelt_tone_reversal",
+    "gdelt_tone_regime",
+    "gdelt_tone_volatility",
+    "gdelt_tone_acceleration",
+]
+
+# Interaction features — capture nonlinear cross-domain signals
+INTERACTION_FEATURES = [
+    "tone_x_momentum",  # GDELT tone × price momentum (sentiment confirms trend)
+    "tone_x_volatility",  # GDELT tone × realized volatility (sentiment in volatile mkts)
+    "tone_x_rsi",  # GDELT tone × RSI (overbought/oversold with sentiment)
+    "tone_x_volume",  # GDELT tone × volume ratio (sentiment + volume confirmation)
+    "momentum_x_volatility",  # Momentum × volatility (trend strength in context)
+    "rsi_x_adx",  # RSI × ADX (overbought in strong vs weak trends)
+    "bb_position_x_volume",  # Bollinger position × volume (breakout confirmation)
+    "returns_x_volume",  # Short-term returns × volume (volume-confirmed moves)
+    "drawdown_x_tone",  # Drawdown × sentiment (capitulation vs recovery)
+    "trend_x_meanrev",  # Trend × mean-reversion agreement
+    "regime_vol_x_momentum",  # Regime volatility × momentum (risk-adjusted momentum)
+    "sma_cross_x_adx",  # SMA crossover × ADX (crossover + trend confirmation)
+]
+
+# Enhanced momentum quality features
+MOMENTUM_QUALITY_FEATURES = [
+    "momentum_quality",  # Consistency of up-day direction over 21d
+    "momentum_breadth",  # Up days ratio relative to return magnitude
+    "vol_adjusted_momentum_5d",  # 5d return / 5d volatility
+    "vol_adjusted_momentum_21d",  # 21d return / 21d volatility
+    "return_skew_21d",  # Skewness of 21d returns
+    "return_skew_63d",  # Skewness of 63d returns
 ]
 
 ALL_FEATURE_COLS = (
@@ -178,7 +203,10 @@ ALL_FEATURE_COLS = (
     + REGIME_FEATURES
     + CROSS_SECTIONAL_FEATURES
     + PRICE_DERIVED_FEATURES
-    + SENTIMENT_PROXY_FEATURES
+    + GDELT_TONE_FEATURES
+    # Note: INTERACTION_FEATURES excluded — tree models learn interactions implicitly.
+    # Explicit products added noise and degraded 2019-2024 performance.
+    + MOMENTUM_QUALITY_FEATURES
 )
 
 # MC/Padé features — dynamically generated from MCPadeFeatureGenerator
@@ -205,6 +233,28 @@ def _get_mc_pade_generator():
             logger.warning(f"MC/Padé features unavailable: {e}")
             _mc_pade_gen = False  # Sentinel to avoid retrying
     return _mc_pade_gen if _mc_pade_gen is not False else None
+
+
+# GDELT tone data — lazy-loaded from pre-fetched pickle
+_gdelt_data = None
+
+
+def _get_gdelt_data():
+    """Lazy-load GDELT daily tone data (318K records, ~40 MB)."""
+    global _gdelt_data
+    if _gdelt_data is None:
+        gdelt_path = PROJECT_DIR / "data_store" / "gdelt_tone" / "gdelt_daily_tone.pkl"
+        if gdelt_path.exists():
+            with open(gdelt_path, "rb") as f:
+                _gdelt_data = pickle.load(f)
+            logger.info(
+                f"GDELT tone data loaded: {len(_gdelt_data)} records, "
+                f"{_gdelt_data['symbol'].nunique()} symbols"
+            )
+        else:
+            _gdelt_data = pd.DataFrame()
+            logger.warning("GDELT tone data not found — tone features will be NaN/0")
+    return _gdelt_data
 
 
 # =====================================================================
@@ -567,124 +617,6 @@ def compute_price_derived_features(df: pd.DataFrame) -> pd.DataFrame:
     return result
 
 
-def compute_sentiment_proxy_features(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Compute sentiment proxy features from price/volume data.
-
-    These features capture market reactions to news events (overnight gaps,
-    volume surges, fear/greed) even though we don't have the actual headlines.
-    During 2008 and 2022 crashes, these features show distinctive patterns:
-    - Large negative overnight gaps (panic selling on bad news)
-    - Extreme volume spikes (institutional selling)
-    - Persistent negative sentiment momentum (narrative shift)
-    - High news intensity (breaking news days)
-
-    ALL features are LAGGED by 1 day to prevent lookahead bias:
-    the model sees yesterday's sentiment proxy to predict today's move.
-
-    These are intentionally DIFFERENT from the existing price-derived features:
-    - `gap` exists but is raw; we add z-scored gap (distributional context)
-    - `volume_ratio_20d` exists; we add volume-gap interaction (sentiment proxy)
-    - We add composite indicators that combine multiple signals
-
-    Returns DataFrame with 10 sentiment proxy columns added.
-    """
-    result = df.copy()
-    close = df["close"]
-    open_ = df.get("open", close)
-    high = df.get("high", close)
-    low = df.get("low", close)
-    volume = df.get("volume", pd.Series(0, index=df.index))
-
-    returns = close.pct_change()
-
-    # ── Raw building blocks (not added to features, just intermediates) ──
-
-    # Overnight gap
-    overnight_gap = (open_ - close.shift(1)) / close.shift(1).clip(lower=1e-8)
-    overnight_gap_abs = overnight_gap.abs()
-
-    # Gap z-score (how unusual is today's gap vs recent history)
-    gap_mean = overnight_gap.rolling(20).mean()
-    gap_std = overnight_gap.rolling(20).std().clip(lower=1e-8)
-
-    # Volume surprise
-    vol_sma20 = volume.rolling(20).mean().clip(lower=1)
-    vol_surprise = (volume / vol_sma20) - 1.0
-
-    # Intraday range surprise
-    intraday_range = (high - low) / close.clip(lower=1e-8)
-    range_ma20 = intraday_range.rolling(20).mean().clip(lower=1e-8)
-    range_surprise = (intraday_range / range_ma20) - 1.0
-
-    # ── Sentiment proxy features (10 total) ──
-
-    # 1. Overnight gap z-score (how unusual is the gap)
-    # Different from raw `gap` — this normalizes by recent distribution
-    result["sent_overnight_gap_zscore"] = (overnight_gap - gap_mean) / gap_std
-
-    # 2. Composite sentiment proxy
-    # Positive gap + high volume = positive news; negative gap + high volume = negative news
-    sent_proxy = np.where(
-        vol_surprise > 0.5,  # High volume day
-        np.sign(overnight_gap) * overnight_gap_abs * 10,
-        overnight_gap * 5,
-    )
-    result["sent_proxy"] = pd.Series(sent_proxy, index=df.index).clip(-3, 3)
-
-    # 3-4. Sentiment moving averages (trend of sentiment)
-    result["sent_ma3"] = result["sent_proxy"].rolling(3).mean()
-    result["sent_ma7"] = result["sent_proxy"].rolling(7).mean()
-
-    # 5. Sentiment momentum (short-term vs medium-term sentiment)
-    # During crashes: ma3 << ma7 (accelerating negative sentiment)
-    result["sent_momentum"] = result["sent_ma3"] - result["sent_ma7"]
-
-    # 6. News intensity proxy (high volume + high range = major news day)
-    # Captures breaking-news events regardless of direction
-    news_intensity = vol_surprise.clip(lower=0) * range_surprise.clip(lower=0)
-    result["sent_news_intensity"] = news_intensity.clip(0, 10)
-
-    # 7. Fear/greed proxy
-    # Negative return + high volume + high range = fear (crash detection!)
-    # Positive return + high volume + high range = greed
-    fear_greed = np.where(
-        returns < 0,
-        -range_surprise.clip(lower=0) * vol_surprise.clip(lower=0),
-        range_surprise.clip(lower=0) * vol_surprise.clip(lower=0),
-    )
-    result["sent_fear_greed"] = pd.Series(fear_greed, index=df.index)
-
-    # 8. Volume-price divergence (smart money signal)
-    # High volume + negative return = distribution (insiders selling)
-    # High volume + positive return = accumulation (insiders buying)
-    result["sent_vol_price_divergence"] = vol_surprise * np.sign(-returns)
-
-    # 9. Gap fill rate (market reaction pattern)
-    # Gaps that fill = market disagreed with overnight news
-    gap_fill = np.where(
-        overnight_gap > 0,
-        (close < open_).astype(float),
-        (close > open_).astype(float),
-    )
-    result["sent_gap_fill_rate"] = (
-        pd.Series(gap_fill, index=df.index).rolling(20).mean()
-    )
-
-    # 10. Return acceleration (narrative shift detection)
-    # Sudden acceleration = new information hitting the market
-    result["sent_return_acceleration"] = returns - returns.shift(1)
-
-    # ── LAG ALL sentiment features by 1 day ──
-    # This is CRITICAL: prevents lookahead bias
-    # Model sees yesterday's sentiment to predict today's move
-    for col in SENTIMENT_PROXY_FEATURES:
-        if col in result.columns:
-            result[col] = result[col].shift(1)
-
-    return result
-
-
 def compute_features_single_symbol(
     symbol: str,
     df: pd.DataFrame,
@@ -718,14 +650,139 @@ def compute_features_single_symbol(
             except Exception as e:
                 logger.debug(f"MC/Padé features failed for {symbol}: {e}")
 
-        # Step 5.5: Sentiment proxy features (price-implied news sentiment)
-        # These capture overnight gap reactions, volume-news interactions,
-        # fear/greed indicators, and narrative shift detection.
-        # ALL lagged by 1 day inside compute_sentiment_proxy_features().
+        # Step 5.5: GDELT news tone features (real sentiment from news articles)
+        # Data covers 2017-01-01 to present; pre-2017 rows get NaN → filled with 0.
+        # GDELT pickle columns: tone, tone_ma5, ... → renamed to gdelt_tone, gdelt_tone_ma5, ...
         try:
-            featured = compute_sentiment_proxy_features(featured)
+            gdelt = _get_gdelt_data()
+            if len(gdelt) > 0:
+                sym_gdelt = gdelt[gdelt["symbol"] == symbol]
+                if len(sym_gdelt) > 0:
+                    sym_gdelt = sym_gdelt.set_index("date")
+                    # Map raw column names to prefixed feature names
+                    rename_map = {
+                        "tone": "gdelt_tone",
+                        "tone_ma5": "gdelt_tone_ma5",
+                        "tone_ma20": "gdelt_tone_ma20",
+                        "tone_zscore": "gdelt_tone_zscore",
+                        "tone_momentum": "gdelt_tone_momentum",
+                        "tone_reversal": "gdelt_tone_reversal",
+                        "news_tone_regime": "gdelt_tone_regime",
+                        "tone_volatility": "gdelt_tone_volatility",
+                        "tone_acceleration": "gdelt_tone_acceleration",
+                    }
+                    sym_gdelt = sym_gdelt.rename(columns=rename_map)
+                    for col in GDELT_TONE_FEATURES:
+                        if col in sym_gdelt.columns:
+                            featured[col] = sym_gdelt[col].reindex(featured.index)
+                    logger.debug(
+                        f"GDELT tone merged for {symbol}: "
+                        f"{featured['gdelt_tone'].notna().sum()} non-null days"
+                    )
         except Exception as e:
-            logger.debug(f"Sentiment proxy features failed for {symbol}: {e}")
+            logger.debug(f"GDELT tone features failed for {symbol}: {e}")
+
+        # Step 5.6: Interaction features — capture nonlinear cross-domain signals
+        # These combine features from different domains (sentiment, technical, price)
+        # to create signals that neither alone can express.
+        try:
+            # GDELT × technical interactions (only meaningful where tone data exists)
+            tone = featured.get("gdelt_tone", pd.Series(0.0, index=featured.index))
+            tone_z = featured.get(
+                "gdelt_tone_zscore", pd.Series(0.0, index=featured.index)
+            )
+
+            # Sentiment × momentum: positive tone + positive momentum = strong buy
+            mom = featured.get("mom_3m", pd.Series(0.0, index=featured.index))
+            featured["tone_x_momentum"] = tone_z * mom
+
+            # Sentiment × volatility: sentiment matters more in volatile markets
+            vol = featured.get("volatility_21d", pd.Series(0.0, index=featured.index))
+            featured["tone_x_volatility"] = tone_z * vol
+
+            # Sentiment × RSI: overbought/oversold confirmed by sentiment
+            rsi = featured.get("rsi", pd.Series(50.0, index=featured.index))
+            rsi_centered = (rsi - 50.0) / 50.0  # Normalize to [-1, 1]
+            featured["tone_x_rsi"] = tone_z * rsi_centered
+
+            # Sentiment × volume: sentiment with volume confirmation
+            vol_ratio = featured.get(
+                "volume_ratio_20d", pd.Series(1.0, index=featured.index)
+            )
+            featured["tone_x_volume"] = tone_z * (vol_ratio - 1.0)
+
+            # Pure technical interactions
+            featured["momentum_x_volatility"] = mom * vol
+            adx = featured.get("adx", pd.Series(25.0, index=featured.index))
+            adx_norm = adx / 100.0  # Normalize to [0, 1]
+            featured["rsi_x_adx"] = rsi_centered * adx_norm
+
+            bb_pos = featured.get("bb_position", pd.Series(0.5, index=featured.index))
+            featured["bb_position_x_volume"] = (bb_pos - 0.5) * (vol_ratio - 1.0)
+
+            ret_1d = featured.get("returns_1d", pd.Series(0.0, index=featured.index))
+            featured["returns_x_volume"] = ret_1d * (vol_ratio - 1.0)
+
+            # Drawdown × sentiment: capitulation (big drawdown + negative tone) vs recovery
+            dd = featured.get("regime_drawdown", pd.Series(0.0, index=featured.index))
+            featured["drawdown_x_tone"] = dd * tone_z
+
+            # Strategy agreement signals
+            sig_trend = featured.get("sig_trend", pd.Series(0.0, index=featured.index))
+            sig_meanrev = featured.get(
+                "sig_meanrev", pd.Series(0.0, index=featured.index)
+            )
+            featured["trend_x_meanrev"] = sig_trend * sig_meanrev
+
+            reg_vol = featured.get(
+                "regime_volatility", pd.Series(0.0, index=featured.index)
+            )
+            featured["regime_vol_x_momentum"] = reg_vol * mom
+
+            sma_cross = featured.get(
+                "sma_cross_50_200", pd.Series(0.0, index=featured.index)
+            )
+            featured["sma_cross_x_adx"] = sma_cross * adx_norm
+
+        except Exception as e:
+            logger.debug(f"Interaction features failed for {symbol}: {e}")
+
+        # Step 5.7: Enhanced momentum quality features
+        try:
+            close = featured["close"]
+            daily_ret = close.pct_change()
+
+            # Momentum quality: consistency of return direction over 21 days
+            # High quality = returns consistently positive (or negative), not random
+            up_sign = (daily_ret > 0).astype(float)
+            featured["momentum_quality"] = (
+                up_sign.rolling(21, min_periods=10).mean() - 0.5
+            ) * 2.0  # Scale to [-1, 1]
+
+            # Momentum breadth: up-days ratio relative to return magnitude
+            up_ratio = featured.get(
+                "up_days_ratio_21d", pd.Series(0.5, index=featured.index)
+            )
+            ret_21d = featured.get("returns_21d", pd.Series(0.0, index=featured.index))
+            featured["momentum_breadth"] = up_ratio * np.sign(ret_21d)
+
+            # Volatility-adjusted momentum (information ratio)
+            vol_5d = daily_ret.rolling(5, min_periods=3).std()
+            vol_21d = daily_ret.rolling(21, min_periods=10).std()
+            ret_5d = featured.get("returns_5d", pd.Series(0.0, index=featured.index))
+            featured["vol_adjusted_momentum_5d"] = ret_5d / (
+                vol_5d * np.sqrt(5) + 1e-10
+            )
+            featured["vol_adjusted_momentum_21d"] = ret_21d / (
+                vol_21d * np.sqrt(21) + 1e-10
+            )
+
+            # Return skewness — negative skew means fat left tail (crash risk)
+            featured["return_skew_21d"] = daily_ret.rolling(21, min_periods=15).skew()
+            featured["return_skew_63d"] = daily_ret.rolling(63, min_periods=40).skew()
+
+        except Exception as e:
+            logger.debug(f"Momentum quality features failed for {symbol}: {e}")
 
         # Step 6: Target -- next-day direction (1 = up, 0 = down)
         future_return = (
@@ -1331,9 +1388,18 @@ def main():
         if args.phase == "features" or "ohlcv_data" not in dir():
             symbols = get_symbol_universe(args.n_symbols)
             ohlcv_data = {}
+            # First try loading from universe list
             for sym in symbols:
                 cache_file = CACHE_DIR / f"{sym}.pkl"
                 if cache_file.exists():
+                    try:
+                        ohlcv_data[sym] = pd.read_pickle(cache_file)
+                    except Exception:
+                        pass
+            # Also load any cached symbols not in universe list
+            for cache_file in sorted(CACHE_DIR.glob("*.pkl")):
+                sym = cache_file.stem
+                if sym not in ohlcv_data:
                     try:
                         ohlcv_data[sym] = pd.read_pickle(cache_file)
                     except Exception:

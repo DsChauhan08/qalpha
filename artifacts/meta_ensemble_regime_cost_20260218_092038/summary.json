@@ -1,0 +1,52 @@
+{
+  "run_at_utc": "2026-02-18T14:20:39.063400+00:00",
+  "config": {
+    "signal_threshold": 0.53,
+    "short_threshold": null,
+    "confidence": 0.0,
+    "long_only": true,
+    "commission_bps": 5.0,
+    "hold_days": 10,
+    "top_k": 20,
+    "max_positions": 20,
+    "semiconductor_short_gate": false,
+    "gate_threshold": 0.0
+  },
+  "metrics": {
+    "total_return": 6.455170334918545,
+    "annual_return": 0.14326907158875102,
+    "sharpe": 0.7841878732941122,
+    "sortino": 0.9704253882249588,
+    "max_drawdown": -0.3133452372157437,
+    "calmar": 0.45722434737410017,
+    "win_rate": 0.5308653149891384,
+    "profit_factor": 1.1660606647431244,
+    "total_trades": 55240,
+    "avg_positions_per_day": 14.60989156307855,
+    "total_commission_cost": 0.9742960598096435,
+    "final_equity": 745517.0334918546,
+    "n_trading_days": 3781
+  },
+  "mcpt": {
+    "primary_method": "sign_flip",
+    "sign_flip": {
+      "actual_statistic": 0.7841878732941122,
+      "p_value": 0.001998001998001998,
+      "is_significant": true,
+      "percentile": 99.80019980019979,
+      "n_permutations": 1000
+    },
+    "block_bootstrap": {
+      "actual_statistic": 0.7841878732941122,
+      "p_value": 0.5044955044955045,
+      "is_significant": false,
+      "percentile": 49.55044955044955,
+      "n_permutations": 1000,
+      "block_size": 20
+    }
+  },
+  "artifacts": {
+    "directory": "artifacts/meta_ensemble_regime_cost_20260218_092038",
+    "equity_curve_csv": "artifacts/meta_ensemble_regime_cost_20260218_092038/equity_curve.csv"
+  }
+}

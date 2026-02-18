@@ -35,7 +35,7 @@ import pickle
 import sys
 import time
 import warnings
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -56,15 +56,25 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+try:
+    from quantum_alpha.data.collectors.ai_regime import (
+        AI_REGIME_FEATURES,
+        load_ai_regime_features,
+    )
+except Exception:
+    AI_REGIME_FEATURES = []
+    load_ai_regime_features = None
+
 # ── Paths ─────────────────────────────────────────────────────────────
 PROJECT_DIR = Path(__file__).resolve().parent
 DATA_DIR = PROJECT_DIR / "data_store" / "meta_ensemble"
 CACHE_DIR = DATA_DIR / "ohlcv_cache"
-FEATURE_DIR = DATA_DIR / "features"
-MODEL_DIR = PROJECT_DIR / "models" / "checkpoints" / "meta_ensemble"
-
-for d in [DATA_DIR, CACHE_DIR, FEATURE_DIR, MODEL_DIR]:
-    d.mkdir(parents=True, exist_ok=True)
+BASE_FEATURE_DIR = DATA_DIR / "features"
+BASE_MODEL_DIR = PROJECT_DIR / "models" / "checkpoints" / "meta_ensemble"
+FEATURE_DIR = BASE_FEATURE_DIR
+MODEL_DIR = BASE_MODEL_DIR
+FUNDAMENTAL_DIR = PROJECT_DIR / "data_store" / "fundamentals"
+FUNDAMENTAL_CACHE_FILE = FUNDAMENTAL_DIR / "snapshot_cache.pkl"
 
 # ── Constants ─────────────────────────────────────────────────────────
 START_DATE = datetime(2005, 1, 1)
@@ -72,6 +82,37 @@ END_DATE = datetime(2026, 2, 14)
 
 # Forward periods for target
 FORWARD_PERIOD = 1  # Next-day direction (binary: up/down)
+
+
+def _configure_runtime_dirs(forward_period: int = 1, run_tag: str | None = None) -> None:
+    """Resolve feature/model output directories for the chosen horizon."""
+    global FORWARD_PERIOD, FEATURE_DIR, MODEL_DIR
+
+    fp = int(forward_period)
+    if fp < 1:
+        raise ValueError("forward_period must be >= 1")
+    FORWARD_PERIOD = fp
+
+    suffix = ""
+    if run_tag:
+        suffix = "".join(
+            ch if (ch.isalnum() or ch in ("-", "_")) else "_" for ch in run_tag.strip()
+        )
+    elif FORWARD_PERIOD != 1:
+        suffix = f"h{FORWARD_PERIOD}d"
+
+    if suffix:
+        FEATURE_DIR = DATA_DIR / f"features_{suffix}"
+        MODEL_DIR = PROJECT_DIR / "models" / "checkpoints" / f"meta_ensemble_{suffix}"
+    else:
+        FEATURE_DIR = BASE_FEATURE_DIR
+        MODEL_DIR = BASE_MODEL_DIR
+
+    for d in [DATA_DIR, CACHE_DIR, FEATURE_DIR, MODEL_DIR, FUNDAMENTAL_DIR]:
+        d.mkdir(parents=True, exist_ok=True)
+
+
+_configure_runtime_dirs()
 
 # Walk-forward settings
 WF_TRAIN_MIN_DAYS = 1260  # 5 years minimum training
@@ -171,6 +212,13 @@ GDELT_TONE_FEATURES = [
     "gdelt_tone_acceleration",
 ]
 
+FUNDAMENTAL_FEATURES = [
+    "fund_pe_ratio",
+    "fund_price_to_book",
+    "fund_roe",
+    "fund_fcf_yield",
+]
+
 # Interaction features — capture nonlinear cross-domain signals
 INTERACTION_FEATURES = [
     "tone_x_momentum",  # GDELT tone × price momentum (sentiment confirms trend)
@@ -204,9 +252,11 @@ ALL_FEATURE_COLS = (
     + CROSS_SECTIONAL_FEATURES
     + PRICE_DERIVED_FEATURES
     + GDELT_TONE_FEATURES
+    + AI_REGIME_FEATURES
+    + FUNDAMENTAL_FEATURES
     # Note: INTERACTION_FEATURES excluded — tree models learn interactions implicitly.
-    # Explicit products added noise and degraded 2019-2024 performance.
-    + MOMENTUM_QUALITY_FEATURES
+    # MOMENTUM_QUALITY_FEATURES excluded — added noise and degraded OOS performance.
+    # The base 74 features + GDELT produce the best walk-forward results.
 )
 
 # MC/Padé features — dynamically generated from MCPadeFeatureGenerator
@@ -237,6 +287,8 @@ def _get_mc_pade_generator():
 
 # GDELT tone data — lazy-loaded from pre-fetched pickle
 _gdelt_data = None
+_fundamental_cache: Optional[Dict[str, Dict[str, object]]] = None
+_ai_regime_data = None
 
 
 def _get_gdelt_data():
@@ -255,6 +307,151 @@ def _get_gdelt_data():
             _gdelt_data = pd.DataFrame()
             logger.warning("GDELT tone data not found — tone features will be NaN/0")
     return _gdelt_data
+
+
+def _get_ai_regime_data():
+    """Lazy-load AI/memory/datacenter regime features."""
+    global _ai_regime_data
+    if _ai_regime_data is None:
+        if load_ai_regime_features is None:
+            _ai_regime_data = pd.DataFrame()
+            logger.warning("AI regime feature loader unavailable")
+            return _ai_regime_data
+        try:
+            _ai_regime_data = load_ai_regime_features(
+                cache_dir=str(CACHE_DIR / ".yf_cache")
+            )
+            if len(_ai_regime_data) > 0:
+                _ai_regime_data = _ai_regime_data.copy()
+                _ai_regime_data.index = pd.to_datetime(_ai_regime_data.index)
+                if _ai_regime_data.index.tz is not None:
+                    _ai_regime_data.index = _ai_regime_data.index.tz_localize(None)
+                logger.info(
+                    "AI regime features loaded: %d rows",
+                    len(_ai_regime_data),
+                )
+            else:
+                logger.warning("AI regime features empty")
+        except Exception as e:
+            logger.warning("Failed loading AI regime features: %s", e)
+            _ai_regime_data = pd.DataFrame()
+    return _ai_regime_data
+
+
+def _load_fundamental_cache() -> Dict[str, Dict[str, object]]:
+    """Lazy-load persistent fundamentals cache from disk."""
+    global _fundamental_cache
+    if _fundamental_cache is None:
+        if FUNDAMENTAL_CACHE_FILE.exists():
+            try:
+                with open(FUNDAMENTAL_CACHE_FILE, "rb") as f:
+                    cached = pickle.load(f)
+                _fundamental_cache = cached if isinstance(cached, dict) else {}
+            except Exception as e:
+                logger.warning("Failed loading fundamentals cache: %s", e)
+                _fundamental_cache = {}
+        else:
+            _fundamental_cache = {}
+    return _fundamental_cache
+
+
+def _save_fundamental_cache() -> None:
+    cache = _load_fundamental_cache()
+    try:
+        with open(FUNDAMENTAL_CACHE_FILE, "wb") as f:
+            pickle.dump(cache, f)
+    except Exception as e:
+        logger.warning("Failed saving fundamentals cache: %s", e)
+
+
+def _safe_fund_value(
+    value: object,
+    default: float = 0.0,
+    lower: float = -1_000.0,
+    upper: float = 1_000.0,
+) -> float:
+    """Convert fundamentals to finite bounded floats."""
+    try:
+        if value is None:
+            return default
+        v = float(value)
+        if not np.isfinite(v):
+            return default
+        return float(np.clip(v, lower, upper))
+    except Exception:
+        return default
+
+
+def _fetch_fundamental_snapshot(symbol: str) -> Dict[str, float]:
+    """
+    Fetch core value/quality fundamentals for one symbol.
+
+    Features added:
+      - PE ratio
+      - Price-to-book
+      - ROE
+      - FCF yield
+    """
+    try:
+        import yfinance as yf
+        from quantum_alpha.features.fundamental import (
+            CashFlowAnalyzer,
+            QualityMetricsAnalyzer,
+            ValuationRatioAnalyzer,
+        )
+
+        info = yf.Ticker(symbol).info or {}
+        val = ValuationRatioAnalyzer().extract_ratios(info)
+        qual = QualityMetricsAnalyzer().extract_metrics(info)
+        cash = CashFlowAnalyzer().extract_snapshot(info)
+    except Exception as e:
+        logger.debug("Fundamental snapshot fetch failed for %s: %s", symbol, e)
+        return {name: 0.0 for name in FUNDAMENTAL_FEATURES}
+
+    return {
+        "fund_pe_ratio": _safe_fund_value(
+            val.get("pe_ratio"), default=0.0, lower=-200.0, upper=500.0
+        ),
+        "fund_price_to_book": _safe_fund_value(
+            val.get("price_to_book"), default=0.0, lower=-50.0, upper=100.0
+        ),
+        "fund_roe": _safe_fund_value(
+            qual.get("roe"), default=0.0, lower=-5.0, upper=5.0
+        ),
+        "fund_fcf_yield": _safe_fund_value(
+            cash.get("fcf_yield"), default=0.0, lower=-1.0, upper=1.0
+        ),
+    }
+
+
+def _get_symbol_fundamentals(symbol: str, ttl_days: int = 7) -> Dict[str, float]:
+    """Return cached fundamentals for symbol, refreshing if stale."""
+    cache = _load_fundamental_cache()
+    now = datetime.now(timezone.utc)
+    entry = cache.get(symbol)
+    if isinstance(entry, dict):
+        fetched_at = pd.to_datetime(entry.get("fetched_at"), errors="coerce")
+        metrics = entry.get("metrics")
+        if isinstance(fetched_at, pd.Timestamp) and fetched_at.tz is None:
+            fetched_at = fetched_at.tz_localize(timezone.utc)
+        if (
+            isinstance(fetched_at, pd.Timestamp)
+            and not pd.isna(fetched_at)
+            and isinstance(metrics, dict)
+            and (now - fetched_at.to_pydatetime()) <= timedelta(days=ttl_days)
+        ):
+            return {
+                col: _safe_fund_value(metrics.get(col), default=0.0)
+                for col in FUNDAMENTAL_FEATURES
+            }
+
+    metrics = _fetch_fundamental_snapshot(symbol)
+    cache[symbol] = {
+        "fetched_at": now.isoformat(),
+        "metrics": metrics,
+    }
+    _save_fundamental_cache()
+    return metrics
 
 
 # =====================================================================
@@ -642,6 +839,12 @@ def compute_features_single_symbol(
         # Step 4: Price-derived features
         featured = compute_price_derived_features(featured)
 
+        # Step 4.5: Fundamental/value snapshot features.
+        # These are symbol-level and held constant through history until refresh.
+        fund_snapshot = _get_symbol_fundamentals(symbol)
+        for col in FUNDAMENTAL_FEATURES:
+            featured[col] = _safe_fund_value(fund_snapshot.get(col), default=0.0)
+
         # Step 5: MC/Padé features (analytical, fast)
         mc_gen = _get_mc_pade_generator()
         if mc_gen is not None:
@@ -681,6 +884,26 @@ def compute_features_single_symbol(
                     )
         except Exception as e:
             logger.debug(f"GDELT tone features failed for {symbol}: {e}")
+
+        # Step 5.55: AI/memory/datacenter thematic regime features.
+        # These are cross-symbol market regime features, same for all symbols
+        # on a given date, and help detect structural infrastructure booms.
+        try:
+            regime_df = _get_ai_regime_data()
+            if len(regime_df) > 0:
+                aligned = regime_df.reindex(featured.index)
+                aligned = aligned.ffill().bfill().fillna(0.0)
+                for col in AI_REGIME_FEATURES:
+                    if col in aligned.columns:
+                        featured[col] = aligned[col].astype(float)
+            else:
+                for col in AI_REGIME_FEATURES:
+                    featured[col] = 0.0
+        except Exception as e:
+            logger.debug(f"AI regime features failed for {symbol}: {e}")
+            for col in AI_REGIME_FEATURES:
+                if col not in featured.columns:
+                    featured[col] = 0.0
 
         # Step 5.6: Interaction features — capture nonlinear cross-domain signals
         # These combine features from different domains (sentiment, technical, price)
@@ -1248,6 +1471,7 @@ def walk_forward_train(
                 "model": final_model,
                 "scaler": final_scaler,
                 "feature_cols": feature_cols,
+                "forward_period": FORWARD_PERIOD,
                 "trained_at": datetime.now().isoformat(),
                 "n_samples": len(df),
                 "n_features": len(feature_cols),
@@ -1265,6 +1489,7 @@ def walk_forward_train(
                 "model": best_model,
                 "scaler": best_scaler,
                 "feature_cols": feature_cols,
+                "forward_period": FORWARD_PERIOD,
                 "best_auc": best_auc,
             },
             f,
@@ -1276,6 +1501,7 @@ def walk_forward_train(
         json.dump(
             {
                 "summary": {
+                    "forward_period": FORWARD_PERIOD,
                     "n_folds": len(all_results),
                     "avg_accuracy": float(avg_acc),
                     "avg_edge": float(avg_edge),
@@ -1301,6 +1527,7 @@ def walk_forward_train(
 
     return {
         "summary": {
+            "forward_period": FORWARD_PERIOD,
             "avg_accuracy": avg_acc,
             "avg_edge": avg_edge,
             "avg_auc": avg_auc,
@@ -1350,6 +1577,22 @@ def main():
         default=None,
         help="Limit number of walk-forward folds",
     )
+    parser.add_argument(
+        "--forward-period",
+        type=int,
+        default=1,
+        help="Target horizon in trading days (default: 1)",
+    )
+    parser.add_argument(
+        "--run-tag",
+        type=str,
+        default=None,
+        help=(
+            "Optional suffix for output dirs. "
+            "Examples: h21d, experiment_a. "
+            "If omitted and forward-period != 1, uses h{period}d."
+        ),
+    )
     args = parser.parse_args()
 
     if args.quick:
@@ -1357,9 +1600,16 @@ def main():
         if args.n_folds is None:
             args.n_folds = 3
 
+    _configure_runtime_dirs(args.forward_period, args.run_tag)
+
     logger.info(
-        f"Meta-Ensemble Pipeline: phase={args.phase}, n_symbols={args.n_symbols}"
+        "Meta-Ensemble Pipeline: phase=%s, n_symbols=%d, forward_period=%dd",
+        args.phase,
+        args.n_symbols,
+        FORWARD_PERIOD,
     )
+    logger.info("Feature dir: %s", FEATURE_DIR)
+    logger.info("Model dir:   %s", MODEL_DIR)
 
     # ── Phase 1: Fetch ────────────────────────────────────────────────
     if args.phase in ("fetch", "all"):

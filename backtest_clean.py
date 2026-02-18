@@ -31,6 +31,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import importlib
 import pickle
 import sys
 from pathlib import Path
@@ -39,6 +40,111 @@ import numpy as np
 import pandas as pd
 
 sys.path.insert(0, "/home/regulus/Trade")
+
+
+def _load_earnings_helpers():
+    """
+    Resolve earnings helper functions regardless of execution context.
+
+    Supports running as:
+    - module: python -m quantum_alpha.backtest_clean
+    - script: python quantum_alpha/backtest_clean.py
+    """
+    module_candidates = [
+        "quantum_alpha.data.collectors.earnings_calendar",
+        "data.collectors.earnings_calendar",
+    ]
+    for module_name in module_candidates:
+        try:
+            module = importlib.import_module(module_name)
+            return (
+                module.load_earnings_calendar,
+                module.get_earnings_mask,
+            )
+        except ModuleNotFoundError:
+            continue
+
+    raise ModuleNotFoundError(
+        "Could not import earnings calendar helpers. "
+        "Expected module: quantum_alpha.data.collectors.earnings_calendar"
+    )
+
+
+SEMICONDUCTOR_SYMBOLS = {
+    "NVDA",
+    "AMD",
+    "AVGO",
+    "QCOM",
+    "INTC",
+    "AMAT",
+    "LRCX",
+    "MU",
+    "TXN",
+    "ADI",
+    "MRVL",
+    "MCHP",
+    "NXPI",
+    "ON",
+    "KLAC",
+    "WDC",
+    "STX",
+}
+
+
+def _load_ai_regime_features() -> pd.DataFrame:
+    module_candidates = [
+        "quantum_alpha.data.collectors.ai_regime",
+        "data.collectors.ai_regime",
+    ]
+    for module_name in module_candidates:
+        try:
+            module = importlib.import_module(module_name)
+            regime = module.load_ai_regime_features()
+            if isinstance(regime, pd.DataFrame):
+                return regime
+        except ModuleNotFoundError:
+            continue
+        except Exception:
+            break
+    return pd.DataFrame()
+
+
+def _apply_semiconductor_short_gate(
+    df: pd.DataFrame,
+    gate_threshold: float = 0.0,
+) -> pd.DataFrame:
+    """
+    Allow semiconductor shorts only when AI regime is weak.
+    """
+    out = df.copy()
+    regime = _load_ai_regime_features()
+    if regime.empty or "ai_regime_strength" not in regime.columns:
+        print("  Semiconductor short gate: regime features unavailable, skipping")
+        return out
+
+    r = regime.copy()
+    r.index = pd.to_datetime(r.index)
+    if isinstance(r.index, pd.DatetimeIndex) and r.index.tz is not None:
+        r.index = r.index.tz_localize(None)
+    r.index = r.index.normalize()
+    strength = r["ai_regime_strength"]
+
+    trade_dates = pd.to_datetime(out["date"]).dt.normalize()
+    gate_strength = trade_dates.map(strength)
+    weak_regime = gate_strength <= gate_threshold
+    mask = (
+        out["symbol"].isin(SEMICONDUCTOR_SYMBOLS)
+        & (out["raw_signal"] < 0)
+        & (~weak_regime.fillna(False))
+    )
+    removed = int(mask.sum())
+    out.loc[mask, "raw_signal"] = 0.0
+    if removed > 0:
+        print(
+            f"  Semiconductor short gate: removed {removed:,} short signals "
+            f"(threshold={gate_threshold:.2f})"
+        )
+    return out
 
 
 def load_predictions(checkpoint_dir: str | Path) -> pd.DataFrame:
@@ -87,7 +193,8 @@ def deduplicate_predictions(df: pd.DataFrame) -> pd.DataFrame:
 
 def compute_signals(
     df: pd.DataFrame,
-    signal_threshold: float = 0.52,
+    signal_threshold: float = 0.53,
+    short_threshold: float | None = None,
     confidence_threshold: float = 0.0,
     long_only: bool = False,
 ) -> pd.DataFrame:
@@ -97,6 +204,7 @@ def compute_signals(
     Args:
         df: DataFrame with 'y_proba' column (P(up))
         signal_threshold: Min probability to trigger long (1 - threshold for short)
+        short_threshold: Max probability to trigger short. If None, use (1 - signal_threshold)
         confidence_threshold: Min |P - 0.5| to trade at all
         long_only: If True, only take long positions
     """
@@ -108,7 +216,9 @@ def compute_signals(
     # Raw signal: +1 (long), -1 (short), 0 (flat)
     df["raw_signal"] = 0.0
     long_mask = df["y_proba"] >= signal_threshold
-    short_mask = df["y_proba"] <= (1.0 - signal_threshold)
+    if short_threshold is None:
+        short_threshold = 1.0 - signal_threshold
+    short_mask = df["y_proba"] <= short_threshold
     conf_mask = df["confidence"] >= confidence_threshold
 
     df.loc[long_mask & conf_mask, "raw_signal"] = 1.0
@@ -128,6 +238,89 @@ def compute_signals(
     return df
 
 
+def _apply_pead_boost(
+    df: pd.DataFrame,
+    calendar: pd.DataFrame,
+    pead_window_days: int = 60,
+    min_surprise_pct: float = 5.0,
+    positive_boost: float = 1.5,
+    negative_penalty: float = 0.5,
+) -> pd.DataFrame:
+    """
+    Apply Post-Earnings Announcement Drift (PEAD) confidence adjustment.
+
+    After a significant earnings surprise, stocks tend to drift in the
+    direction of the surprise for 20-60 trading days. This function boosts
+    confidence for positive surprises and reduces it for negative ones.
+
+    Args:
+        df: DataFrame with 'date', 'symbol', 'confidence' columns
+        calendar: Earnings calendar with surprise data
+        pead_window_days: Days after earnings to apply PEAD boost
+        min_surprise_pct: Minimum |surprise_pct| to trigger PEAD
+        positive_boost: Multiply confidence by this for positive surprise
+        negative_penalty: Multiply confidence by this for negative surprise
+
+    Returns:
+        DataFrame with adjusted 'confidence' column
+    """
+    df = df.copy()
+
+    # Only use historical earnings with surprise data
+    hist = calendar.dropna(subset=["surprise_pct"]).copy()
+    if hist.empty:
+        return df
+
+    # Filter to significant surprises
+    hist = hist[hist["surprise_pct"].abs() >= min_surprise_pct].copy()
+    if hist.empty:
+        return df
+
+    trade_dates = pd.to_datetime(df["date"])
+    if isinstance(trade_dates, pd.DatetimeIndex):
+        trade_dates = pd.Series(trade_dates, index=df.index)
+    n_boosted = 0
+    n_penalized = 0
+
+    for _, erow in hist.iterrows():
+        sym = erow["symbol"]
+        edate = pd.to_datetime(erow["earnings_date"])
+        surprise = erow["surprise_pct"]
+
+        sym_mask = df["symbol"] == sym
+        if not sym_mask.any():
+            continue
+
+        sym_dates = trade_dates.loc[sym_mask]
+
+        # PEAD window: [earnings_date + 1, earnings_date + pead_window_days]
+        days_since = (sym_dates - edate).dt.days
+        in_pead = (days_since >= 1) & (days_since <= pead_window_days)
+
+        if not bool(in_pead.any()):
+            continue
+
+        pead_indices = sym_dates.index[in_pead]
+
+        if surprise > 0:
+            df.loc[pead_indices, "confidence"] *= positive_boost
+            n_boosted += len(pead_indices)
+        else:
+            df.loc[pead_indices, "confidence"] *= negative_penalty
+            n_penalized += len(pead_indices)
+
+    # Clip confidence to [0, 1]
+    df["confidence"] = df["confidence"].clip(0.0, 1.0)
+
+    if n_boosted > 0 or n_penalized > 0:
+        print(
+            f"  PEAD boost: {n_boosted:,} boosted, {n_penalized:,} penalized "
+            f"(window={pead_window_days}d, min_surprise={min_surprise_pct}%)"
+        )
+
+    return df
+
+
 def backtest_equal_weight(
     df: pd.DataFrame,
     max_positions: int = 20,
@@ -138,6 +331,10 @@ def backtest_equal_weight(
     start_date: str | None = None,
     end_date: str | None = None,
     confidence_weight: bool = False,
+    earnings_filter: bool = False,
+    pead_boost: bool = False,
+    semiconductor_short_gate: bool = False,
+    gate_threshold: float = 0.0,
 ) -> dict:
     """
     Simple equal-weight portfolio backtest (or confidence-weighted if enabled).
@@ -164,6 +361,10 @@ def backtest_equal_weight(
         start_date: Filter predictions from this date
         end_date: Filter predictions to this date
         confidence_weight: If True, weight positions by confidence instead of equal weight
+        earnings_filter: If True, skip trades where earnings fall within hold period
+        pead_boost: If True, boost confidence for stocks with recent positive earnings surprise
+        semiconductor_short_gate: If True, disable semi shorts unless AI regime is weak
+        gate_threshold: AI regime threshold below which semi shorts are allowed
     """
     df = df.copy()
     df["date"] = pd.to_datetime(df["date"])
@@ -178,6 +379,39 @@ def backtest_equal_weight(
 
     # Drop NaN forward returns
     df = df.dropna(subset=["forward_return"])
+
+    # --- Long-horizon semiconductor short gate ---
+    if semiconductor_short_gate:
+        df = _apply_semiconductor_short_gate(df, gate_threshold=gate_threshold)
+
+    calendar: pd.DataFrame | None = None
+
+    # --- Earnings avoidance filter ---
+    if earnings_filter:
+        load_earnings_calendar, get_earnings_mask = _load_earnings_helpers()
+        calendar = load_earnings_calendar()
+        if not calendar.empty:
+            earn_mask = get_earnings_mask(
+                df, hold_days=max(hold_days, 1), calendar=calendar
+            )
+            n_filtered = earn_mask.sum()
+            n_active_before = (df["raw_signal"] != 0).sum()
+            df.loc[earn_mask, "raw_signal"] = 0.0
+            n_active_after = (df["raw_signal"] != 0).sum()
+            if n_filtered > 0:
+                print(
+                    f"  Earnings filter: {n_filtered:,} signals removed "
+                    f"({n_active_before:,} -> {n_active_after:,} active)"
+                )
+
+    # --- PEAD confidence boost ---
+    if pead_boost:
+        if calendar is None:
+            load_earnings_calendar, _ = _load_earnings_helpers()
+            calendar = load_earnings_calendar()
+        cal = calendar
+        if cal is not None and not cal.empty:
+            df = _apply_pead_boost(df, cal)
 
     if hold_days <= 1:
         return _backtest_daily_rebalance(
@@ -713,13 +947,19 @@ def run_confidence_sweep(
 
 def run_year_by_year(
     df: pd.DataFrame,
-    signal_threshold: float = 0.52,
+    signal_threshold: float = 0.53,
+    short_threshold: float | None = None,
     confidence_threshold: float = 0.0,
     long_only: bool = False,
     commission_bps: float = 0.0,
     hold_days: int = 1,
     max_positions: int = 20,
     confidence_weight: bool = False,
+    top_k: int | None = None,
+    earnings_filter: bool = False,
+    pead_boost: bool = False,
+    semiconductor_short_gate: bool = False,
+    gate_threshold: float = 0.0,
 ) -> pd.DataFrame:
     """Break down performance by calendar year."""
     df = df.copy()
@@ -729,6 +969,7 @@ def run_year_by_year(
     sig_df = compute_signals(
         df,
         signal_threshold=signal_threshold,
+        short_threshold=short_threshold,
         confidence_threshold=confidence_threshold,
         long_only=long_only,
     )
@@ -757,7 +998,12 @@ def run_year_by_year(
             max_positions=max_positions,
             commission_bps=commission_bps,
             hold_days=hold_days,
+            top_k=top_k,
             confidence_weight=confidence_weight,
+            earnings_filter=earnings_filter,
+            pead_boost=pead_boost,
+            semiconductor_short_gate=semiconductor_short_gate,
+            gate_threshold=gate_threshold,
         )
 
         rows.append(
@@ -799,8 +1045,14 @@ Examples:
     parser.add_argument(
         "--signal-threshold",
         type=float,
-        default=0.52,
-        help="Min probability for long/short (default: 0.52)",
+        default=0.53,
+        help="Min probability for long/short (default: 0.53)",
+    )
+    parser.add_argument(
+        "--short-threshold",
+        type=float,
+        default=None,
+        help="Max probability for short entries (default: 1 - signal-threshold)",
     )
     parser.add_argument(
         "--confidence",
@@ -823,8 +1075,8 @@ Examples:
     parser.add_argument(
         "--top-k",
         type=int,
-        default=None,
-        help="Only trade top-K most confident signals per day",
+        default=10,
+        help="Only trade top-K most confident signals per day (default: 10)",
     )
     parser.add_argument(
         "--max-positions",
@@ -876,6 +1128,30 @@ Examples:
         action="store_true",
         help="Weight positions by confidence instead of equal weight",
     )
+    parser.add_argument(
+        "--earnings-filter",
+        action="store_true",
+        help="Skip trades where earnings fall within hold period (requires earnings data)",
+    )
+    parser.add_argument(
+        "--pead-boost",
+        action="store_true",
+        help=(
+            "Boost confidence after significant earnings surprise "
+            "(post-earnings drift signal)"
+        ),
+    )
+    parser.add_argument(
+        "--semiconductor-short-gate",
+        action="store_true",
+        help="Only allow semiconductor shorts when AI regime is weak",
+    )
+    parser.add_argument(
+        "--gate-threshold",
+        type=float,
+        default=0.0,
+        help="AI regime threshold for semiconductor short gate (default: 0.0)",
+    )
 
     args = parser.parse_args()
 
@@ -904,6 +1180,10 @@ Examples:
     # Print config
     print(f"\n  Config:")
     print(f"    Signal threshold:   {args.signal_threshold:.2f}")
+    if args.short_threshold is None:
+        print(f"    Short threshold:    {1.0 - args.signal_threshold:.2f} (auto)")
+    else:
+        print(f"    Short threshold:    {args.short_threshold:.2f}")
     print(f"    Confidence min:     {args.confidence:.2f}")
     print(f"    Commission:         {args.commission:.1f} bps each way")
     print(f"    Hold days:          {args.hold_days}")
@@ -911,6 +1191,10 @@ Examples:
     print(f"    Max positions:      {args.max_positions}")
     print(f"    Long only:          {args.long_only}")
     print(f"    Conf weight:        {args.conf_weight}")
+    print(f"    Earnings filter:    {args.earnings_filter}")
+    print(f"    PEAD boost:         {args.pead_boost}")
+    print(f"    Semi short gate:    {args.semiconductor_short_gate}")
+    print(f"    Gate threshold:     {args.gate_threshold:.2f}")
     print(f"    Capital:            ${args.capital:,.0f}")
 
     if args.start_date:
@@ -968,12 +1252,18 @@ Examples:
         yearly_df = run_year_by_year(
             df,
             signal_threshold=args.signal_threshold,
+            short_threshold=args.short_threshold,
             confidence_threshold=args.confidence,
             long_only=args.long_only,
             commission_bps=args.commission,
             hold_days=args.hold_days,
             max_positions=args.max_positions,
             confidence_weight=args.conf_weight,
+            top_k=args.top_k,
+            earnings_filter=args.earnings_filter,
+            pead_boost=args.pead_boost,
+            semiconductor_short_gate=args.semiconductor_short_gate,
+            gate_threshold=args.gate_threshold,
         )
 
         print(
@@ -1011,6 +1301,7 @@ Examples:
     sig_df = compute_signals(
         df,
         signal_threshold=args.signal_threshold,
+        short_threshold=args.short_threshold,
         confidence_threshold=args.confidence,
         long_only=args.long_only,
     )
@@ -1025,6 +1316,10 @@ Examples:
         start_date=args.start_date,
         end_date=args.end_date,
         confidence_weight=args.conf_weight,
+        earnings_filter=args.earnings_filter,
+        pead_boost=args.pead_boost,
+        semiconductor_short_gate=args.semiconductor_short_gate,
+        gate_threshold=args.gate_threshold,
     )
 
     config_label = (
@@ -1049,6 +1344,10 @@ Examples:
                 start_date=args.start_date,
                 end_date=args.end_date,
                 confidence_weight=args.conf_weight,
+                earnings_filter=args.earnings_filter,
+                pead_boost=args.pead_boost,
+                semiconductor_short_gate=args.semiconductor_short_gate,
+                gate_threshold=args.gate_threshold,
             )
             print(
                 f"  @{c_bps:>2}bps commission: Return={res_c['total_return']:+.2%}, "

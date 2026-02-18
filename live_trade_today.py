@@ -24,6 +24,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import importlib
 import json
 import pickle
 import sys
@@ -42,6 +43,26 @@ PROJECT_ROOT = Path(__file__).parent
 CHECKPOINT_DIR = PROJECT_ROOT / "models" / "checkpoints" / "meta_ensemble"
 TRADES_DIR = PROJECT_ROOT / "data_store" / "live_trades"
 TRADES_DIR.mkdir(parents=True, exist_ok=True)
+
+SEMICONDUCTOR_SYMBOLS = {
+    "NVDA",
+    "AMD",
+    "AVGO",
+    "QCOM",
+    "INTC",
+    "AMAT",
+    "LRCX",
+    "MU",
+    "TXN",
+    "ADI",
+    "MRVL",
+    "MCHP",
+    "NXPI",
+    "ON",
+    "KLAC",
+    "WDC",
+    "STX",
+}
 
 
 def load_model():
@@ -286,26 +307,233 @@ def run_predictions(
     return pred_df
 
 
+def _load_earnings_helpers():
+    """Resolve earnings helper imports for module/script execution modes."""
+    module_candidates = [
+        "quantum_alpha.data.collectors.earnings_calendar",
+        "data.collectors.earnings_calendar",
+    ]
+    for module_name in module_candidates:
+        try:
+            module = importlib.import_module(module_name)
+            return module.load_earnings_calendar
+        except ModuleNotFoundError:
+            continue
+    raise ModuleNotFoundError(
+        "Could not import earnings calendar helpers. "
+        "Expected quantum_alpha.data.collectors.earnings_calendar"
+    )
+
+
+def _get_ai_regime_strength(as_of_date: str | pd.Timestamp) -> float | None:
+    module_candidates = [
+        "quantum_alpha.data.collectors.ai_regime",
+        "data.collectors.ai_regime",
+    ]
+    regime = None
+    for module_name in module_candidates:
+        try:
+            module = importlib.import_module(module_name)
+            regime = module.load_ai_regime_features()
+            break
+        except ModuleNotFoundError:
+            continue
+        except Exception:
+            return None
+    if regime is None or len(regime) == 0 or "ai_regime_strength" not in regime.columns:
+        return None
+
+    idx = pd.to_datetime(regime.index)
+    if isinstance(idx, pd.DatetimeIndex) and idx.tz is not None:
+        idx = idx.tz_localize(None)
+    series = pd.Series(regime["ai_regime_strength"].values, index=idx.normalize()).sort_index()
+    date = pd.to_datetime(as_of_date).normalize()
+    valid = series[series.index <= date]
+    if len(valid) == 0:
+        return None
+    return float(valid.iloc[-1])
+
+
+def attach_earnings_context(
+    pred_df: pd.DataFrame,
+    hold_days: int = 5,
+    lookback_days: int = 120,
+) -> pd.DataFrame:
+    """
+    Add upcoming-earnings and recent-surprise metadata to predictions.
+    """
+    if len(pred_df) == 0:
+        return pred_df
+
+    out = pred_df.copy()
+    out["has_earnings_within_hold"] = False
+    out["earnings_date"] = pd.NaT
+    out["earnings_days_ahead"] = np.nan
+    out["recent_surprise_pct"] = np.nan
+    out["pead_days_since"] = np.nan
+
+    try:
+        load_earnings_calendar = _load_earnings_helpers()
+        calendar = load_earnings_calendar()
+    except Exception as e:
+        print(f"  WARNING: Earnings calendar unavailable: {e}")
+        return out
+
+    if calendar is None or len(calendar) == 0:
+        print("  WARNING: Earnings calendar is empty. Run earnings fetcher first.")
+        return out
+
+    cal = calendar.copy()
+    cal["earnings_date"] = pd.to_datetime(cal["earnings_date"]).dt.normalize()
+    as_of = pd.to_datetime(out["date"].iloc[0]).normalize()
+
+    # Upcoming earnings in the active hold window.
+    cutoff = as_of + pd.Timedelta(days=max(1, hold_days))
+    upcoming = cal[
+        (cal["earnings_date"] >= as_of) & (cal["earnings_date"] <= cutoff)
+    ].copy()
+    if len(upcoming) > 0:
+        next_upcoming = (
+            upcoming.sort_values("earnings_date")
+            .drop_duplicates(subset=["symbol"], keep="first")
+            .set_index("symbol")
+        )
+        out["earnings_date"] = out["symbol"].map(next_upcoming["earnings_date"])
+        out["has_earnings_within_hold"] = out["earnings_date"].notna()
+        out["earnings_days_ahead"] = (
+            pd.to_datetime(out["earnings_date"]) - as_of
+        ).dt.days
+
+    # Most recent surprise for PEAD-style confidence adjustment.
+    hist_start = as_of - pd.Timedelta(days=max(20, lookback_days))
+    hist = cal[
+        (cal["earnings_date"] <= as_of) & (cal["earnings_date"] >= hist_start)
+    ].dropna(subset=["surprise_pct"])
+    if len(hist) > 0:
+        recent = (
+            hist.sort_values("earnings_date")
+            .drop_duplicates(subset=["symbol"], keep="last")
+            .set_index("symbol")
+        )
+        out["recent_surprise_pct"] = out["symbol"].map(recent["surprise_pct"])
+        last_earnings = pd.to_datetime(out["symbol"].map(recent["earnings_date"]))
+        out["pead_days_since"] = (as_of - last_earnings).dt.days
+
+    n_blocked = int(out["has_earnings_within_hold"].sum())
+    if n_blocked > 0:
+        print(f"  Earnings context: {n_blocked} symbols have earnings within {hold_days}d")
+
+    return out
+
+
+def apply_pead_confidence_adjustment(
+    pred_df: pd.DataFrame,
+    min_surprise_pct: float = 5.0,
+    pead_window_days: int = 60,
+    positive_boost: float = 1.25,
+    negative_penalty: float = 0.85,
+) -> pd.DataFrame:
+    """
+    Adjust confidence based on post-earnings announcement drift context.
+    """
+    if len(pred_df) == 0 or "recent_surprise_pct" not in pred_df.columns:
+        return pred_df
+
+    out = pred_df.copy()
+    out["confidence_raw"] = out["confidence"]
+    out["pead_multiplier"] = 1.0
+
+    surprise = out["recent_surprise_pct"]
+    days_since = out["pead_days_since"]
+    valid = (
+        surprise.notna()
+        & days_since.notna()
+        & (days_since >= 1)
+        & (days_since <= pead_window_days)
+        & (surprise.abs() >= min_surprise_pct)
+    )
+
+    pos_mask = valid & (surprise > 0)
+    neg_mask = valid & (surprise < 0)
+
+    out.loc[pos_mask, "pead_multiplier"] = positive_boost
+    out.loc[neg_mask, "pead_multiplier"] = negative_penalty
+    out["confidence"] = (out["confidence_raw"] * out["pead_multiplier"]).clip(0.0, 1.0)
+
+    n_pos = int(pos_mask.sum())
+    n_neg = int(neg_mask.sum())
+    if n_pos > 0 or n_neg > 0:
+        print(
+            f"  PEAD confidence adjust: {n_pos} boosted, {n_neg} penalized "
+            f"(window={pead_window_days}d, min_surprise={min_surprise_pct}%)"
+        )
+
+    return out.sort_values("confidence", ascending=False)
+
+
 def select_trades(
     pred_df: pd.DataFrame,
     max_positions: int = 10,
     min_confidence: float = 0.05,
     long_only: bool = True,
+    signal_threshold: float = 0.53,
+    short_threshold: float | None = None,
+    confidence_weight: bool = True,
+    earnings_filter: bool = False,
+    semiconductor_short_gate: bool = False,
+    gate_threshold: float = 0.0,
 ) -> pd.DataFrame:
     """Select the best trades for today."""
     # Filter by confidence
     trades = pred_df[pred_df["confidence"] >= min_confidence].copy()
 
     if long_only:
-        trades = trades[trades["up_probability"] > 0.5]
+        trades = trades[trades["up_probability"] >= signal_threshold]
+    else:
+        if short_threshold is None:
+            short_threshold = 1.0 - signal_threshold
+        trades = trades[
+            (trades["up_probability"] >= signal_threshold)
+            | (trades["up_probability"] <= short_threshold)
+        ]
+
+    if earnings_filter and "has_earnings_within_hold" in trades.columns:
+        n_before = len(trades)
+        trades = trades[~trades["has_earnings_within_hold"]]
+        n_removed = n_before - len(trades)
+        if n_removed > 0:
+            print(
+                f"  Earnings filter: removed {n_removed} symbols with "
+                "earnings inside hold window"
+            )
+
+    if semiconductor_short_gate and not long_only and len(trades) > 0:
+        pred_date = trades["date"].iloc[0]
+        strength = _get_ai_regime_strength(pred_date)
+        if strength is None:
+            print("  Semiconductor short gate: regime unavailable, skipping")
+        elif strength > gate_threshold:
+            mask = trades["symbol"].isin(SEMICONDUCTOR_SYMBOLS) & (
+                trades["signal"] == "SHORT"
+            )
+            removed = int(mask.sum())
+            if removed > 0:
+                trades = trades[~mask]
+                print(
+                    f"  Semiconductor short gate: removed {removed} shorts "
+                    f"(strength={strength:.3f}, threshold={gate_threshold:.3f})"
+                )
 
     # Take top-N by confidence
     trades = trades.head(max_positions)
 
-    # Equal weight
+    # Confidence-weighted or equal weight
     n = len(trades)
     if n > 0:
-        trades["weight"] = 1.0 / n
+        if confidence_weight and trades["confidence"].sum() > 0:
+            trades["weight"] = trades["confidence"] / trades["confidence"].sum()
+        else:
+            trades["weight"] = 1.0 / n
     else:
         trades["weight"] = 0.0
 
@@ -322,14 +550,25 @@ def print_trade_plan(trades: pd.DataFrame, capital: float = 100_000.0):
         print("  No trades meet confidence threshold.")
         return
 
-    print(
-        f"  {'Symbol':>8} | {'Signal':>6} | {'P(up)':>7} | {'Conf':>7} | "
-        f"{'Weight':>7} | {'$ Alloc':>10} | {'Shares':>7}"
-    )
-    print(
-        f"  {'-' * 8}-+-{'-' * 6}-+-{'-' * 7}-+-{'-' * 7}-+-"
-        f"{'-' * 7}-+-{'-' * 10}-+-{'-' * 7}"
-    )
+    show_earn = "earnings_days_ahead" in trades.columns
+    if show_earn:
+        print(
+            f"  {'Symbol':>8} | {'Signal':>6} | {'P(up)':>7} | {'Conf':>7} | "
+            f"{'Weight':>7} | {'$ Alloc':>10} | {'Shares':>7} | {'E+Days':>6}"
+        )
+        print(
+            f"  {'-' * 8}-+-{'-' * 6}-+-{'-' * 7}-+-{'-' * 7}-+-"
+            f"{'-' * 7}-+-{'-' * 10}-+-{'-' * 7}-+-{'-' * 6}"
+        )
+    else:
+        print(
+            f"  {'Symbol':>8} | {'Signal':>6} | {'P(up)':>7} | {'Conf':>7} | "
+            f"{'Weight':>7} | {'$ Alloc':>10} | {'Shares':>7}"
+        )
+        print(
+            f"  {'-' * 8}-+-{'-' * 6}-+-{'-' * 7}-+-{'-' * 7}-+-"
+            f"{'-' * 7}-+-{'-' * 10}-+-{'-' * 7}"
+        )
 
     total_allocated = 0
     for _, row in trades.iterrows():
@@ -338,11 +577,24 @@ def print_trade_plan(trades: pd.DataFrame, capital: float = 100_000.0):
         actual_alloc = shares * row["last_close"]
         total_allocated += actual_alloc
 
-        print(
-            f"  {row['symbol']:>8} | {row['signal']:>6} | "
-            f"{row['up_probability']:>6.3f} | {row['confidence']:>6.3f} | "
-            f"{row['weight']:>6.1%} | ${alloc:>9,.0f} | {shares:>7,}"
-        )
+        if show_earn:
+            earn_days = (
+                int(row["earnings_days_ahead"])
+                if pd.notna(row.get("earnings_days_ahead"))
+                else "-"
+            )
+            print(
+                f"  {row['symbol']:>8} | {row['signal']:>6} | "
+                f"{row['up_probability']:>6.3f} | {row['confidence']:>6.3f} | "
+                f"{row['weight']:>6.1%} | ${alloc:>9,.0f} | {shares:>7,} | "
+                f"{str(earn_days):>6}"
+            )
+        else:
+            print(
+                f"  {row['symbol']:>8} | {row['signal']:>6} | "
+                f"{row['up_probability']:>6.3f} | {row['confidence']:>6.3f} | "
+                f"{row['weight']:>6.1%} | ${alloc:>9,.0f} | {shares:>7,}"
+            )
 
     print(f"\n  Total positions: {len(trades)}")
     print(f"  Capital allocated: ${total_allocated:,.0f} / ${capital:,.0f}")
@@ -675,6 +927,62 @@ def main():
         default=True,
         help="Only take long positions (default: True)",
     )
+    parser.add_argument(
+        "--allow-shorts",
+        action="store_true",
+        help="Allow short candidates (overrides --long-only default behavior)",
+    )
+    parser.add_argument(
+        "--signal-threshold",
+        type=float,
+        default=0.53,
+        help="Min probability for long entries (default: 0.53)",
+    )
+    parser.add_argument(
+        "--short-threshold",
+        type=float,
+        default=None,
+        help="Max probability for short entries (default: 1 - signal-threshold)",
+    )
+    parser.add_argument(
+        "--earnings-filter",
+        action="store_true",
+        help="Skip trades with earnings inside holding window",
+    )
+    parser.add_argument(
+        "--earnings-hold-days",
+        type=int,
+        default=5,
+        help="Holding window used by earnings filter (default: 5)",
+    )
+    parser.add_argument(
+        "--pead-boost",
+        action="store_true",
+        help="Adjust confidence using recent earnings surprise drift",
+    )
+    parser.add_argument(
+        "--pead-window-days",
+        type=int,
+        default=60,
+        help="Days after earnings considered for PEAD adjustment (default: 60)",
+    )
+    parser.add_argument(
+        "--pead-min-surprise",
+        type=float,
+        default=5.0,
+        help="Minimum surprise %% for PEAD confidence adjustment (default: 5.0)",
+    )
+    parser.add_argument(
+        "--semiconductor-short-gate",
+        action="store_true",
+        help="Only allow semiconductor shorts when AI regime is weak",
+    )
+    parser.add_argument(
+        "--gate-threshold",
+        type=float,
+        default=0.0,
+        help="AI regime threshold for semiconductor short gate",
+    )
 
     args = parser.parse_args()
 
@@ -691,11 +999,28 @@ def main():
         if len(pred_df) == 0:
             return
 
+        if args.earnings_filter or args.pead_boost:
+            pred_df = attach_earnings_context(
+                pred_df,
+                hold_days=args.earnings_hold_days,
+            )
+        if args.pead_boost:
+            pred_df = apply_pead_confidence_adjustment(
+                pred_df,
+                min_surprise_pct=args.pead_min_surprise,
+                pead_window_days=args.pead_window_days,
+            )
+
         trades = select_trades(
             pred_df,
             max_positions=args.max_positions,
             min_confidence=args.min_confidence,
-            long_only=args.long_only,
+            long_only=not args.allow_shorts,
+            signal_threshold=args.signal_threshold,
+            short_threshold=args.short_threshold,
+            earnings_filter=args.earnings_filter,
+            semiconductor_short_gate=args.semiconductor_short_gate,
+            gate_threshold=args.gate_threshold,
         )
 
         print_trade_plan(trades, capital=args.capital)

@@ -82,6 +82,42 @@ The AI agent developing this system MUST adhere to the following non-negotiable 
 
 ---
 
+# SECTION 0.25: FEB 2026 IMPLEMENTATION UPDATE (LIVE CODEBASE)
+
+## 0.25.1 Backtesting and Earnings Controls
+- `backtest_clean.py` defaults are now `--signal-threshold 0.53` and `--top-k 10`
+- Earnings avoidance is implemented via `--earnings-filter` (skips entries with earnings inside hold window)
+- PEAD continuation logic is implemented via `--pead-boost` (confidence adjustment after significant surprises)
+
+## 0.25.2 Live Paper Selection Guards
+- `live_trade_today.py` now supports earnings-aware trade selection:
+  - `--earnings-filter`
+  - `--earnings-hold-days`
+  - `--pead-boost`, `--pead-window-days`, `--pead-min-surprise`
+- Trade ranking can now include earnings-surprise drift context without altering model probabilities
+
+## 0.25.3 Data Collectors and Refresh Jobs
+- Earnings collector implemented: `quantum_alpha.data.collectors.earnings_calendar`
+- Daily incremental GDELT refresh script implemented:
+  - `python -m quantum_alpha.data.collectors.gdelt_daily_refresh`
+  - refreshes recent windows and merges into `data_store/gdelt_tone/gdelt_daily_tone.pkl`
+
+## 0.25.4 Fundamental / Value Feature Expansion
+- Meta-ensemble features now include:
+  - `fund_pe_ratio`
+  - `fund_price_to_book`
+  - `fund_roe`
+  - `fund_fcf_yield`
+- Fundamental snapshots are cached in `data_store/fundamentals/snapshot_cache.pkl` with TTL refresh
+
+## 0.25.5 Latest Long-Horizon Backtest Snapshot (Enhanced Strategy)
+- Run window: 2006-01-01 to 2025-12-31
+- Total return: +775.03% (final equity: $876,390.83 from $100,000)
+- CAGR: 11.49%, Sharpe: 0.52, Max drawdown: -46.18%
+- Gate status: PASS (96.88% good metrics), with ulcer index still below benchmark threshold
+
+---
+
 # SECTION 0.3: PERFORMANCE GATE (METRICS AND PROMOTION RULE)
 
 ## 0.3.1 Promotion Rule

@@ -50,13 +50,13 @@ class MetaEnsembleStrategy:
       more accurate. This strategy supports:
       - confidence_threshold: minimum confidence to trade (default 0.10)
       - proportional_sizing: if True, position_signal scales with confidence
-      - signal_threshold: minimum up/down probability to trigger signal (default 0.52)
+       - signal_threshold: minimum up/down probability to trigger signal (default 0.53)
     """
 
     def __init__(
         self,
         checkpoint_dir: str = None,
-        signal_threshold: float = 0.52,
+        signal_threshold: float = 0.53,
         confidence_threshold: float = 0.10,
         proportional_sizing: bool = True,
     ):

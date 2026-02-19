@@ -65,24 +65,108 @@ SEMICONDUCTOR_SYMBOLS = {
 }
 
 
-def load_model():
-    """Load the trained meta-ensemble model."""
-    model_path = CHECKPOINT_DIR / "meta_ensemble_model.pkl"
+def _parse_csv_str(value: str | None) -> list[str]:
+    if not value:
+        return []
+    return [x.strip() for x in value.split(",") if x.strip()]
+
+
+def _parse_csv_float(value: str | None) -> list[float]:
+    if not value:
+        return []
+    return [float(x) for x in value.split(",") if x.strip()]
+
+
+def _load_checkpoint_bundle(checkpoint_dir: str | Path) -> dict:
+    ckpt_dir = Path(checkpoint_dir)
+    model_path = ckpt_dir / "meta_ensemble_model.pkl"
+    if not model_path.exists():
+        model_path = ckpt_dir / "meta_ensemble_best_wf.pkl"
     if not model_path.exists():
         raise FileNotFoundError(f"No model at {model_path}")
 
     with open(model_path, "rb") as f:
         checkpoint = pickle.load(f)
 
-    model = checkpoint["model"]
-    scaler = checkpoint["scaler"]
-    feature_cols = checkpoint["feature_cols"]
+    model = checkpoint.get("model")
+    scaler = checkpoint.get("scaler")
+    feature_cols = checkpoint.get("feature_cols")
+    if model is None:
+        raise RuntimeError(f"Model missing in checkpoint {model_path}")
+    if not feature_cols:
+        raise RuntimeError(f"feature_cols missing in checkpoint {model_path}")
 
-    print(f"  Model loaded: {len(feature_cols)} features")
-    print(f"  Trained at: {checkpoint.get('trained_at', 'unknown')}")
-    print(f"  Training samples: {checkpoint.get('n_samples', 'unknown'):,}")
+    return {
+        "checkpoint_dir": str(ckpt_dir),
+        "model_path": str(model_path),
+        "model": model,
+        "scaler": scaler,
+        "feature_cols": list(feature_cols),
+        "trained_at": checkpoint.get("trained_at", "unknown"),
+        "n_samples": checkpoint.get("n_samples"),
+        "forward_period": checkpoint.get("forward_period"),
+    }
 
-    return model, scaler, feature_cols
+
+def load_model(
+    blend_checkpoint_dirs: list[str] | None = None,
+    blend_weights: list[float] | None = None,
+):
+    """
+    Load one or more meta-ensemble checkpoints.
+
+    Returns:
+        (model_bundles, normalized_weights)
+    """
+    ckpt_dirs = [CHECKPOINT_DIR]
+    if blend_checkpoint_dirs:
+        for p in blend_checkpoint_dirs:
+            pp = Path(p)
+            if not pp.is_absolute():
+                pp = PROJECT_ROOT / p
+            ckpt_dirs.append(pp)
+
+    bundles = []
+    for ckpt in ckpt_dirs:
+        try:
+            bundles.append(_load_checkpoint_bundle(ckpt))
+        except Exception as e:
+            print(f"  WARN: Failed to load checkpoint {ckpt}: {e}")
+
+    if not bundles:
+        raise FileNotFoundError("No valid model checkpoints loaded")
+
+    n_models = len(bundles)
+    if blend_weights:
+        w = np.asarray(blend_weights, dtype=float)
+        if len(w) == n_models - 1:
+            w = np.concatenate(([1.0], w))
+        if len(w) != n_models:
+            print(
+                f"  WARN: blend-weights length {len(w)} does not match {n_models}; using equal weights"
+            )
+            w = np.ones(n_models, dtype=float)
+    else:
+        w = np.ones(n_models, dtype=float)
+
+    w_sum = float(w.sum())
+    if w_sum <= 0:
+        w = np.ones(n_models, dtype=float)
+        w_sum = float(w.sum())
+    weights = (w / w_sum).astype(float)
+
+    print(f"  Loaded {n_models} model checkpoint(s)")
+    for i, b in enumerate(bundles):
+        ns = b.get("n_samples")
+        ns_text = f"{int(ns):,}" if isinstance(ns, (int, np.integer)) else str(ns)
+        fp = b.get("forward_period")
+        fp_text = f"{fp}d" if fp is not None else "unknown"
+        print(
+            f"    [{i+1}] w={weights[i]:.3f} dir={b['checkpoint_dir']} "
+            f"features={len(b['feature_cols'])} horizon={fp_text} samples={ns_text}"
+        )
+
+    return bundles, weights
 
 
 def fetch_ohlcv(symbol: str, days: int = 600) -> pd.DataFrame | None:
@@ -132,9 +216,11 @@ def compute_features(df: pd.DataFrame, symbol: str) -> pd.DataFrame | None:
 
 
 def predict_single_symbol(
-    df_features: pd.DataFrame, model, scaler, feature_cols: list[str]
+    df_features: pd.DataFrame,
+    model_bundles: list[dict],
+    blend_weights: np.ndarray,
 ) -> dict | None:
-    """Generate prediction for the most recent date."""
+    """Generate blended prediction for the most recent date."""
     # Get the last row (most recent date)
     if len(df_features) == 0:
         return None
@@ -142,23 +228,34 @@ def predict_single_symbol(
     last_row = df_features.iloc[[-1]]
     date = last_row.index[0]
 
-    # Align features
-    X = pd.DataFrame(index=last_row.index)
-    for col in feature_cols:
-        if col in last_row.columns:
-            X[col] = last_row[col].values
-        else:
-            X[col] = 0.0  # Missing feature
+    probs = []
+    for bundle in model_bundles:
+        feature_cols = bundle["feature_cols"]
+        scaler = bundle.get("scaler")
+        model = bundle["model"]
 
-    # Scale
-    X_vals = X.values.astype(np.float64)
-    X_vals = np.nan_to_num(X_vals, nan=0.0, posinf=3.0, neginf=-3.0)
-    X_scaled = scaler.transform(X_vals)
-    X_scaled = np.nan_to_num(X_scaled, nan=0.0, posinf=3.0, neginf=-3.0)
+        # Align features
+        X = pd.DataFrame(index=last_row.index)
+        for col in feature_cols:
+            if col in last_row.columns:
+                X[col] = last_row[col].values
+            else:
+                X[col] = 0.0  # Missing feature
 
-    # Predict
-    proba = model.predict_proba(X_scaled)
-    up_prob = float(proba[0, 1])
+        X_vals = X.values.astype(np.float64)
+        X_vals = np.nan_to_num(X_vals, nan=0.0, posinf=3.0, neginf=-3.0)
+        if scaler is not None:
+            X_vals = scaler.transform(X_vals)
+            X_vals = np.nan_to_num(X_vals, nan=0.0, posinf=3.0, neginf=-3.0)
+
+        proba = model.predict_proba(X_vals)
+        probs.append(float(proba[0, 1]))
+
+    w = np.asarray(blend_weights, dtype=float)
+    if len(w) != len(probs):
+        w = np.ones(len(probs), dtype=float)
+    w = w / max(float(w.sum()), 1e-12)
+    up_prob = float(np.dot(np.asarray(probs, dtype=float), w))
     confidence = abs(up_prob - 0.5) * 2.0
 
     return {
@@ -237,13 +334,18 @@ def run_predictions(
     symbols: list[str] | None = None,
     n_symbols: int = 30,
     min_confidence: float = 0.05,
+    blend_checkpoint_dirs: list[str] | None = None,
+    blend_weights: list[float] | None = None,
 ) -> pd.DataFrame:
     """Run model predictions for all symbols."""
     print("\n" + "=" * 65)
     print("  GENERATING PREDICTIONS")
     print("=" * 65)
 
-    model, scaler, feature_cols = load_model()
+    model_bundles, model_weights = load_model(
+        blend_checkpoint_dirs=blend_checkpoint_dirs,
+        blend_weights=blend_weights,
+    )
 
     if symbols is None:
         symbols = get_liquid_sp500(n_symbols)
@@ -281,7 +383,7 @@ def run_predictions(
             print("SKIP (feature error)")
             continue
 
-        pred = predict_single_symbol(features, model, scaler, feature_cols)
+        pred = predict_single_symbol(features, model_bundles, model_weights)
         if pred is None:
             print("SKIP (prediction error)")
             continue
@@ -712,7 +814,12 @@ def check_results(trade_date: str | None = None):
     print("=" * 65)
 
 
-def validate_past_date(target_date: str, n_symbols: int = 30):
+def validate_past_date(
+    target_date: str,
+    n_symbols: int = 30,
+    blend_checkpoint_dirs: list[str] | None = None,
+    blend_weights: list[float] | None = None,
+):
     """
     Validate the model against a specific past date.
     Uses data up to the day BEFORE target_date for prediction,
@@ -724,7 +831,10 @@ def validate_past_date(target_date: str, n_symbols: int = 30):
     print(f"  (Using data available BEFORE this date)")
     print(f"{'=' * 65}")
 
-    model, scaler, feature_cols = load_model()
+    model_bundles, model_weights = load_model(
+        blend_checkpoint_dirs=blend_checkpoint_dirs,
+        blend_weights=blend_weights,
+    )
     symbols = get_liquid_sp500(n_symbols)
 
     results = []
@@ -779,7 +889,7 @@ def validate_past_date(target_date: str, n_symbols: int = 30):
             print("SKIP (feature error)")
             continue
 
-        pred = predict_single_symbol(features, model, scaler, feature_cols)
+        pred = predict_single_symbol(features, model_bundles, model_weights)
         if pred is None:
             print("SKIP")
             continue
@@ -945,6 +1055,24 @@ def main():
         help="Max probability for short entries (default: 1 - signal-threshold)",
     )
     parser.add_argument(
+        "--blend-checkpoint-dirs",
+        type=str,
+        default=None,
+        help=(
+            "Optional comma-separated extra checkpoint dirs for probability blending "
+            "(e.g., models/checkpoints/meta_ensemble_h21d,models/checkpoints/meta_ensemble_h63d)"
+        ),
+    )
+    parser.add_argument(
+        "--blend-weights",
+        type=str,
+        default=None,
+        help=(
+            "Optional comma-separated blend weights. "
+            "Provide N weights for primary+extras, or N-1 for extras only."
+        ),
+    )
+    parser.add_argument(
         "--earnings-filter",
         action="store_true",
         help="Skip trades with earnings inside holding window",
@@ -985,9 +1113,16 @@ def main():
     )
 
     args = parser.parse_args()
+    blend_dirs = _parse_csv_str(args.blend_checkpoint_dirs)
+    blend_weights = _parse_csv_float(args.blend_weights)
 
     if args.validate_date:
-        validate_past_date(args.validate_date, n_symbols=args.n_symbols)
+        validate_past_date(
+            args.validate_date,
+            n_symbols=args.n_symbols,
+            blend_checkpoint_dirs=blend_dirs,
+            blend_weights=blend_weights,
+        )
         return
 
     if args.results or args.results_date:
@@ -995,7 +1130,11 @@ def main():
         return
 
     if args.predict:
-        pred_df = run_predictions(n_symbols=args.n_symbols)
+        pred_df = run_predictions(
+            n_symbols=args.n_symbols,
+            blend_checkpoint_dirs=blend_dirs,
+            blend_weights=blend_weights,
+        )
         if len(pred_df) == 0:
             return
 

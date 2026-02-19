@@ -28,6 +28,7 @@ import pandas as pd
 
 from quantum_alpha.backtest_clean import (
     backtest_equal_weight,
+    blend_prediction_probabilities,
     compute_signals,
     deduplicate_predictions,
     load_predictions,
@@ -273,6 +274,24 @@ def main() -> None:
         default="quantum_alpha/models/checkpoints/meta_ensemble",
         help="Directory containing walk_forward_predictions.pkl",
     )
+    parser.add_argument(
+        "--blend-checkpoint-dirs",
+        type=str,
+        default=None,
+        help=(
+            "Optional comma-separated extra checkpoint dirs. "
+            "Their y_proba values are blended with primary predictions."
+        ),
+    )
+    parser.add_argument(
+        "--blend-weights",
+        type=str,
+        default=None,
+        help=(
+            "Optional comma-separated blend weights. "
+            "Provide N weights for primary+extras, or N-1 for extras only."
+        ),
+    )
     parser.add_argument("--start", type=str, default=None, help="Start date YYYY-MM-DD")
     parser.add_argument("--end", type=str, default=None, help="End date YYYY-MM-DD")
     parser.add_argument("--signal-threshold", type=float, default=0.53)
@@ -324,6 +343,18 @@ def main() -> None:
 
     pred = load_predictions(args.checkpoint_dir)
     pred = deduplicate_predictions(pred)
+    if args.blend_checkpoint_dirs:
+        blend_dirs = [x.strip() for x in args.blend_checkpoint_dirs.split(",") if x.strip()]
+        blend_weights = (
+            [float(x) for x in args.blend_weights.split(",") if x.strip()]
+            if args.blend_weights
+            else None
+        )
+        pred = blend_prediction_probabilities(
+            primary_df=pred,
+            checkpoint_dirs=blend_dirs,
+            blend_weights=blend_weights,
+        )
     pred["date"] = pd.to_datetime(pred["date"])
     if args.start:
         pred = pred[pred["date"] >= pd.to_datetime(args.start)]
@@ -436,6 +467,8 @@ def main() -> None:
             "pead_boost": args.pead_boost,
             "semiconductor_short_gate": args.semiconductor_short_gate,
             "gate_threshold": args.gate_threshold,
+            "blend_checkpoint_dirs": args.blend_checkpoint_dirs,
+            "blend_weights": args.blend_weights,
         },
         "backtest_metrics": {
             "total_return": float(bt["total_return"]),

@@ -164,6 +164,82 @@ def load_predictions(checkpoint_dir: str | Path) -> pd.DataFrame:
     return df
 
 
+def blend_prediction_probabilities(
+    primary_df: pd.DataFrame,
+    checkpoint_dirs: list[str | Path],
+    blend_weights: list[float] | None = None,
+) -> pd.DataFrame:
+    """
+    Blend y_proba from the primary checkpoint with additional checkpoints.
+
+    Args:
+        primary_df: DataFrame from primary checkpoint (already deduplicated)
+        checkpoint_dirs: Additional checkpoint dirs to blend
+        blend_weights: Optional weights. Supports:
+            - len == n_models (primary + extras)
+            - len == n_models - 1 (extras only; primary defaults to 1.0)
+    """
+    if not checkpoint_dirs:
+        return primary_df
+
+    merged = primary_df[
+        ["date", "symbol", "y_true", "forward_return", "y_proba"]
+    ].copy()
+    merged = merged.rename(columns={"y_proba": "p0"})
+    prob_cols = ["p0"]
+
+    for i, ckpt in enumerate(checkpoint_dirs, start=1):
+        extra = deduplicate_predictions(load_predictions(ckpt))
+        extra = extra[["date", "symbol", "y_proba"]].copy()
+        col = f"p{i}"
+        extra = extra.rename(columns={"y_proba": col})
+        merged = merged.merge(extra, on=["date", "symbol"], how="inner")
+        prob_cols.append(col)
+
+    if len(merged) == 0:
+        raise RuntimeError("No overlapping predictions across blended checkpoints")
+
+    n_models = len(prob_cols)
+    if blend_weights is None:
+        weights = np.ones(n_models, dtype=float) / n_models
+    else:
+        w = np.asarray(blend_weights, dtype=float)
+        if len(w) == n_models - 1:
+            w = np.concatenate(([1.0], w))
+        if len(w) != n_models:
+            raise ValueError(
+                f"blend_weights length mismatch: got {len(w)}, expected {n_models} "
+                f"(or {n_models - 1} for extras-only weights)"
+            )
+        w_sum = float(w.sum())
+        if w_sum <= 0:
+            raise ValueError("blend_weights must sum to a positive number")
+        weights = w / w_sum
+
+    merged["y_proba_blend"] = 0.0
+    for wi, col in zip(weights, prob_cols):
+        merged["y_proba_blend"] += float(wi) * pd.to_numeric(
+            merged[col], errors="coerce"
+        ).fillna(0.5)
+
+    out = primary_df.merge(
+        merged[["date", "symbol", "y_proba_blend"]],
+        on=["date", "symbol"],
+        how="inner",
+    )
+    out["y_proba"] = out["y_proba_blend"]
+    out = out.drop(columns=["y_proba_blend"])
+    out = out.sort_values(["date", "symbol"]).reset_index(drop=True)
+
+    weight_str = ", ".join(f"{w:.3f}" for w in weights)
+    print(
+        f"  Blended checkpoints: primary + {len(checkpoint_dirs)} extras "
+        f"(weights: {weight_str})"
+    )
+    print(f"  Blended predictions rows: {len(out):,}")
+    return out
+
+
 def deduplicate_predictions(df: pd.DataFrame) -> pd.DataFrame:
     """
     Walk-forward folds overlap (6-month step, 1-year window).
@@ -1043,6 +1119,24 @@ Examples:
         help="Directory containing walk_forward_predictions.pkl",
     )
     parser.add_argument(
+        "--blend-checkpoint-dirs",
+        type=str,
+        default=None,
+        help=(
+            "Optional comma-separated extra checkpoint dirs. "
+            "Their y_proba values are blended with primary predictions."
+        ),
+    )
+    parser.add_argument(
+        "--blend-weights",
+        type=str,
+        default=None,
+        help=(
+            "Optional comma-separated blend weights. "
+            "Provide N weights for primary+extras, or N-1 for extras only."
+        ),
+    )
+    parser.add_argument(
         "--signal-threshold",
         type=float,
         default=0.53,
@@ -1171,6 +1265,29 @@ Examples:
     df = load_predictions(ckpt_dir)
     df = deduplicate_predictions(df)
 
+    # Optional cross-horizon probability blending
+    if args.blend_checkpoint_dirs:
+        blend_dirs_raw = [
+            x.strip() for x in args.blend_checkpoint_dirs.split(",") if x.strip()
+        ]
+        blend_dirs = []
+        for p in blend_dirs_raw:
+            pp = Path(p)
+            if not pp.is_absolute():
+                pp = Path(__file__).parent / pp
+            blend_dirs.append(pp)
+
+        blend_weights = None
+        if args.blend_weights:
+            blend_weights = [
+                float(x) for x in args.blend_weights.split(",") if x.strip()
+            ]
+        df = blend_prediction_probabilities(
+            primary_df=df,
+            checkpoint_dirs=blend_dirs,
+            blend_weights=blend_weights,
+        )
+
     # Filter symbols
     if args.symbols:
         df = df[df["symbol"].isin(args.symbols)]
@@ -1195,6 +1312,11 @@ Examples:
     print(f"    PEAD boost:         {args.pead_boost}")
     print(f"    Semi short gate:    {args.semiconductor_short_gate}")
     print(f"    Gate threshold:     {args.gate_threshold:.2f}")
+    print(
+        f"    Blend checkpoints:  "
+        f"{args.blend_checkpoint_dirs if args.blend_checkpoint_dirs else 'none'}"
+    )
+    print(f"    Blend weights:      {args.blend_weights if args.blend_weights else 'auto'}")
     print(f"    Capital:            ${args.capital:,.0f}")
 
     if args.start_date:

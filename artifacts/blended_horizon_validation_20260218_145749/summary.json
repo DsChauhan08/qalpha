@@ -1,0 +1,41 @@
+{
+  "run_at_utc": "2026-02-18T19:57:49.063426+00:00",
+  "blend": {
+    "primary": "models/checkpoints/meta_ensemble",
+    "extras": [
+      "models/checkpoints/meta_ensemble_h21d",
+      "models/checkpoints/meta_ensemble_h63d"
+    ],
+    "weights": [
+      0.4,
+      0.2,
+      0.4
+    ]
+  },
+  "backtest": {
+    "signal_threshold": 0.52,
+    "long_only": true,
+    "commission_bps": 5.0,
+    "hold_days": 5,
+    "top_k": 10,
+    "max_positions": 20,
+    "total_return": 48.37058944312814,
+    "annual_return": 0.2967851489041107,
+    "sharpe": 1.3441549292323556,
+    "max_drawdown": -0.3044272957117842,
+    "final_equity": 4937058.944312814,
+    "total_trades": 34212
+  },
+  "mcpt": {
+    "sign_flip": {
+      "p_value": 0.000999000999000999,
+      "actual_statistic": 1.3441549292323556,
+      "is_significant": true
+    },
+    "block_bootstrap": {
+      "p_value": 0.4965034965034965,
+      "actual_statistic": 1.3441549292323556,
+      "is_significant": false
+    }
+  }
+}

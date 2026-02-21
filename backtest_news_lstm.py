@@ -16,9 +16,6 @@ import sys
 from datetime import datetime, timedelta
 from pathlib import Path
 
-import numpy as np
-import pandas as pd
-
 # Add project root to path
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -35,6 +32,7 @@ def run_news_lstm_backtest(
     validate: bool = False,
     verbose: bool = True,
     config_path: str = None,
+    strategy_kwargs: dict | None = None,
 ) -> dict:
     """
     Run a backtest using the news_lstm strategy type.
@@ -52,6 +50,7 @@ def run_news_lstm_backtest(
         verbose=verbose,
         config_path=config_path,
         checkpoint_name=checkpoint_name,
+        strategy_kwargs=strategy_kwargs or {},
     )
 
 
@@ -106,6 +105,56 @@ def main():
         default=None,
         help="Path to config directory or settings.yaml",
     )
+    parser.add_argument(
+        "--llm-enable",
+        action="store_true",
+        help="Enable Gemini LLM gate inside NewsLSTM strategy",
+    )
+    parser.add_argument(
+        "--llm-mode",
+        type=str,
+        default=None,
+        choices=["off", "simulated", "api"],
+        help="LLM mode (default: simulated when --llm-enable, else off)",
+    )
+    parser.add_argument(
+        "--llm-models",
+        type=str,
+        default=None,
+        help="Comma-separated Gemini models to try in order",
+    )
+    parser.add_argument(
+        "--llm-min-alignment",
+        type=float,
+        default=0.80,
+        help="Minimum LLM alignment score required to approve an action",
+    )
+    parser.add_argument(
+        "--llm-fail-mode",
+        type=str,
+        default="hold",
+        choices=["hold", "pass"],
+        help="Fallback mode if LLM errors: hold (fail-closed) or pass (fail-open)",
+    )
+    parser.add_argument(
+        "--llm-scope",
+        type=str,
+        default=None,
+        choices=["all", "latest"],
+        help="Apply LLM gate to all predictions or latest only",
+    )
+    parser.add_argument(
+        "--llm-max-calls",
+        type=int,
+        default=100000,
+        help="Max LLM calls per symbol pass",
+    )
+    parser.add_argument(
+        "--llm-env-path",
+        type=str,
+        default=None,
+        help="Path to .env containing GEMINI_API_KEYS / GEMINI_API_KEY_1..3",
+    )
 
     args = parser.parse_args()
 
@@ -129,6 +178,29 @@ def main():
     print(f"Checkpoint: {args.checkpoint or 'auto-detect'}")
     print(f"Validate:   {args.validate}")
 
+    llm_models = (
+        [x.strip() for x in args.llm_models.split(",") if x.strip()]
+        if args.llm_models
+        else None
+    )
+    strategy_kwargs = {
+        "checkpoint_name": args.checkpoint,
+        "llm_enabled": bool(args.llm_enable),
+        "llm_mode": args.llm_mode,
+        "llm_models": llm_models,
+        "llm_min_alignment": float(args.llm_min_alignment),
+        "llm_fail_mode": args.llm_fail_mode,
+        "llm_scope": args.llm_scope,
+        "llm_max_calls": int(args.llm_max_calls),
+        "llm_env_path": args.llm_env_path,
+    }
+    print(
+        "LLM:        "
+        f"enabled={strategy_kwargs['llm_enabled']} "
+        f"mode={strategy_kwargs['llm_mode'] or ('simulated' if args.llm_enable else 'off')} "
+        f"min={strategy_kwargs['llm_min_alignment']:.2f}"
+    )
+
     # Run backtest
     results = run_news_lstm_backtest(
         symbols=args.symbols,
@@ -139,6 +211,7 @@ def main():
         validate=args.validate,
         verbose=True,
         config_path=args.config,
+        strategy_kwargs=strategy_kwargs,
     )
 
     if "error" in results:

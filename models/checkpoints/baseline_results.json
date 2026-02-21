@@ -1,52 +1,52 @@
 {
-  "timestamp": "2026-02-13T13:14:33.160383",
+  "timestamp": "2026-02-20T10:05:54.608366",
   "config": {
     "symbols": [
       "SPY",
       "QQQ",
+      "IWM",
       "AAPL",
       "MSFT",
-      "NVDA",
-      "TSLA"
+      "NVDA"
     ],
-    "forward_period": 1,
+    "forward_period": 5,
     "n_classes": 2,
     "seq_len": 1,
-    "n_train": 944,
-    "n_val": 234
+    "n_train": 926,
+    "n_val": 228
   },
-  "baseline_acc": 0.5384615384615384,
+  "baseline_acc": 0.5219298245614035,
   "lstm_v14_acc": 0.6,
   "results": [
     {
       "model": "Logistic Regression",
-      "val_acc": 0.47435897435897434,
-      "edge": -0.0641025641025641
+      "val_acc": 0.5614035087719298,
+      "edge": 0.03947368421052633
     },
     {
       "model": "Random Forest",
-      "val_acc": 0.48717948717948717,
-      "edge": -0.051282051282051266
+      "val_acc": 0.5526315789473685,
+      "edge": 0.030701754385965008
     },
     {
       "model": "Gradient Boosting",
-      "val_acc": 0.5042735042735043,
-      "edge": -0.03418803418803418
+      "val_acc": 0.5789473684210527,
+      "edge": 0.05701754385964919
     },
     {
       "model": "Threshold (sentiment_momentum_3d)",
-      "val_acc": 0.48717948717948717,
-      "edge": -0.051282051282051266
+      "val_acc": 0.4956140350877193,
+      "edge": -0.02631578947368418
     },
     {
       "model": "Threshold (mean_sentiment)",
-      "val_acc": 0.47863247863247865,
-      "edge": -0.05982905982905978
+      "val_acc": 0.45614035087719296,
+      "edge": -0.06578947368421051
     },
     {
       "model": "Threshold (weighted_sentiment)",
-      "val_acc": 0.5085470085470085,
-      "edge": -0.02991452991452992
+      "val_acc": 0.4517543859649123,
+      "edge": -0.07017543859649117
     }
   ]
 }

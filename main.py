@@ -374,7 +374,10 @@ def run_backtest(
     elif strategy_type == "news_lstm":
         from quantum_alpha.strategy.news_lstm_strategy import NewsLSTMStrategy
 
-        strategy = NewsLSTMStrategy(checkpoint_name=checkpoint_name)
+        kwargs = dict(strategy_kwargs or {})
+        if checkpoint_name is not None:
+            kwargs.setdefault("checkpoint_name", checkpoint_name)
+        strategy = NewsLSTMStrategy(**kwargs)
     elif strategy_type == "meta_ensemble":
         from quantum_alpha.strategy.meta_ensemble_strategy import MetaEnsembleStrategy
 

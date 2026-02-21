@@ -118,6 +118,122 @@ The AI agent developing this system MUST adhere to the following non-negotiable 
 
 ---
 
+# SECTION 0.26: FEB 20, 2026 GEMINI + NOISE-ADVERSARIAL UPDATE (LIVE CODEBASE)
+
+## 0.26.1 Gemini LLM Middleware and API-Key Rotation
+- Added Gemini LLM adjudication middleware: `quantum_alpha/llm/gemini_router.py`
+- Added package exports: `quantum_alpha/llm/__init__.py`
+- Integrated into strategy pipeline: `quantum_alpha/strategy/news_lstm_strategy.py`
+- CLI/wiring added in:
+  - `quantum_alpha/backtest_news_lstm.py`
+  - `quantum_alpha/main.py`
+- `.env` supports rotating free-tier key usage:
+  - `GEMINI_API_KEYS` (comma-separated pool)
+  - `GEMINI_API_KEY_1`, `GEMINI_API_KEY_2`, `GEMINI_API_KEY_3`
+  - `GEMINI_MODE`, `GEMINI_MODELS`
+- LLM gate behavior:
+  - model action is accepted only when LLM alignment score `>= 0.80`
+  - on LLM error/timeout, fail mode defaults to `hold` (safe no-trade)
+  - default API scope is `latest` bar to control API budget and rate limits
+
+## 0.26.2 Noise-Adversarial Training for Distraction Resistance
+- Added adversarial/noise module: `quantum_alpha/models/lstm_v4/noise_adversary.py`
+- Integrated in training pipeline: `quantum_alpha/train_news_lstm.py`
+- Purpose: inject misleading/noisy sentiment patterns during training so the LSTM learns to suppress false market distractions.
+
+## 0.26.3 Model Training Snapshot (Executed Feb 20, 2026)
+- Baseline ML training command:
+```bash
+python quantum_alpha/train_baselines.py --symbols SPY QQQ IWM AAPL MSFT NVDA --years 1 --forward-period 5 --n-classes 2 --seq-len 1
+```
+- Baseline output artifact: `quantum_alpha/models/checkpoints/baseline_results.json`
+- Best baseline: Gradient Boosting validation accuracy `57.89%`
+
+- News-LSTM (real sentiment + noise adversarial) training command:
+```bash
+python quantum_alpha/train_news_lstm.py --symbols SPY QQQ AAPL NVDA --years 1 --multi --real-sentiment --epochs 25 --seq-len 30 --batch-size 32 --forward-period 5 --noise-adversarial --noise-ratio 0.35 --noise-seed 42 --checkpoint-name news_lstm_gemini_noise_20260220
+```
+- Saved checkpoint:
+  - `quantum_alpha/models/checkpoints/news_lstm/news_lstm_gemini_noise_20260220.pt`
+  - `quantum_alpha/models/checkpoints/news_lstm/news_lstm_gemini_noise_20260220_meta.json`
+- Validation snapshot from checkpoint meta:
+  - accuracy `0.3672`
+  - trade_accuracy `0.3672`
+  - hold_accuracy `0.0000`
+
+## 0.26.4 End-to-End Backtest Snapshot (Executed Feb 20, 2026)
+- ML pipeline backtest command:
+```bash
+PYTHONPATH=/home/regulus/Trade python quantum_alpha/main.py --mode backtest --strategy ml --symbols SPY QQQ IWM AAPL MSFT NVDA --start 2024-01-01 --end 2026-02-20 --capital 100000
+```
+- Logged output: `artifacts/backtest_ml_end2end_20260220_101922.log`
+- Results:
+  - Total Return `17.92%`
+  - Annual Return `7.66%`
+  - Sharpe `0.47`
+  - Max Drawdown `-16.77%`
+  - Trades `148`
+  - Final Equity `$116,923.23`
+
+- News-LSTM + Gemini API backtest (LLM in loop) command:
+```bash
+PYTHONPATH=/home/regulus/Trade python - <<'PY'
+from datetime import datetime, timedelta
+from quantum_alpha.backtest_news_lstm import run_news_lstm_backtest
+end = datetime(2026, 2, 20)
+start = end - timedelta(days=365)
+run_news_lstm_backtest(
+    symbols=["SPY", "QQQ", "AAPL", "NVDA"],
+    start_date=start,
+    end_date=end,
+    initial_capital=100000,
+    checkpoint_name="news_lstm_gemini_noise_20260220",
+    config_path="/tmp/qa_news_cfg_full",
+    strategy_kwargs={
+        "use_real_sentiment": True,
+        "llm_enabled": True,
+        "llm_mode": "api",
+        "llm_scope": "latest",
+        "llm_min_alignment": 0.80,
+        "llm_max_calls": 5000,
+        "llm_fail_mode": "hold",
+        "llm_env_path": ".env",
+    },
+)
+PY
+```
+- Logged output: `artifacts/backtest_news_lstm_llm_api_20260220_102005.log`
+- Results:
+  - Total Return `1.25%`
+  - Annual Return `0.74%`
+  - Sharpe `-0.06`
+  - Max Drawdown `-11.40%`
+  - Trades `58`
+  - Final Equity `$100,737.90`
+
+## 0.26.5 Real-Market Paper Session (Fake Money, Live Market Feed)
+- Session launched while US market open on **Feb 20, 2026 10:18 ET** with duration set to remaining time-to-close (`341` minutes at launch).
+- Launch command:
+```bash
+setsid -f env PYTHONPATH=/home/regulus/Trade python quantum_alpha/execution/realtime_paper.py --symbols SPY QQQ IWM AAPL MSFT NVDA --interval 5m --duration-minutes 341 --poll-seconds 60 --lookback-days 20 --capital 100000 --output-dir artifacts --min-trade-notional 500 --commission-rate 0.0 --slippage-bps 0.5 --min-commission 0.0 >> artifacts/realtime_paper_to_close_20260220_101828.log 2>&1
+```
+- Runtime status files:
+  - log: `artifacts/realtime_paper_to_close_20260220_101828.log`
+  - live status: `artifacts/realtime_paper_20260220_151829/live_status.json`
+- Initial live status snapshot:
+  - `status=running`
+  - `latest_bar=2026-02-20 10:15:00-05:00`
+  - `equity=99997.0001`
+  - `cash=40000.0`
+  - `trades=2`
+  - `positions=2`
+
+## 0.26.6 Regression Tests Added
+- `quantum_alpha/tests/test_gemini_router.py`
+- `quantum_alpha/tests/test_noise_adversary.py`
+
+---
+
 # SECTION 0.3: PERFORMANCE GATE (METRICS AND PROMOTION RULE)
 
 ## 0.3.1 Promotion Rule

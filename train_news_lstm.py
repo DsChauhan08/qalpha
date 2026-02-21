@@ -35,6 +35,10 @@ from quantum_alpha.data.collectors.market_data import DataCollector
 from quantum_alpha.data.preprocessing.cleaners import DataCleaner
 from quantum_alpha.data.preprocessing.imputers import MissingValueImputer
 from quantum_alpha.models.lstm_v4.news_lstm import NewsLSTMConfig
+from quantum_alpha.models.lstm_v4.noise_adversary import (
+    augment_with_noise_traps,
+    evaluate_noise_probe,
+)
 from quantum_alpha.models.lstm_v4.news_trainer import NewsLSTMTrainer
 
 
@@ -71,6 +75,69 @@ def fetch_price_data(
     return data
 
 
+def _maybe_apply_noise_adversarial(
+    X_train: np.ndarray,
+    y_sig_train: np.ndarray,
+    y_conf_train: np.ndarray,
+    config: NewsLSTMConfig,
+    enabled: bool,
+    ratio: float,
+    seed: int,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    if not enabled:
+        return X_train, y_sig_train, y_conf_train
+
+    X_aug, ys_aug, yc_aug, report = augment_with_noise_traps(
+        X_train=X_train,
+        y_signal_train=y_sig_train,
+        y_conf_train=y_conf_train,
+        n_sentiment_features=int(config.n_sentiment_features),
+        n_classes=int(config.n_classes),
+        ratio=float(ratio),
+        seed=int(seed),
+    )
+    if report.get("enabled", 0.0) > 0:
+        print(
+            "\nNoise adversarial augmentation: "
+            f"+{int(report['added_samples'])} samples "
+            f"(ratio={report['ratio']:.2f}) "
+            f"methods[spike={int(report['spike'])}, shuffle={int(report['shuffle'])}, "
+            f"invert={int(report['invert'])}, contradiction={int(report['contradiction'])}]"
+        )
+    else:
+        print(
+            "\nNoise adversarial augmentation skipped "
+            "(requires ternary classes and positive ratio)."
+        )
+    return X_aug, ys_aug, yc_aug
+
+
+def _maybe_run_noise_probe(
+    trainer: NewsLSTMTrainer,
+    X_val: np.ndarray,
+    config: NewsLSTMConfig,
+    enabled: bool,
+    seed: int,
+) -> dict | None:
+    if not enabled or trainer.model is None:
+        return None
+
+    probe = evaluate_noise_probe(
+        model=trainer.model,
+        X_reference=X_val,
+        n_sentiment_features=int(config.n_sentiment_features),
+        n_samples=min(512, max(128, len(X_val))),
+        seed=int(seed) + 101,
+    )
+    print(
+        "\nNoise probe: "
+        f"samples={int(probe['probe_samples'])} "
+        f"distraction_rate={probe['distraction_rate']:.3f} "
+        f"hold_rate={probe['hold_rate']:.3f}"
+    )
+    return probe
+
+
 def train_single_symbol(
     symbol: str,
     price_df: pd.DataFrame,
@@ -78,6 +145,9 @@ def train_single_symbol(
     buy_threshold: float = 0.005,
     sell_threshold: float = -0.005,
     verbose: int = 1,
+    noise_adversarial: bool = False,
+    noise_ratio: float = 0.35,
+    noise_seed: int = 42,
 ) -> dict:
     """Train on a single symbol and return metrics."""
     print(f"\n{'=' * 60}")
@@ -97,6 +167,17 @@ def train_single_symbol(
 
     print(f"\nX_train shape: {X_train.shape}")
     print(f"X_val shape:   {X_val.shape}")
+
+    X_train, y_sig_train, y_conf_train = _maybe_apply_noise_adversarial(
+        X_train=X_train,
+        y_sig_train=y_sig_train,
+        y_conf_train=y_conf_train,
+        config=trainer.config,
+        enabled=noise_adversarial,
+        ratio=noise_ratio,
+        seed=noise_seed,
+    )
+    print(f"X_train shape (post-aug): {X_train.shape}")
 
     # Train
     history = trainer.train(
@@ -121,10 +202,19 @@ def train_single_symbol(
     for cls, acc in metrics["class_accuracy"].items():
         print(f"  {cls:>5} acc: {acc:.4f}")
 
+    noise_probe = _maybe_run_noise_probe(
+        trainer=trainer,
+        X_val=X_val,
+        config=trainer.config,
+        enabled=noise_adversarial,
+        seed=noise_seed,
+    )
+
     return {
         "trainer": trainer,
         "metrics": metrics,
         "history": history,
+        "noise_probe": noise_probe,
     }
 
 
@@ -135,6 +225,9 @@ def train_multi_symbol(
     sell_threshold: float = -0.005,
     forward_period: int = 1,
     verbose: int = 1,
+    noise_adversarial: bool = False,
+    noise_ratio: float = 0.35,
+    noise_seed: int = 42,
 ) -> dict:
     """
     Train on concatenated data from multiple symbols.
@@ -322,6 +415,17 @@ def train_multi_symbol(
     print(f"\nX_train shape: {X_train.shape}")
     print(f"X_val shape:   {X_val.shape}")
 
+    X_train, y_sig_train, y_conf_train = _maybe_apply_noise_adversarial(
+        X_train=X_train,
+        y_sig_train=y_sig_train,
+        y_conf_train=y_conf_train,
+        config=config,
+        enabled=noise_adversarial,
+        ratio=noise_ratio,
+        seed=noise_seed,
+    )
+    print(f"X_train shape (post-aug): {X_train.shape}")
+
     # Create trainer and set scaler
     trainer = NewsLSTMTrainer(
         config=config,
@@ -351,10 +455,19 @@ def train_multi_symbol(
     print(f"Selectivity:    {metrics['selectivity']:.4f}")
     print(f"N Trades (val): {metrics['n_trades']}")
 
+    noise_probe = _maybe_run_noise_probe(
+        trainer=trainer,
+        X_val=X_val,
+        config=config,
+        enabled=noise_adversarial,
+        seed=noise_seed,
+    )
+
     return {
         "trainer": trainer,
         "metrics": metrics,
         "history": history,
+        "noise_probe": noise_probe,
     }
 
 
@@ -366,6 +479,9 @@ def train_with_real_sentiment(
     forward_period: int = 5,
     fetch_news: bool = False,
     verbose: int = 1,
+    noise_adversarial: bool = False,
+    noise_ratio: float = 0.35,
+    noise_seed: int = 42,
 ) -> dict:
     """
     Train using REAL FinBERT sentiment features from the sentiment pipeline.
@@ -573,6 +689,17 @@ def train_with_real_sentiment(
     )
     print(f"X_train: {X_train.shape} | X_val: {X_val.shape}")
 
+    X_train, y_sig_train, y_conf_train = _maybe_apply_noise_adversarial(
+        X_train=X_train,
+        y_sig_train=y_sig_train,
+        y_conf_train=y_conf_train,
+        config=config,
+        enabled=noise_adversarial,
+        ratio=noise_ratio,
+        seed=noise_seed,
+    )
+    print(f"X_train shape (post-aug): {X_train.shape}")
+
     for name, y in [("Train", y_sig_train), ("Val", y_sig_val)]:
         total = len(y)
         if n_classes == 2:
@@ -619,10 +746,19 @@ def train_with_real_sentiment(
     for cls, acc in metrics["class_accuracy"].items():
         print(f"  {cls:>5} acc: {acc:.4f}")
 
+    noise_probe = _maybe_run_noise_probe(
+        trainer=trainer,
+        X_val=X_val,
+        config=config,
+        enabled=noise_adversarial,
+        seed=noise_seed,
+    )
+
     return {
         "trainer": trainer,
         "metrics": metrics,
         "history": history,
+        "noise_probe": noise_probe,
     }
 
 
@@ -710,6 +846,23 @@ def main():
         action="store_true",
         help="Fetch and score news before training (requires --real-sentiment)",
     )
+    parser.add_argument(
+        "--noise-adversarial",
+        action="store_true",
+        help="Inject adversarial noise traps into training to teach HOLD on false signals",
+    )
+    parser.add_argument(
+        "--noise-ratio",
+        type=float,
+        default=0.35,
+        help="Noise augmentation ratio vs base train samples (default: 0.35)",
+    )
+    parser.add_argument(
+        "--noise-seed",
+        type=int,
+        default=42,
+        help="Random seed for noise adversarial simulation",
+    )
 
     args = parser.parse_args()
 
@@ -730,6 +883,7 @@ def main():
     print(f"Forward period: {args.forward_period} day(s)")
     print(f"Real sentiment: {args.real_sentiment}")
     print(f"Fetch news:     {args.fetch_news}")
+    print(f"Noise advers.:  {args.noise_adversarial} (ratio={args.noise_ratio})")
 
     # Build config
     config = NewsLSTMConfig(
@@ -761,6 +915,9 @@ def main():
             forward_period=args.forward_period,
             fetch_news=args.fetch_news,
             verbose=args.verbose,
+            noise_adversarial=args.noise_adversarial,
+            noise_ratio=args.noise_ratio,
+            noise_seed=args.noise_seed,
         )
     elif args.multi and len(price_data) > 1:
         result = train_multi_symbol(
@@ -770,6 +927,9 @@ def main():
             sell_threshold=args.sell_threshold,
             forward_period=args.forward_period,
             verbose=args.verbose,
+            noise_adversarial=args.noise_adversarial,
+            noise_ratio=args.noise_ratio,
+            noise_seed=args.noise_seed,
         )
     else:
         # Train on the first (or only) symbol
@@ -781,6 +941,9 @@ def main():
             buy_threshold=args.buy_threshold,
             sell_threshold=args.sell_threshold,
             verbose=args.verbose,
+            noise_adversarial=args.noise_adversarial,
+            noise_ratio=args.noise_ratio,
+            noise_seed=args.noise_seed,
         )
 
     # Save checkpoint

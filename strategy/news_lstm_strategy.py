@@ -18,7 +18,7 @@ import logging
 import os
 import warnings
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 
 import numpy as np
 import pandas as pd
@@ -27,6 +27,7 @@ from quantum_alpha.data.collectors.news_collector import (
     NewsCollector,
     SENTIMENT_FEATURE_COLS,
 )
+from quantum_alpha.llm.gemini_router import GeminiRouter, LLMDecision
 
 logger = logging.getLogger(__name__)
 
@@ -88,6 +89,14 @@ class NewsLSTMStrategy:
         use_mc_dropout: bool = False,
         mc_iterations: int = 30,
         use_real_sentiment: bool = None,
+        llm_enabled: bool = False,
+        llm_mode: str | None = None,
+        llm_models: list[str] | None = None,
+        llm_min_alignment: float = 0.80,
+        llm_fail_mode: str = "hold",
+        llm_scope: str | None = None,
+        llm_max_calls: int = 100000,
+        llm_env_path: str | None = None,
     ):
         """
         Args:
@@ -100,6 +109,14 @@ class NewsLSTMStrategy:
             use_real_sentiment: If True, use FinBERT sentiment from DB.
                 If None (default), auto-detect from checkpoint name
                 (checkpoints with '_real_' use real sentiment).
+            llm_enabled: Enable Gemini adjudication layer
+            llm_mode: Gemini mode: off|simulated|api
+            llm_models: Optional ordered model list for failover
+            llm_min_alignment: Min LLM score required for action approval
+            llm_fail_mode: On LLM failure, hold|pass
+            llm_scope: all|latest (defaults: api->latest, otherwise->all)
+            llm_max_calls: Max LLM calls per generate_signals() pass
+            llm_env_path: Optional .env path for Gemini keys/config
         """
         self.checkpoint_name = checkpoint_name
         self.checkpoint_dir = checkpoint_dir or str(
@@ -117,6 +134,25 @@ class NewsLSTMStrategy:
         self._loaded = False
         self._collector = NewsCollector()
         self._pipeline = None  # Lazy-loaded SentimentPipeline
+
+        # LLM middleware: fail-safe by construction (default off).
+        self._llm_router = GeminiRouter.from_env(
+            enabled=llm_enabled,
+            mode=llm_mode,
+            models=llm_models,
+            min_alignment_score=llm_min_alignment,
+            fail_mode=llm_fail_mode,
+            env_path=llm_env_path,
+        )
+        if llm_scope:
+            self._llm_scope = llm_scope.strip().lower()
+        elif self._llm_router.config.mode == "api":
+            self._llm_scope = "latest"
+        else:
+            self._llm_scope = "all"
+        if self._llm_scope not in {"all", "latest"}:
+            self._llm_scope = "latest"
+        self._llm_max_calls = max(1, int(llm_max_calls))
 
     def _load_model(self):
         """Lazy-load the trained model and scaler."""
@@ -225,6 +261,15 @@ class NewsLSTMStrategy:
         df["signal"] = 0.0
         df["signal_confidence"] = 0.0
         df["position_signal"] = 0.0
+        df["llm_buy_score"] = 0.0
+        df["llm_sell_score"] = 0.0
+        df["llm_hold_score"] = 1.0
+        df["llm_alignment_score"] = 0.0
+        df["llm_distraction_risk"] = 1.0
+        df["llm_gate_pass"] = 0.0
+        df["llm_decision"] = "HOLD"
+        df["llm_mode"] = "off"
+        df["llm_rationale"] = ""
 
         self._load_model()
 
@@ -311,6 +356,18 @@ class NewsLSTMStrategy:
         pred_signal = pd.Series(0.0, index=pred_indices)
         pred_confidence = pd.Series(0.0, index=pred_indices)
         pred_position = pd.Series(0.0, index=pred_indices)
+        pred_llm_buy = pd.Series(0.0, index=pred_indices)
+        pred_llm_sell = pd.Series(0.0, index=pred_indices)
+        pred_llm_hold = pd.Series(1.0, index=pred_indices)
+        pred_llm_alignment = pd.Series(0.0, index=pred_indices)
+        pred_llm_distraction = pd.Series(1.0, index=pred_indices)
+        pred_llm_gate = pd.Series(0.0, index=pred_indices)
+        pred_llm_decision = pd.Series("HOLD", index=pred_indices, dtype=object)
+        pred_llm_mode = pd.Series("off", index=pred_indices, dtype=object)
+        pred_llm_rationale = pd.Series("", index=pred_indices, dtype=object)
+
+        llm_calls = 0
+        latest_idx = pred_indices[-1] if len(pred_indices) > 0 else None
 
         for i, idx in enumerate(pred_indices):
             action = trade_actions[i]
@@ -333,8 +390,75 @@ class NewsLSTMStrategy:
             pred_confidence[idx] = conf
 
             # Position signal: discrete {-1, 0, 1} from gated action
-            if abs(action) > 0 and conf >= self.confidence_threshold:
-                pred_position[idx] = float(action)
+            gated_action = float(action) if abs(action) > 0 and conf >= self.confidence_threshold else 0.0
+
+            run_llm = self._llm_router.enabled and gated_action != 0.0
+            llm_skip_reason = ""
+            if run_llm and self._llm_scope == "latest" and idx != latest_idx:
+                run_llm = False
+                llm_skip_reason = "scope"
+            if run_llm and llm_calls >= self._llm_max_calls:
+                run_llm = False
+                llm_skip_reason = "budget"
+
+            if run_llm:
+                context = self._build_llm_context(
+                    symbol=symbol,
+                    timestamp=idx,
+                    action=int(gated_action),
+                    confidence=conf,
+                    signal_value=float(continuous_signal),
+                    signal_probs=signal_probs[i],
+                    feature_row=features_df.loc[idx] if idx in features_df.index else None,
+                    window=X_windows[i],
+                    n_classes=signal_probs.shape[1],
+                )
+                decision, gate_pass = self._run_llm_gate(
+                    context=context,
+                    action=int(gated_action),
+                )
+                llm_calls += 1
+                pred_llm_buy[idx] = decision.buy_score
+                pred_llm_sell[idx] = decision.sell_score
+                pred_llm_hold[idx] = decision.hold_score
+                pred_llm_alignment[idx] = decision.alignment_score
+                pred_llm_distraction[idx] = decision.distraction_risk
+                pred_llm_gate[idx] = 1.0 if gate_pass else 0.0
+                pred_llm_decision[idx] = decision.decision
+                pred_llm_mode[idx] = decision.mode
+                pred_llm_rationale[idx] = decision.rationale
+                pred_position[idx] = gated_action if gate_pass else 0.0
+            else:
+                if not self._llm_router.enabled:
+                    # LLM disabled => pass-through.
+                    pred_llm_buy[idx] = 1.0 if gated_action > 0 else 0.0
+                    pred_llm_sell[idx] = 1.0 if gated_action < 0 else 0.0
+                    pred_llm_hold[idx] = 1.0 if gated_action == 0 else 0.0
+                    pred_llm_alignment[idx] = 1.0
+                    pred_llm_distraction[idx] = 0.0
+                    pred_llm_gate[idx] = 1.0 if gated_action != 0 else 0.0
+                    pred_llm_decision[idx] = (
+                        "BUY" if gated_action > 0 else "SELL" if gated_action < 0 else "HOLD"
+                    )
+                    pred_llm_mode[idx] = "off"
+                    pred_llm_rationale[idx] = "llm_disabled"
+                    pred_position[idx] = gated_action
+                else:
+                    # Scope skips pass-through; budget skips obey fail-mode.
+                    fail_open = self._llm_router.config.fail_mode == "pass"
+                    if llm_skip_reason == "scope" or fail_open:
+                        pred_position[idx] = gated_action
+                        pred_llm_gate[idx] = 1.0 if gated_action != 0 else 0.0
+                        pred_llm_decision[idx] = (
+                            "BUY" if gated_action > 0 else "SELL" if gated_action < 0 else "HOLD"
+                        )
+                        pred_llm_mode[idx] = f"skip_{llm_skip_reason or 'pass'}"
+                        pred_llm_rationale[idx] = "llm_skipped_pass"
+                    else:
+                        pred_position[idx] = 0.0
+                        pred_llm_decision[idx] = "HOLD"
+                        pred_llm_mode[idx] = f"skip_{llm_skip_reason or 'hold'}"
+                        pred_llm_rationale[idx] = "llm_skipped_hold"
 
         # Step 7: Map back to original df index
         # Only fill indices that exist in both
@@ -346,6 +470,23 @@ class NewsLSTMStrategy:
         df.loc[common_idx, "position_signal"] = pred_position.reindex(
             common_idx
         ).fillna(0.0)
+        df.loc[common_idx, "llm_buy_score"] = pred_llm_buy.reindex(common_idx).fillna(0.0)
+        df.loc[common_idx, "llm_sell_score"] = pred_llm_sell.reindex(common_idx).fillna(0.0)
+        df.loc[common_idx, "llm_hold_score"] = pred_llm_hold.reindex(common_idx).fillna(1.0)
+        df.loc[common_idx, "llm_alignment_score"] = pred_llm_alignment.reindex(
+            common_idx
+        ).fillna(0.0)
+        df.loc[common_idx, "llm_distraction_risk"] = pred_llm_distraction.reindex(
+            common_idx
+        ).fillna(1.0)
+        df.loc[common_idx, "llm_gate_pass"] = pred_llm_gate.reindex(common_idx).fillna(0.0)
+        df.loc[common_idx, "llm_decision"] = pred_llm_decision.reindex(common_idx).fillna(
+            "HOLD"
+        )
+        df.loc[common_idx, "llm_mode"] = pred_llm_mode.reindex(common_idx).fillna("off")
+        df.loc[common_idx, "llm_rationale"] = pred_llm_rationale.reindex(common_idx).fillna(
+            ""
+        )
 
         # Log signal stats
         n_buys = (df["position_signal"] > 0).sum()
@@ -358,8 +499,86 @@ class NewsLSTMStrategy:
             n_holds,
             100.0 * (n_buys + n_sells) / max(len(df), 1),
         )
+        if self._llm_router.enabled:
+            logger.info(
+                "LLM gate: calls=%d scope=%s min_score=%.2f",
+                llm_calls,
+                self._llm_scope,
+                self._llm_router.min_alignment_score,
+            )
 
         return df
+
+    def _build_llm_context(
+        self,
+        symbol: str,
+        timestamp: pd.Timestamp,
+        action: int,
+        confidence: float,
+        signal_value: float,
+        signal_probs: np.ndarray,
+        feature_row: pd.Series | None,
+        window: np.ndarray,
+        n_classes: int,
+    ) -> Dict[str, Any]:
+        class_probs: Dict[str, float]
+        if n_classes == 2:
+            class_probs = {
+                "down": float(signal_probs[0]),
+                "up": float(signal_probs[1]),
+            }
+        else:
+            class_probs = {
+                "sell": float(signal_probs[0]),
+                "hold": float(signal_probs[1]),
+                "buy": float(signal_probs[2]),
+            }
+
+        # Simple low-cost noise diagnostics from the active sequence window.
+        win = np.asarray(window, dtype=float)
+        if win.ndim != 2 or win.shape[0] < 3:
+            noise_score = 0.0
+            trend_score = 0.0
+            vol_score = 0.0
+        else:
+            step_changes = np.abs(np.diff(win, axis=0))
+            noise_score = float(np.clip(np.nanmean(step_changes) / 2.0, 0.0, 1.0))
+            trend_score = float(np.tanh(np.nanmean(win[-3:, :]) / 1.8))
+            vol_score = float(
+                np.clip(np.nanstd(win[:, : min(4, win.shape[1])]) / 2.0, 0.0, 1.0)
+            )
+
+        feature_slice: Dict[str, float] = {}
+        if feature_row is not None:
+            for k in ("returns", "return_zscore", "vol_regime", "trend_strength", "sentiment_proxy"):
+                if k in feature_row:
+                    try:
+                        feature_slice[k] = float(feature_row[k])
+                    except Exception:
+                        continue
+
+        return {
+            "symbol": str(symbol),
+            "timestamp": str(timestamp),
+            "proposed_action": int(action),
+            "model_confidence": float(np.clip(confidence, 0.0, 1.0)),
+            "signal_value": float(np.clip(signal_value, -1.0, 1.0)),
+            "class_probs": class_probs,
+            "trend_score": trend_score,
+            "volatility_score": vol_score,
+            "noise_score": noise_score,
+            "feature_slice": feature_slice,
+        }
+
+    def _run_llm_gate(self, context: Dict[str, Any], action: int) -> tuple[LLMDecision, bool]:
+        decision = self._llm_router.evaluate(context=context, proposed_action=action)
+        action_score = decision.score_for_action(action)
+        gate_pass = (
+            decision.aligns_with_action(action)
+            and action_score >= self._llm_router.min_alignment_score
+            and decision.alignment_score >= self._llm_router.min_alignment_score
+        )
+        return decision, bool(gate_pass)
 
     def _build_proxy_features(
         self, df: pd.DataFrame, symbol: str
@@ -501,5 +720,8 @@ class NewsLSTMStrategy:
             "action": int(last.get("position_signal", 0)),
             "signal": float(last.get("signal", 0.0)),
             "confidence": float(last.get("signal_confidence", 0.0)),
+            "llm_decision": str(last.get("llm_decision", "HOLD")),
+            "llm_alignment_score": float(last.get("llm_alignment_score", 0.0)),
+            "llm_gate_pass": bool(float(last.get("llm_gate_pass", 0.0)) > 0.5),
             "timestamp": str(df_with_signals.index[-1]),
         }

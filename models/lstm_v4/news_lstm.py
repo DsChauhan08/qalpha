@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import os
+import warnings
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
 
@@ -323,7 +324,13 @@ class NewsDrivenLSTM:
 
         self.build_model()
         state = torch.load(path, map_location=self.device, weights_only=True)
-        self.model.load_state_dict(state)
+        # Be resilient to minor architecture drift across checkpoints.
+        missing, unexpected = self.model.load_state_dict(state, strict=False)
+        if missing or unexpected:
+            warnings.warn(
+                "Checkpoint loaded with non-strict state dict: "
+                f"missing={len(missing)} unexpected={len(unexpected)}",
+            )
         self.model.eval()
 
     def summary(self) -> str:

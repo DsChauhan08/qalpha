@@ -370,7 +370,7 @@ def run_backtest(
     elif strategy_type == "ml":
         from quantum_alpha.strategy.ml_strategies import MLTradingStrategy
 
-        strategy = MLTradingStrategy()
+        strategy = MLTradingStrategy(**(strategy_kwargs or {}))
     elif strategy_type == "news_lstm":
         from quantum_alpha.strategy.news_lstm_strategy import NewsLSTMStrategy
 
@@ -1014,6 +1014,7 @@ def run_paper(
     initial_capital: float = 100000,
     strategy_type: str = "momentum",
     paper_bars: int = 30,
+    strategy_kwargs: Optional[Dict] = None,
     verbose: bool = True,
 ) -> Dict:
     """
@@ -1078,7 +1079,7 @@ def run_paper(
     elif strategy_type == "ml":
         from quantum_alpha.strategy.ml_strategies import MLTradingStrategy
 
-        strategy = MLTradingStrategy()
+        strategy = MLTradingStrategy(**(strategy_kwargs or {}))
     else:
         strategy = MomentumStrategy()
 

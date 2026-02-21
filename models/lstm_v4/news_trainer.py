@@ -61,6 +61,7 @@ class NewsLSTMTrainer:
         self.scaler_params: Dict = {}
         self.history: Dict = {}
         self.metrics: Dict = {}
+        self.feature_names: List[str] = []
         self.device = NewsDrivenLSTM._select_device()
 
     def prepare_data(
@@ -107,6 +108,7 @@ class NewsLSTMTrainer:
             raise ValueError(
                 f"Only {len(available)} features available, need at least 10"
             )
+        self.feature_names = list(available)
 
         X_raw = features_df[available].values
 

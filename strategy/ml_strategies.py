@@ -49,12 +49,25 @@ class MLTradingStrategy:
         feature_cols: Optional[List[str]] = None,
         threshold: float = 0.0,
         random_state: int = 7,
+        llm_distill_enabled: bool = False,
+        llm_distill_mode: Optional[str] = None,
+        llm_distill_min_alignment: float = 0.75,
+        llm_distill_blend: float = 0.35,
+        llm_distill_max_calls: int = 250,
+        llm_distill_env_path: str = ".env",
     ) -> None:
         self.model_type = model_type
         self.horizon = horizon
         self.feature_cols = feature_cols
         self.threshold = threshold
         self.random_state = random_state
+        self.llm_distill_enabled = bool(llm_distill_enabled)
+        self.llm_distill_mode = llm_distill_mode
+        self.llm_distill_min_alignment = float(llm_distill_min_alignment)
+        self.llm_distill_blend = float(llm_distill_blend)
+        self.llm_distill_max_calls = int(llm_distill_max_calls)
+        self.llm_distill_env_path = llm_distill_env_path
+        self.llm_distill_report = None
         self.model = None
 
     # ------------------------------------------------------------------
@@ -102,6 +115,44 @@ class MLTradingStrategy:
         feats = _default_features(df) if self.feature_cols is None else df[self.feature_cols]
         target = df["returns"].shift(-self.horizon).dropna()
         X = feats.iloc[: len(target)].fillna(0.0)
+        y_cls = (target.values > 0).astype(np.int64)
+
+        sample_weight = None
+        if self.llm_distill_enabled and len(X) > 20:
+            try:
+                from quantum_alpha.llm.distillation import DistillConfig, distill_supervision
+
+                distilled = distill_supervision(
+                    X.values.astype(np.float32),
+                    y_signal=y_cls,
+                    y_conf=None,
+                    feature_names=list(X.columns),
+                    n_classes=2,
+                    config=DistillConfig(
+                        enabled=True,
+                        mode=self.llm_distill_mode,
+                        env_path=self.llm_distill_env_path,
+                        min_alignment=self.llm_distill_min_alignment,
+                        blend=self.llm_distill_blend,
+                        max_calls=self.llm_distill_max_calls,
+                        seed=self.random_state,
+                        fail_mode="hold",
+                    ),
+                )
+                sample_weight = distilled["sample_weight"]
+                self.llm_distill_report = distilled["report"]
+                logger.info(
+                    "ML LLM-distill: mode=%s evaluated=%d/%d mean_alignment=%.3f mean_weight=%.3f",
+                    self.llm_distill_report.get("mode", "off"),
+                    int(self.llm_distill_report.get("n_evaluated", 0.0)),
+                    int(self.llm_distill_report.get("n_samples", 0.0)),
+                    float(self.llm_distill_report.get("mean_alignment", 0.0)),
+                    float(self.llm_distill_report.get("mean_weight", 1.0)),
+                )
+            except Exception as exc:
+                logger.warning("LLM distillation disabled after failure (%s)", exc)
+                sample_weight = None
+                self.llm_distill_report = {"enabled": 0.0, "error": str(exc)}
 
         self.model = self._build_model()
         if self.model is None:
@@ -110,6 +161,12 @@ class MLTradingStrategy:
             return
 
         try:
+            if sample_weight is not None:
+                self.model.fit(X, target, sample_weight=sample_weight)
+            else:
+                self.model.fit(X, target)
+        except TypeError:
+            # Some estimators may not support sample_weight.
             self.model.fit(X, target)
         except Exception as exc:
             logger.warning("Model fit failed (%s); reverting to baseline mean", exc)
@@ -149,4 +206,3 @@ class MLTradingStrategy:
 
 
 __all__ = ["MLTradingStrategy"]
-

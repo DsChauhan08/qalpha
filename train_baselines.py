@@ -31,6 +31,8 @@ import pandas as pd
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
+from quantum_alpha.llm.distillation import DistillConfig, distill_supervision
+
 
 def prepare_data(
     symbols: list[str],
@@ -179,7 +181,9 @@ def prepare_data(
     }
 
 
-def train_logistic_regression(X_train, y_train, X_val, y_val, n_classes):
+def train_logistic_regression(
+    X_train, y_train, X_val, y_val, n_classes, sample_weight=None
+):
     """Logistic Regression baseline."""
     from sklearn.linear_model import LogisticRegression
 
@@ -191,7 +195,7 @@ def train_logistic_regression(X_train, y_train, X_val, y_val, n_classes):
             solver="lbfgs",
             random_state=42,
         )
-        model.fit(X_train, y_train)
+        model.fit(X_train, y_train, sample_weight=sample_weight)
         val_acc = model.score(X_val, y_val)
         results[C] = {"model": model, "val_acc": val_acc}
 
@@ -201,7 +205,9 @@ def train_logistic_regression(X_train, y_train, X_val, y_val, n_classes):
     return best["model"], best["val_acc"], {"C": best_C}
 
 
-def train_random_forest(X_train, y_train, X_val, y_val, n_classes):
+def train_random_forest(
+    X_train, y_train, X_val, y_val, n_classes, sample_weight=None
+):
     """Random Forest baseline."""
     from sklearn.ensemble import RandomForestClassifier
 
@@ -214,7 +220,7 @@ def train_random_forest(X_train, y_train, X_val, y_val, n_classes):
     ]
     for i, cfg in enumerate(configs):
         model = RandomForestClassifier(**cfg, random_state=42, n_jobs=-1)
-        model.fit(X_train, y_train)
+        model.fit(X_train, y_train, sample_weight=sample_weight)
         val_acc = model.score(X_val, y_val)
         results[i] = {"model": model, "val_acc": val_acc, "config": cfg}
 
@@ -223,7 +229,9 @@ def train_random_forest(X_train, y_train, X_val, y_val, n_classes):
     return best["model"], best["val_acc"], best["config"]
 
 
-def train_gradient_boosting(X_train, y_train, X_val, y_val, n_classes):
+def train_gradient_boosting(
+    X_train, y_train, X_val, y_val, n_classes, sample_weight=None
+):
     """Gradient Boosting (HistGradientBoosting) baseline."""
     from sklearn.ensemble import HistGradientBoostingClassifier
 
@@ -241,7 +249,7 @@ def train_gradient_boosting(X_train, y_train, X_val, y_val, n_classes):
     ]
     for i, cfg in enumerate(configs):
         model = HistGradientBoostingClassifier(**cfg, random_state=42)
-        model.fit(X_train, y_train)
+        model.fit(X_train, y_train, sample_weight=sample_weight)
         val_acc = model.score(X_val, y_val)
         results[i] = {"model": model, "val_acc": val_acc, "config": cfg}
 
@@ -358,6 +366,48 @@ def main():
         default=1,
         help="Sequence length: 1=single day features (default), >1=flattened window",
     )
+    parser.add_argument(
+        "--llm-distill",
+        action="store_true",
+        help="Apply Gemini teacher distillation to training labels/weights",
+    )
+    parser.add_argument(
+        "--llm-distill-mode",
+        type=str,
+        default=None,
+        choices=["off", "simulated", "api"],
+        help="Distillation mode (default: simulated when enabled)",
+    )
+    parser.add_argument(
+        "--llm-distill-min-alignment",
+        type=float,
+        default=0.75,
+        help="Minimum alignment threshold for strong teacher interventions",
+    )
+    parser.add_argument(
+        "--llm-distill-blend",
+        type=float,
+        default=0.35,
+        help="Distillation blend intensity in [0,1]",
+    )
+    parser.add_argument(
+        "--llm-distill-max-calls",
+        type=int,
+        default=0,
+        help="Max LLM calls for distillation (0=auto)",
+    )
+    parser.add_argument(
+        "--llm-distill-seed",
+        type=int,
+        default=42,
+        help="Seed for distillation subsampling",
+    )
+    parser.add_argument(
+        "--llm-distill-env-path",
+        type=str,
+        default=".env",
+        help="Path to .env with Gemini settings/keys",
+    )
 
     args = parser.parse_args()
 
@@ -378,6 +428,12 @@ def main():
     print(f"Forward period: {args.forward_period}d")
     print(f"Classes:        {args.n_classes}")
     print(f"Seq length:     {args.seq_len}")
+    print(
+        f"LLM distill:    {args.llm_distill} "
+        f"(mode={args.llm_distill_mode or 'simulated'}, "
+        f"min_align={args.llm_distill_min_alignment:.2f}, "
+        f"max_calls={args.llm_distill_max_calls})"
+    )
 
     # Prepare data
     print(f"\n{'=' * 60}")
@@ -418,6 +474,41 @@ def main():
                 f"{name}: {total} | sell={sells} ({100 * sells / total:.1f}%) hold={holds} ({100 * holds / total:.1f}%) buy={buys} ({100 * buys / total:.1f}%)"
             )
 
+    y_train_fit = y_train.copy()
+    sample_weight = None
+    distill_report = None
+    if args.llm_distill:
+        print(f"\n{'=' * 60}")
+        print("LLM DISTILLATION")
+        print(f"{'=' * 60}")
+        distilled = distill_supervision(
+            X_train,
+            y_signal=y_train_fit,
+            feature_names=feature_names,
+            n_classes=args.n_classes,
+            y_conf=None,
+            config=DistillConfig(
+                enabled=True,
+                mode=args.llm_distill_mode,
+                env_path=args.llm_distill_env_path,
+                min_alignment=args.llm_distill_min_alignment,
+                blend=args.llm_distill_blend,
+                max_calls=args.llm_distill_max_calls,
+                seed=args.llm_distill_seed,
+                fail_mode="hold",
+            ),
+        )
+        y_train_fit = distilled["y_signal"]
+        sample_weight = distilled["sample_weight"]
+        distill_report = distilled["report"]
+        print(
+            f"Mode={distill_report['mode']} evaluated={int(distill_report['n_evaluated'])}/{int(distill_report['n_samples'])} "
+            f"mean_alignment={distill_report['mean_alignment']:.3f} "
+            f"mean_weight={distill_report['mean_weight']:.3f} "
+            f"relabel_hold={int(distill_report['relabeled_to_hold'])} "
+            f"relabel_from_hold={int(distill_report['relabeled_from_hold'])}"
+        )
+
     # Majority class baseline
     unique, counts = np.unique(y_val, return_counts=True)
     majority = unique[counts.argmax()]
@@ -436,7 +527,7 @@ def main():
     print(f"{'=' * 60}")
     t0 = time.time()
     lr_model, lr_acc, lr_cfg = train_logistic_regression(
-        X_train, y_train, X_val, y_val, args.n_classes
+        X_train, y_train_fit, X_val, y_val, args.n_classes, sample_weight=sample_weight
     )
     lr_time = time.time() - t0
     lr_eval = evaluate_detailed(lr_model, X_val, y_val, args.n_classes, "LogReg")
@@ -467,7 +558,7 @@ def main():
     print(f"{'=' * 60}")
     t0 = time.time()
     rf_model, rf_acc, rf_cfg = train_random_forest(
-        X_train, y_train, X_val, y_val, args.n_classes
+        X_train, y_train_fit, X_val, y_val, args.n_classes, sample_weight=sample_weight
     )
     rf_time = time.time() - t0
     rf_eval = evaluate_detailed(rf_model, X_val, y_val, args.n_classes, "RF")
@@ -494,7 +585,7 @@ def main():
     print(f"{'=' * 60}")
     t0 = time.time()
     gb_model, gb_acc, gb_cfg = train_gradient_boosting(
-        X_train, y_train, X_val, y_val, args.n_classes
+        X_train, y_train_fit, X_val, y_val, args.n_classes, sample_weight=sample_weight
     )
     gb_time = time.time() - t0
     gb_eval = evaluate_detailed(gb_model, X_val, y_val, args.n_classes, "GB")
@@ -513,7 +604,7 @@ def main():
         print("4. SIMPLE THRESHOLD RULES")
         print(f"{'=' * 60}")
         thresh_results = train_simple_threshold(
-            X_train, y_train, X_val, y_val, feature_names
+            X_train, y_train_fit, X_val, y_val, feature_names
         )
         for feat, res in thresh_results.items():
             edge = res["val_acc"] - baseline_acc
@@ -583,6 +674,7 @@ def main():
         },
         "baseline_acc": float(baseline_acc),
         "lstm_v14_acc": lstm_v14_acc,
+        "llm_distillation": distill_report,
         "results": [
             {"model": name, "val_acc": float(acc), "edge": float(edge)}
             for name, acc, edge, _ in results_table

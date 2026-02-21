@@ -1,5 +1,5 @@
 {
-  "timestamp": "2026-02-20T10:05:54.608366",
+  "timestamp": "2026-02-21T15:58:30.676501",
   "config": {
     "symbols": [
       "SPY",
@@ -12,41 +12,52 @@
     "forward_period": 5,
     "n_classes": 2,
     "seq_len": 1,
-    "n_train": 926,
+    "n_train": 924,
     "n_val": 228
   },
-  "baseline_acc": 0.5219298245614035,
+  "baseline_acc": 0.5394736842105263,
   "lstm_v14_acc": 0.6,
+  "llm_distillation": {
+    "enabled": 1.0,
+    "mode": "simulated",
+    "n_samples": 924.0,
+    "n_evaluated": 924.0,
+    "mean_alignment": 0.40734943747520447,
+    "mean_weight": 1.0728280544281006,
+    "high_alignment_count": 0.0,
+    "relabeled_to_hold": 0.0,
+    "relabeled_from_hold": 0.0
+  },
   "results": [
     {
       "model": "Logistic Regression",
-      "val_acc": 0.5614035087719298,
-      "edge": 0.03947368421052633
+      "val_acc": 0.5833333333333334,
+      "edge": 0.04385964912280704
     },
     {
       "model": "Random Forest",
-      "val_acc": 0.5526315789473685,
-      "edge": 0.030701754385965008
+      "val_acc": 0.5614035087719298,
+      "edge": 0.021929824561403466
     },
     {
       "model": "Gradient Boosting",
-      "val_acc": 0.5789473684210527,
-      "edge": 0.05701754385964919
+      "val_acc": 0.5833333333333334,
+      "edge": 0.04385964912280704
     },
     {
       "model": "Threshold (sentiment_momentum_3d)",
-      "val_acc": 0.4956140350877193,
-      "edge": -0.02631578947368418
+      "val_acc": 0.5087719298245614,
+      "edge": -0.030701754385964897
     },
     {
       "model": "Threshold (mean_sentiment)",
-      "val_acc": 0.45614035087719296,
-      "edge": -0.06578947368421051
+      "val_acc": 0.4692982456140351,
+      "edge": -0.07017543859649122
     },
     {
       "model": "Threshold (weighted_sentiment)",
-      "val_acc": 0.4517543859649123,
-      "edge": -0.07017543859649117
+      "val_acc": 0.4649122807017544,
+      "edge": -0.07456140350877194
     }
   ]
 }

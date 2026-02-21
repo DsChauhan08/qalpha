@@ -34,6 +34,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from quantum_alpha.data.collectors.market_data import DataCollector
 from quantum_alpha.data.preprocessing.cleaners import DataCleaner
 from quantum_alpha.data.preprocessing.imputers import MissingValueImputer
+from quantum_alpha.llm.distillation import DistillConfig, distill_supervision
 from quantum_alpha.models.lstm_v4.news_lstm import NewsLSTMConfig
 from quantum_alpha.models.lstm_v4.noise_adversary import (
     augment_with_noise_traps,
@@ -138,6 +139,54 @@ def _maybe_run_noise_probe(
     return probe
 
 
+def _maybe_apply_llm_distillation(
+    X_train: np.ndarray,
+    y_sig_train: np.ndarray,
+    y_conf_train: np.ndarray,
+    *,
+    feature_names: list[str],
+    n_classes: int,
+    enabled: bool,
+    mode: str | None,
+    env_path: str | None,
+    min_alignment: float,
+    blend: float,
+    max_calls: int,
+    seed: int,
+) -> tuple[np.ndarray, np.ndarray, dict | None]:
+    if not enabled:
+        return y_sig_train, y_conf_train, None
+
+    distilled = distill_supervision(
+        X_train,
+        y_signal=y_sig_train,
+        y_conf=y_conf_train,
+        feature_names=feature_names,
+        n_classes=n_classes,
+        config=DistillConfig(
+            enabled=True,
+            mode=mode,
+            env_path=env_path,
+            min_alignment=min_alignment,
+            blend=blend,
+            max_calls=max_calls,
+            seed=seed,
+            fail_mode="hold",
+        ),
+    )
+    report = distilled["report"]
+    print(
+        "\nLLM distillation: "
+        f"mode={report['mode']} "
+        f"evaluated={int(report['n_evaluated'])}/{int(report['n_samples'])} "
+        f"mean_alignment={report['mean_alignment']:.3f} "
+        f"mean_weight={report['mean_weight']:.3f} "
+        f"relabel_hold={int(report['relabeled_to_hold'])} "
+        f"relabel_from_hold={int(report['relabeled_from_hold'])}"
+    )
+    return distilled["y_signal"], distilled["y_conf"], report
+
+
 def train_single_symbol(
     symbol: str,
     price_df: pd.DataFrame,
@@ -148,6 +197,13 @@ def train_single_symbol(
     noise_adversarial: bool = False,
     noise_ratio: float = 0.35,
     noise_seed: int = 42,
+    llm_distill: bool = False,
+    llm_distill_mode: str | None = None,
+    llm_distill_env_path: str | None = ".env",
+    llm_distill_min_alignment: float = 0.75,
+    llm_distill_blend: float = 0.35,
+    llm_distill_max_calls: int = 0,
+    llm_distill_seed: int = 42,
 ) -> dict:
     """Train on a single symbol and return metrics."""
     print(f"\n{'=' * 60}")
@@ -167,6 +223,26 @@ def train_single_symbol(
 
     print(f"\nX_train shape: {X_train.shape}")
     print(f"X_val shape:   {X_val.shape}")
+
+    feature_names = (
+        trainer.feature_names
+        if getattr(trainer, "feature_names", None)
+        else [f"f{i}" for i in range(X_train.shape[2])]
+    )
+    y_sig_train, y_conf_train, distill_report = _maybe_apply_llm_distillation(
+        X_train=X_train,
+        y_sig_train=y_sig_train,
+        y_conf_train=y_conf_train,
+        feature_names=feature_names,
+        n_classes=int(config.n_classes),
+        enabled=llm_distill,
+        mode=llm_distill_mode,
+        env_path=llm_distill_env_path,
+        min_alignment=llm_distill_min_alignment,
+        blend=llm_distill_blend,
+        max_calls=llm_distill_max_calls,
+        seed=llm_distill_seed,
+    )
 
     X_train, y_sig_train, y_conf_train = _maybe_apply_noise_adversarial(
         X_train=X_train,
@@ -215,6 +291,7 @@ def train_single_symbol(
         "metrics": metrics,
         "history": history,
         "noise_probe": noise_probe,
+        "distillation_report": distill_report,
     }
 
 
@@ -228,6 +305,13 @@ def train_multi_symbol(
     noise_adversarial: bool = False,
     noise_ratio: float = 0.35,
     noise_seed: int = 42,
+    llm_distill: bool = False,
+    llm_distill_mode: str | None = None,
+    llm_distill_env_path: str | None = ".env",
+    llm_distill_min_alignment: float = 0.75,
+    llm_distill_blend: float = 0.35,
+    llm_distill_max_calls: int = 0,
+    llm_distill_seed: int = 42,
 ) -> dict:
     """
     Train on concatenated data from multiple symbols.
@@ -415,6 +499,21 @@ def train_multi_symbol(
     print(f"\nX_train shape: {X_train.shape}")
     print(f"X_val shape:   {X_val.shape}")
 
+    y_sig_train, y_conf_train, distill_report = _maybe_apply_llm_distillation(
+        X_train=X_train,
+        y_sig_train=y_sig_train,
+        y_conf_train=y_conf_train,
+        feature_names=list(first_available),
+        n_classes=int(config.n_classes),
+        enabled=llm_distill,
+        mode=llm_distill_mode,
+        env_path=llm_distill_env_path,
+        min_alignment=llm_distill_min_alignment,
+        blend=llm_distill_blend,
+        max_calls=llm_distill_max_calls,
+        seed=llm_distill_seed,
+    )
+
     X_train, y_sig_train, y_conf_train = _maybe_apply_noise_adversarial(
         X_train=X_train,
         y_sig_train=y_sig_train,
@@ -468,6 +567,7 @@ def train_multi_symbol(
         "metrics": metrics,
         "history": history,
         "noise_probe": noise_probe,
+        "distillation_report": distill_report,
     }
 
 
@@ -482,6 +582,13 @@ def train_with_real_sentiment(
     noise_adversarial: bool = False,
     noise_ratio: float = 0.35,
     noise_seed: int = 42,
+    llm_distill: bool = False,
+    llm_distill_mode: str | None = None,
+    llm_distill_env_path: str | None = ".env",
+    llm_distill_min_alignment: float = 0.75,
+    llm_distill_blend: float = 0.35,
+    llm_distill_max_calls: int = 0,
+    llm_distill_seed: int = 42,
 ) -> dict:
     """
     Train using REAL FinBERT sentiment features from the sentiment pipeline.
@@ -528,6 +635,7 @@ def train_with_real_sentiment(
     all_y_signal = []
     all_y_conf = []
     scaler_data_parts = []
+    feature_names_ref: list[str] | None = None
 
     for symbol, price_df in price_data.items():
         print(f"\n--- Building features for {symbol} ---")
@@ -599,6 +707,8 @@ def train_with_real_sentiment(
             continue
 
         X_raw = features[available].values
+        if feature_names_ref is None:
+            feature_names_ref = list(available)
         scaler_data_parts.append(X_raw)
 
         # Labels
@@ -689,6 +799,24 @@ def train_with_real_sentiment(
     )
     print(f"X_train: {X_train.shape} | X_val: {X_val.shape}")
 
+    if feature_names_ref is None:
+        feature_names_ref = [f"f{i}" for i in range(X_train.shape[2])]
+
+    y_sig_train, y_conf_train, distill_report = _maybe_apply_llm_distillation(
+        X_train=X_train,
+        y_sig_train=y_sig_train,
+        y_conf_train=y_conf_train,
+        feature_names=feature_names_ref,
+        n_classes=int(config.n_classes),
+        enabled=llm_distill,
+        mode=llm_distill_mode,
+        env_path=llm_distill_env_path,
+        min_alignment=llm_distill_min_alignment,
+        blend=llm_distill_blend,
+        max_calls=llm_distill_max_calls,
+        seed=llm_distill_seed,
+    )
+
     X_train, y_sig_train, y_conf_train = _maybe_apply_noise_adversarial(
         X_train=X_train,
         y_sig_train=y_sig_train,
@@ -759,6 +887,7 @@ def train_with_real_sentiment(
         "metrics": metrics,
         "history": history,
         "noise_probe": noise_probe,
+        "distillation_report": distill_report,
     }
 
 
@@ -863,6 +992,48 @@ def main():
         default=42,
         help="Random seed for noise adversarial simulation",
     )
+    parser.add_argument(
+        "--llm-distill",
+        action="store_true",
+        help="Apply Gemini teacher distillation to training labels/confidence",
+    )
+    parser.add_argument(
+        "--llm-distill-mode",
+        type=str,
+        default=None,
+        choices=["off", "simulated", "api"],
+        help="Distillation mode (default: simulated when enabled)",
+    )
+    parser.add_argument(
+        "--llm-distill-min-alignment",
+        type=float,
+        default=0.75,
+        help="Minimum alignment threshold for strong teacher interventions",
+    )
+    parser.add_argument(
+        "--llm-distill-blend",
+        type=float,
+        default=0.35,
+        help="Distillation blend intensity in [0,1]",
+    )
+    parser.add_argument(
+        "--llm-distill-max-calls",
+        type=int,
+        default=0,
+        help="Max LLM calls for distillation (0=auto)",
+    )
+    parser.add_argument(
+        "--llm-distill-seed",
+        type=int,
+        default=42,
+        help="Seed for distillation subsampling",
+    )
+    parser.add_argument(
+        "--llm-distill-env-path",
+        type=str,
+        default=".env",
+        help="Path to .env with Gemini settings/keys",
+    )
 
     args = parser.parse_args()
 
@@ -884,6 +1055,12 @@ def main():
     print(f"Real sentiment: {args.real_sentiment}")
     print(f"Fetch news:     {args.fetch_news}")
     print(f"Noise advers.:  {args.noise_adversarial} (ratio={args.noise_ratio})")
+    print(
+        f"LLM distill:    {args.llm_distill} "
+        f"(mode={args.llm_distill_mode or 'simulated'}, "
+        f"min_align={args.llm_distill_min_alignment:.2f}, "
+        f"max_calls={args.llm_distill_max_calls})"
+    )
 
     # Build config
     config = NewsLSTMConfig(
@@ -918,6 +1095,13 @@ def main():
             noise_adversarial=args.noise_adversarial,
             noise_ratio=args.noise_ratio,
             noise_seed=args.noise_seed,
+            llm_distill=args.llm_distill,
+            llm_distill_mode=args.llm_distill_mode,
+            llm_distill_env_path=args.llm_distill_env_path,
+            llm_distill_min_alignment=args.llm_distill_min_alignment,
+            llm_distill_blend=args.llm_distill_blend,
+            llm_distill_max_calls=args.llm_distill_max_calls,
+            llm_distill_seed=args.llm_distill_seed,
         )
     elif args.multi and len(price_data) > 1:
         result = train_multi_symbol(
@@ -930,6 +1114,13 @@ def main():
             noise_adversarial=args.noise_adversarial,
             noise_ratio=args.noise_ratio,
             noise_seed=args.noise_seed,
+            llm_distill=args.llm_distill,
+            llm_distill_mode=args.llm_distill_mode,
+            llm_distill_env_path=args.llm_distill_env_path,
+            llm_distill_min_alignment=args.llm_distill_min_alignment,
+            llm_distill_blend=args.llm_distill_blend,
+            llm_distill_max_calls=args.llm_distill_max_calls,
+            llm_distill_seed=args.llm_distill_seed,
         )
     else:
         # Train on the first (or only) symbol
@@ -944,6 +1135,13 @@ def main():
             noise_adversarial=args.noise_adversarial,
             noise_ratio=args.noise_ratio,
             noise_seed=args.noise_seed,
+            llm_distill=args.llm_distill,
+            llm_distill_mode=args.llm_distill_mode,
+            llm_distill_env_path=args.llm_distill_env_path,
+            llm_distill_min_alignment=args.llm_distill_min_alignment,
+            llm_distill_blend=args.llm_distill_blend,
+            llm_distill_max_calls=args.llm_distill_max_calls,
+            llm_distill_seed=args.llm_distill_seed,
         )
 
     # Save checkpoint

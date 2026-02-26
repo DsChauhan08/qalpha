@@ -84,3 +84,13 @@ benchmarks:
   quant_composite:
     - "QQQ"
     - "IWM"
+  quant_firm_proxies:
+    enabled: true
+    profiles:
+      - "aqr_style_factors"
+      - "citadel_style_multistrat"
+      - "two_sigma_style_data"
+      - "de_shaw_style_macro"
+      - "man_ahl_style_trend"
+    min_assets: 2
+    interval: "1d"

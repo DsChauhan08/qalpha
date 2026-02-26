@@ -35,6 +35,10 @@ from quantum_alpha.backtesting.performance_gate import (
     evaluate_gate,
     aggregate_fundamentals,
 )
+from quantum_alpha.backtesting.benchmark_profiles import (
+    evaluate_quant_firm_benchmarks,
+    benchmark_rows,
+)
 from quantum_alpha.risk.position_sizing import PositionSizer, VaRCalculator
 from quantum_alpha.risk.drawdown_control import DrawdownController, DrawdownState
 from quantum_alpha.execution.paper_trader import PaperTrader
@@ -924,6 +928,43 @@ def run_backtest(
         metrics["gate_relaxed"] = gate.relaxed
         gate_details = gate.details
 
+    quant_firm_benchmarks = {}
+    quant_firm_rows = []
+    quant_bench_cfg = bench_cfg.get("quant_firm_proxies", {})
+    if isinstance(quant_bench_cfg, dict) and quant_bench_cfg.get("enabled", False):
+        profile_names = quant_bench_cfg.get("profiles")
+        if isinstance(profile_names, str):
+            profile_names = [p.strip() for p in profile_names.split(",") if p.strip()]
+        strategy_returns = backtester.get_equity_series().pct_change().dropna()
+        try:
+            quant_firm_benchmarks = evaluate_quant_firm_benchmarks(
+                strategy_returns=strategy_returns,
+                collector=collector,
+                start_date=start_date,
+                end_date=end_date,
+                profile_names=profile_names,
+                interval=str(quant_bench_cfg.get("interval", "1d")),
+                min_assets=int(quant_bench_cfg.get("min_assets", 2)),
+            )
+            quant_firm_rows = benchmark_rows(quant_firm_benchmarks)
+            metrics["quant_firm_profiles_evaluated"] = len(quant_firm_rows)
+            metrics["quant_firm_profiles_outperformed"] = int(
+                sum(1 for r in quant_firm_rows if r["excess_total_return"] > 0)
+            )
+            if quant_firm_rows:
+                excess_vals = np.array(
+                    [float(r["excess_total_return"]) for r in quant_firm_rows],
+                    dtype=float,
+                )
+                metrics["quant_firm_best_excess_total_return"] = float(
+                    excess_vals.max()
+                )
+                metrics["quant_firm_median_excess_total_return"] = float(
+                    np.median(excess_vals)
+                )
+        except Exception as exc:
+            quant_firm_benchmarks = {"error": str(exc)}
+
     if verbose:
         print(f"\n{'=' * 60}")
         print("BACKTEST RESULTS")
@@ -975,9 +1016,27 @@ def run_backtest(
                 )
             print()
 
+        if quant_firm_rows:
+            print(f"{'QUANT-FIRM PROXY SCOREBOARD':^60}")
+            print(
+                f"{'Profile':<30} {'Excess':>9} {'IR':>7} {'DownCap':>9} {'HitRate':>9}"
+            )
+            print("-" * 60)
+            for row in quant_firm_rows:
+                print(
+                    f"{row['profile_label']:<30} "
+                    f"{row['excess_total_return'] * 100:>8.2f}% "
+                    f"{row['information_ratio']:>7.2f} "
+                    f"{row['downside_capture']:>9.2f} "
+                    f"{row['hit_rate_vs_profile'] * 100:>8.2f}%"
+                )
+            print()
+
     results = {
         "metrics": metrics,
         "gate_details": gate_details,
+        "quant_firm_benchmarks": quant_firm_benchmarks,
+        "quant_firm_rows": quant_firm_rows,
         "equity_curve": backtester.equity_curve,
         "trades": backtester.trades,
         "fills": backtester.fills,

@@ -54,10 +54,10 @@ strategy:
   paper_rebalance_frequency: "weekly"
   momentum_top_pct: 80
   momentum_bottom_pct: 35
-  relative_strength_top_n: 60
+  relative_strength_top_n: 80
   relative_strength_min_mom: -0.02
   use_relative_strength: true
-  liquid_subset_size: 200
+  liquid_subset_size: 300
   liquid_adv_window: 20
   liquid_min_history: 120
   liquid_for_full_only: true

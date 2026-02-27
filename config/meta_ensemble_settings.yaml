@@ -101,6 +101,9 @@ validation:
   mcpt_threshold_stage2: 0.05
   rolling_oos_window_days: 126
   rolling_oos_min_windows: 3
+  rolling_oos_min_beat_ratio: 0.75
+  promotion_oos_required_windows: 4
+  promotion_oos_required_beats: 3
   paper_min_bars: 120
   constraint_max_drawdown: 0.25
   constraint_beta_min: 0.8

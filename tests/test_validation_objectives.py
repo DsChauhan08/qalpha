@@ -64,6 +64,42 @@ def test_rolling_oos_vs_benchmark_passes_with_three_beats():
     assert res["passed"] is True
 
 
+def test_rolling_oos_ratio_requirement_enforced():
+    idx = pd.date_range("2025-01-01", periods=15, freq="D")
+    strat = pd.Series(
+        [
+            0.01,
+            0.0,
+            0.0,  # beat
+            0.01,
+            0.0,
+            0.0,  # beat
+            0.01,
+            0.0,
+            0.0,  # beat
+            -0.01,
+            0.0,
+            0.0,  # lose
+            -0.01,
+            0.0,
+            0.0,  # lose
+        ],
+        index=idx,
+    )
+    bench = pd.Series([0.0] * len(idx), index=idx)
+    res = _rolling_oos_vs_benchmark(
+        strategy_returns=strat,
+        benchmark_returns=bench,
+        window_days=3,
+        min_windows=3,
+        min_beat_ratio=0.75,
+    )
+    assert res["n_windows"] == 5
+    assert res["beats"] == 3
+    assert res["required_beats"] == 4
+    assert res["passed"] is False
+
+
 def test_benchmark_relative_metrics_information_ratio_positive():
     idx = pd.date_range("2025-01-01", periods=10, freq="D")
     strat = pd.Series([0.012, 0.003, 0.011, 0.004, 0.013, 0.002, 0.010, 0.005, 0.011, 0.004], index=idx)

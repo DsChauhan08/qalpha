@@ -1,0 +1,1011 @@
+
+============================================================
+QUANTUM ALPHA V1 - BACKTEST
+============================================================
+Symbols: ['FULL']
+Period: 2024-01-01 to 2026-02-26
+Capital: $100,000
+Strategy: enhanced
+============================================================
+
+Collecting price data...
+  A: 539 bars
+  AA: 539 bars
+  AAL: 539 bars
+  AAON: 539 bars
+  AAPL: 539 bars
+  ABBV: 539 bars
+  ABNB: 539 bars
+  ABT: 539 bars
+  ACGL: 539 bars
+  ACI: 539 bars
+  ACM: 539 bars
+  ACN: 539 bars
+  ADBE: 539 bars
+  ADC: 539 bars
+  ADI: 539 bars
+  ADM: 539 bars
+  ADP: 539 bars
+  ADSK: 539 bars
+  AEE: 539 bars
+  AEIS: 539 bars
+  AEP: 539 bars
+  AES: 539 bars
+  AFG: 539 bars
+  AFL: 539 bars
+  AGCO: 539 bars
+  AHR: 514 bars
+  AIG: 539 bars
+  AIT: 539 bars
+  AIZ: 539 bars
+  AJG: 539 bars
+  AKAM: 539 bars
+  ALB: 539 bars
+  ALGM: 539 bars
+  ALGN: 539 bars
+  ALK: 539 bars
+  ALL: 539 bars
+  ALLE: 539 bars
+  ALLY: 539 bars
+  ALV: 539 bars
+  AM: 539 bars
+  AMAT: 539 bars
+  AMCR: 539 bars
+  AMD: 539 bars
+  AME: 539 bars
+  AMG: 539 bars
+  AMGN: 539 bars
+  AMH: 539 bars
+  AMKR: 539 bars
+  AMP: 539 bars
+  AMT: 539 bars
+  AMZN: 539 bars
+  AN: 539 bars
+  ANET: 539 bars
+  ANF: 539 bars
+  AON: 539 bars
+  AOS: 539 bars
+  APA: 539 bars
+  APD: 539 bars
+  APG: 539 bars
+  APH: 539 bars
+  APO: 539 bars
+  APP: 539 bars
+  APPF: 539 bars
+  APTV: 539 bars
+  AR: 539 bars
+  ARE: 539 bars
+  ARES: 539 bars
+  ARMK: 539 bars
+  ARW: 539 bars
+  ARWR: 539 bars
+  ASB: 539 bars
+  ASGN: 539 bars
+  ASH: 539 bars
+  ATI: 539 bars
+  ATO: 539 bars
+  ATR: 539 bars
+  AVAV: 539 bars
+  AVB: 539 bars
+  AVGO: 539 bars
+  AVNT: 539 bars
+  AVT: 539 bars
+  AVTR: 539 bars
+  AVY: 539 bars
+  AWK: 539 bars
+  AXON: 539 bars
+  AXP: 539 bars
+  AXTA: 539 bars
+  AYI: 539 bars
+  AZO: 539 bars
+  BA: 539 bars
+  BAC: 539 bars
+  BAH: 539 bars
+  BALL: 539 bars
+  BAX: 539 bars
+  BBWI: 539 bars
+  BBY: 539 bars
+  BC: 539 bars
+  BCO: 539 bars
+  BDC: 539 bars
+  BDX: 539 bars
+  BEN: 539 bars
+  BF-B: 539 bars
+  BG: 539 bars
+  BHF: 539 bars
+  BIIB: 539 bars
+  BILL: 539 bars
+  BIO: 539 bars
+  BJ: 539 bars
+  BK: 539 bars
+  BKH: 539 bars
+  BKNG: 539 bars
+  BKR: 539 bars
+  BLD: 539 bars
+  BLDR: 539 bars
+  BLK: 539 bars
+  BLKB: 539 bars
+  BMRN: 539 bars
+  BMY: 539 bars
+  BR: 539 bars
+  BRBR: 539 bars
+  BRK-B: 539 bars
+  BRKR: 539 bars
+  BRO: 539 bars
+  BROS: 539 bars
+  BRX: 539 bars
+  BSX: 539 bars
+  BSY: 539 bars
+  BURL: 539 bars
+  BWA: 539 bars
+  BWXT: 539 bars
+  BX: 539 bars
+  BXP: 539 bars
+  BYD: 539 bars
+  C: 539 bars
+  CACI: 539 bars
+  CAG: 539 bars
+  CAH: 539 bars
+  CAR: 539 bars
+  CARR: 539 bars
+  CART: 539 bars
+  CASY: 539 bars
+  CAT: 539 bars
+  CAVA: 539 bars
+  CB: 539 bars
+  CBRE: 539 bars
+  CBSH: 539 bars
+  CBT: 539 bars
+  CCI: 539 bars
+  CCK: 539 bars
+  CCL: 539 bars
+  CDNS: 539 bars
+  CDP: 539 bars
+  CDW: 539 bars
+  CEG: 539 bars
+  CELH: 539 bars
+  CF: 539 bars
+  CFG: 539 bars
+  CFR: 539 bars
+  CG: 539 bars
+  CGNX: 539 bars
+  CHD: 539 bars
+  CHDN: 539 bars
+  CHE: 539 bars
+  CHH: 539 bars
+  CHRD: 539 bars
+  CHRW: 539 bars
+  CHTR: 539 bars
+  CHWY: 539 bars
+  CI: 539 bars
+  CIEN: 539 bars
+  CINF: 539 bars
+  CL: 539 bars
+  CLF: 539 bars
+  CLH: 539 bars
+  CLX: 539 bars
+  CMC: 539 bars
+  CMCSA: 539 bars
+  CME: 539 bars
+  CMG: 539 bars
+  CMI: 539 bars
+  CMS: 539 bars
+  CNC: 539 bars
+  CNH: 539 bars
+  CNM: 539 bars
+  CNO: 539 bars
+  CNP: 539 bars
+  CNX: 539 bars
+  CNXC: 539 bars
+  COF: 539 bars
+  COHR: 539 bars
+  COIN: 539 bars
+  COKE: 539 bars
+  COLB: 539 bars
+  COLM: 539 bars
+  COO: 539 bars
+  COP: 539 bars
+  COR: 539 bars
+  COST: 539 bars
+  COTY: 539 bars
+  CPAY: 539 bars
+  CPB: 539 bars
+  CPRI: 539 bars
+  CPRT: 539 bars
+  CPT: 539 bars
+  CR: 539 bars
+  CRBG: 539 bars
+  CRH: 539 bars
+  CRL: 539 bars
+  CRM: 539 bars
+  CROX: 539 bars
+  CRS: 539 bars
+  CRUS: 539 bars
+  CRWD: 539 bars
+  CSCO: 539 bars
+  CSGP: 539 bars
+  CSL: 539 bars
+  CSX: 539 bars
+  CTAS: 539 bars
+  CTRA: 539 bars
+  CTSH: 539 bars
+  CTVA: 539 bars
+  CUBE: 539 bars
+  CUZ: 539 bars
+  CVLT: 539 bars
+  CVNA: 539 bars
+  CVS: 539 bars
+  CVX: 539 bars
+  CW: 539 bars
+  CXT: 539 bars
+  CYTK: 539 bars
+  D: 539 bars
+  DAL: 539 bars
+  DAR: 539 bars
+  DASH: 539 bars
+  DBX: 539 bars
+  DCI: 539 bars
+  DD: 539 bars
+  DDOG: 539 bars
+  DE: 539 bars
+  DECK: 539 bars
+  DELL: 539 bars
+  DG: 539 bars
+  DGX: 539 bars
+  DHI: 539 bars
+  DHR: 539 bars
+  DINO: 539 bars
+  DIS: 539 bars
+  DKS: 539 bars
+  DLB: 539 bars
+  DLR: 539 bars
+  DLTR: 539 bars
+  DOC: 539 bars
+  DOCS: 539 bars
+  DOCU: 539 bars
+  DOV: 539 bars
+  DOW: 539 bars
+  DPZ: 539 bars
+  DRI: 539 bars
+  DT: 539 bars
+  DTE: 539 bars
+  DTM: 539 bars
+  DUK: 539 bars
+  DUOL: 539 bars
+  DVA: 539 bars
+  DVN: 539 bars
+  DXCM: 539 bars
+  DY: 539 bars
+  EA: 539 bars
+  EBAY: 539 bars
+  ECL: 539 bars
+  ED: 539 bars
+  EEFT: 539 bars
+  EFX: 539 bars
+  EG: 539 bars
+  EGP: 539 bars
+  EHC: 539 bars
+  EIX: 539 bars
+  EL: 539 bars
+  ELAN: 539 bars
+  ELF: 539 bars
+  ELS: 539 bars
+  ELV: 539 bars
+  EME: 539 bars
+  EMR: 539 bars
+  ENS: 539 bars
+  ENSG: 539 bars
+  ENTG: 539 bars
+  EOG: 539 bars
+  EPAM: 539 bars
+  EPR: 539 bars
+  EQH: 539 bars
+  EQIX: 539 bars
+  EQR: 539 bars
+  EQT: 539 bars
+  ERIE: 539 bars
+  ES: 539 bars
+  ESAB: 539 bars
+  ESNT: 539 bars
+  ESS: 539 bars
+  ETN: 539 bars
+  ETR: 539 bars
+  EVR: 539 bars
+  EVRG: 539 bars
+  EW: 539 bars
+  EWBC: 539 bars
+  EXC: 539 bars
+  EXE: 539 bars
+  EXEL: 539 bars
+  EXLS: 539 bars
+  EXP: 539 bars
+  EXPD: 539 bars
+  EXPE: 539 bars
+  EXPO: 539 bars
+  EXR: 539 bars
+  F: 539 bars
+  FAF: 539 bars
+  FANG: 539 bars
+  FAST: 539 bars
+  FBIN: 539 bars
+  FCFS: 539 bars
+  FCN: 539 bars
+  FCX: 539 bars
+  FDS: 539 bars
+  FDX: 539 bars
+  FE: 539 bars
+  FFIN: 539 bars
+  FFIV: 539 bars
+  FHI: 539 bars
+  FHN: 539 bars
+  FICO: 539 bars
+  FIS: 539 bars
+  FISV: 538 bars
+  FITB: 539 bars
+  FIVE: 539 bars
+  FIX: 539 bars
+  FLEX: 539 bars
+  FLG: 539 bars
+  FLO: 539 bars
+  FLR: 539 bars
+  FLS: 539 bars
+  FN: 539 bars
+  FNB: 539 bars
+  FND: 539 bars
+  FNF: 539 bars
+  FOUR: 539 bars
+  FOX: 539 bars
+  FOXA: 539 bars
+  FR: 539 bars
+  FRT: 539 bars
+  FSLR: 539 bars
+  FTI: 539 bars
+  FTNT: 539 bars
+  FTV: 539 bars
+  G: 539 bars
+  GAP: 539 bars
+  GATX: 539 bars
+  GBCI: 539 bars
+  GD: 539 bars
+  GDDY: 539 bars
+  GE: 539 bars
+  GEF: 539 bars
+  GEHC: 539 bars
+  GEN: 539 bars
+  GEV: 480 bars
+  GGG: 539 bars
+  GHC: 539 bars
+  GILD: 539 bars
+  GIS: 539 bars
+  GL: 539 bars
+  GLPI: 539 bars
+  GLW: 539 bars
+  GM: 539 bars
+  GME: 539 bars
+  GMED: 539 bars
+  GNRC: 539 bars
+  GNTX: 539 bars
+  GOOG: 539 bars
+  GOOGL: 539 bars
+  GPC: 539 bars
+  GPK: 539 bars
+  GPN: 539 bars
+  GRMN: 539 bars
+  GS: 539 bars
+  GT: 539 bars
+  GTLS: 539 bars
+  GTM: 539 bars
+  GWRE: 539 bars
+  GWW: 539 bars
+  GXO: 539 bars
+  H: 539 bars
+  HAE: 539 bars
+  HAL: 539 bars
+  HALO: 539 bars
+  HAS: 539 bars
+  HBAN: 539 bars
+  HCA: 539 bars
+  HD: 539 bars
+  HGV: 539 bars
+  HIG: 539 bars
+  HII: 539 bars
+  HIMS: 539 bars
+  HL: 539 bars
+  HLI: 539 bars
+  HLNE: 539 bars
+  HLT: 539 bars
+  HOG: 539 bars
+  HOLX: 539 bars
+  HOMB: 539 bars
+  HON: 539 bars
+  HOOD: 539 bars
+  HPE: 539 bars
+  HPQ: 539 bars
+  HQY: 539 bars
+  HR: 539 bars
+  HRB: 539 bars
+  HRL: 539 bars
+  HSIC: 539 bars
+  HST: 539 bars
+  HSY: 539 bars
+  HUBB: 539 bars
+  HUM: 539 bars
+  HWC: 539 bars
+  HWM: 539 bars
+  HXL: 539 bars
+  IBKR: 539 bars
+  IBM: 539 bars
+  IBOC: 539 bars
+  ICE: 539 bars
+  IDA: 539 bars
+  IDXX: 539 bars
+  IEX: 539 bars
+  IFF: 539 bars
+  ILMN: 539 bars
+  INCY: 539 bars
+  INGR: 539 bars
+  INTC: 539 bars
+  INTU: 539 bars
+  INVH: 539 bars
+  IP: 539 bars
+  IPGP: 539 bars
+  IQV: 539 bars
+  IR: 539 bars
+  IRM: 539 bars
+  IRT: 539 bars
+  ISRG: 539 bars
+  IT: 539 bars
+  ITT: 539 bars
+  ITW: 539 bars
+  IVZ: 539 bars
+  J: 539 bars
+  JAZZ: 539 bars
+  JBHT: 539 bars
+  JBL: 539 bars
+  JCI: 539 bars
+  JEF: 539 bars
+  JHG: 539 bars
+  JKHY: 539 bars
+  JLL: 539 bars
+  JNJ: 539 bars
+  JPM: 539 bars
+  KBH: 539 bars
+  KBR: 539 bars
+  KD: 539 bars
+  KDP: 539 bars
+  KEX: 539 bars
+  KEY: 539 bars
+  KEYS: 539 bars
+  KHC: 539 bars
+  KIM: 539 bars
+  KKR: 539 bars
+  KLAC: 539 bars
+  KMB: 539 bars
+  KMI: 539 bars
+  KMPR: 539 bars
+  KNF: 539 bars
+  KNSL: 539 bars
+  KNX: 539 bars
+  KO: 539 bars
+  KR: 539 bars
+  KRC: 539 bars
+  KRG: 539 bars
+  KTOS: 539 bars
+  KVUE: 539 bars
+  L: 539 bars
+  LAD: 539 bars
+  LAMR: 539 bars
+  LDOS: 539 bars
+  LEA: 539 bars
+  LECO: 539 bars
+  LEN: 539 bars
+  LFUS: 539 bars
+  LH: 539 bars
+  LHX: 539 bars
+  LII: 539 bars
+  LIN: 539 bars
+  LITE: 539 bars
+  LIVN: 539 bars
+  LLY: 539 bars
+  LMT: 539 bars
+  LNT: 539 bars
+  LNTH: 539 bars
+  LOPE: 539 bars
+  LOW: 539 bars
+  LPX: 539 bars
+  LRCX: 539 bars
+  LSCC: 539 bars
+  LSTR: 539 bars
+  LULU: 539 bars
+  LUV: 539 bars
+  LVS: 539 bars
+  LW: 539 bars
+  LYB: 539 bars
+  LYV: 539 bars
+  M: 539 bars
+  MA: 539 bars
+  MAA: 539 bars
+  MANH: 539 bars
+  MAR: 539 bars
+  MAS: 539 bars
+  MASI: 539 bars
+  MAT: 539 bars
+  MCD: 539 bars
+  MCHP: 539 bars
+  MCK: 539 bars
+  MCO: 539 bars
+  MDLZ: 539 bars
+  MDT: 539 bars
+  MEDP: 539 bars
+  MET: 539 bars
+  META: 539 bars
+  MGM: 539 bars
+  MIDD: 539 bars
+  MKC: 539 bars
+  MKSI: 539 bars
+  MLI: 539 bars
+  MLM: 539 bars
+  MMM: 539 bars
+  MMS: 539 bars
+  MNST: 539 bars
+  MO: 539 bars
+  MOH: 539 bars
+  MORN: 539 bars
+  MOS: 539 bars
+  MP: 539 bars
+  MPC: 539 bars
+  MPWR: 539 bars
+  MRK: 539 bars
+  MRNA: 539 bars
+  MRSH: 539 bars
+  MS: 539 bars
+  MSA: 539 bars
+  MSCI: 539 bars
+  MSFT: 539 bars
+  MSI: 539 bars
+  MSM: 539 bars
+  MTB: 539 bars
+  MTCH: 539 bars
+  MTD: 539 bars
+  MTDR: 539 bars
+  MTG: 539 bars
+  MTN: 539 bars
+  MTSI: 539 bars
+  MTZ: 539 bars
+  MU: 539 bars
+  MUR: 539 bars
+  MUSA: 539 bars
+  MZTI: 539 bars
+  NBIX: 539 bars
+  NCLH: 539 bars
+  NDAQ: 539 bars
+  NDSN: 539 bars
+  NEE: 539 bars
+  NEM: 539 bars
+  NEU: 539 bars
+  NFG: 539 bars
+  NFLX: 539 bars
+  NI: 539 bars
+  NJR: 539 bars
+  NKE: 539 bars
+  NLY: 539 bars
+  NNN: 539 bars
+  NOC: 539 bars
+  NOV: 539 bars
+  NOVT: 539 bars
+  NOW: 539 bars
+  NRG: 539 bars
+  NSA: 539 bars
+  NSC: 539 bars
+  NTAP: 539 bars
+  NTNX: 539 bars
+  NTRS: 539 bars
+  NUE: 539 bars
+  NVDA: 539 bars
+  NVR: 539 bars
+  NVST: 539 bars
+  NVT: 539 bars
+  NWE: 539 bars
+  NWS: 539 bars
+  NWSA: 539 bars
+  NXPI: 539 bars
+  NXST: 539 bars
+  NXT: 539 bars
+  NYT: 539 bars
+  O: 539 bars
+  OC: 539 bars
+  ODFL: 539 bars
+  OGE: 539 bars
+  OGS: 539 bars
+  OHI: 539 bars
+  OKE: 539 bars
+  OKTA: 539 bars
+  OLED: 539 bars
+  OLLI: 539 bars
+  OLN: 539 bars
+  OMC: 539 bars
+  ON: 539 bars
+  ONB: 539 bars
+  ONTO: 539 bars
+  OPCH: 539 bars
+  ORA: 539 bars
+  ORCL: 539 bars
+  ORI: 539 bars
+  ORLY: 539 bars
+  OSK: 539 bars
+  OTIS: 539 bars
+  OVV: 539 bars
+  OXY: 539 bars
+  OZK: 539 bars
+  PAG: 539 bars
+  PANW: 539 bars
+  PATH: 539 bars
+  PAYC: 539 bars
+  PAYX: 539 bars
+  PB: 539 bars
+  PBF: 539 bars
+  PCAR: 539 bars
+  PCG: 539 bars
+  PCTY: 539 bars
+  PEG: 539 bars
+  PEGA: 539 bars
+  PEN: 539 bars
+  PEP: 539 bars
+  PFE: 539 bars
+  PFG: 539 bars
+  PFGC: 539 bars
+  PG: 539 bars
+  PGR: 539 bars
+  PH: 539 bars
+  PHM: 539 bars
+  PII: 539 bars
+  PINS: 539 bars
+  PK: 539 bars
+  PKG: 539 bars
+  PLD: 539 bars
+  PLNT: 539 bars
+  PLTR: 539 bars
+  PM: 539 bars
+  PNC: 539 bars
+  PNFP: 539 bars
+  PNR: 539 bars
+  PNW: 539 bars
+  PODD: 539 bars
+  POOL: 539 bars
+  POR: 539 bars
+  POST: 539 bars
+  PPC: 539 bars
+  PPG: 539 bars
+  PPL: 539 bars
+  PR: 539 bars
+  PRI: 539 bars
+  PRU: 539 bars
+  PSA: 539 bars
+  PSKY: 539 bars
+  PSN: 539 bars
+  PSTG: 539 bars
+  PSX: 539 bars
+  PTC: 539 bars
+  PVH: 539 bars
+  PWR: 539 bars
+  PYPL: 539 bars
+  Q: 83 bars
+  QCOM: 539 bars
+  QLYS: 539 bars
+  R: 539 bars
+  RBA: 539 bars
+  RBC: 539 bars
+  RCL: 539 bars
+  REG: 539 bars
+  REGN: 539 bars
+  REXR: 539 bars
+  RF: 539 bars
+  RGA: 539 bars
+  RGEN: 539 bars
+  RGLD: 539 bars
+  RH: 539 bars
+  RJF: 539 bars
+  RL: 539 bars
+  RLI: 539 bars
+  RMBS: 539 bars
+  RMD: 539 bars
+  RNR: 539 bars
+  ROIV: 539 bars
+  ROK: 539 bars
+  ROL: 539 bars
+  ROP: 539 bars
+  ROST: 539 bars
+  RPM: 539 bars
+  RRC: 539 bars
+  RRX: 539 bars
+  RS: 539 bars
+  RSG: 539 bars
+  RTX: 539 bars
+  RVTY: 539 bars
+  RYAN: 539 bars
+  RYN: 539 bars
+  SAIA: 539 bars
+  SAIC: 539 bars
+  SAM: 539 bars
+  SARO: 350 bars
+  SATS: 539 bars
+  SBAC: 539 bars
+  SBRA: 539 bars
+  SBUX: 539 bars
+  SCHW: 539 bars
+  SCI: 539 bars
+  SEIC: 539 bars
+  SF: 539 bars
+  SFM: 539 bars
+  SGI: 539 bars
+  SHC: 539 bars
+  SHW: 539 bars
+  SIGI: 539 bars
+  SJM: 539 bars
+  SLAB: 539 bars
+  SLB: 539 bars
+  SLGN: 539 bars
+  SLM: 539 bars
+  SMCI: 539 bars
+  SMG: 539 bars
+  SNA: 539 bars
+  SNDK: 259 bars
+  SNPS: 539 bars
+  SNX: 539 bars
+  SO: 539 bars
+  SOLV: 481 bars
+  SON: 539 bars
+  SPG: 539 bars
+  SPGI: 539 bars
+  SPXC: 539 bars
+  SR: 539 bars
+  SRE: 539 bars
+  SSB: 539 bars
+  SSD: 539 bars
+  ST: 539 bars
+  STAG: 539 bars
+  STE: 539 bars
+  STLD: 539 bars
+  STRL: 539 bars
+  STT: 539 bars
+  STWD: 539 bars
+  STX: 539 bars
+  STZ: 539 bars
+  SW: 539 bars
+  SWK: 539 bars
+  SWKS: 539 bars
+  SWX: 539 bars
+  SYF: 539 bars
+  SYK: 539 bars
+  SYNA: 539 bars
+  SYY: 539 bars
+  T: 539 bars
+  TAP: 539 bars
+  TCBI: 539 bars
+  TDG: 539 bars
+  TDY: 539 bars
+  TECH: 539 bars
+  TEL: 539 bars
+  TER: 539 bars
+  TEX: 539 bars
+  TFC: 539 bars
+  TGT: 539 bars
+  THC: 539 bars
+  THG: 539 bars
+  THO: 539 bars
+  TJX: 539 bars
+  TKO: 539 bars
+  TKR: 539 bars
+  TLN: 539 bars
+  TMHC: 539 bars
+  TMO: 539 bars
+  TMUS: 539 bars
+  TNL: 539 bars
+  TOL: 539 bars
+  TPL: 539 bars
+  TPR: 539 bars
+  TREX: 539 bars
+  TRGP: 539 bars
+  TRMB: 539 bars
+  TROW: 539 bars
+  TRU: 539 bars
+  TRV: 539 bars
+  TSCO: 539 bars
+  TSLA: 539 bars
+  TSN: 539 bars
+  TT: 539 bars
+  TTC: 539 bars
+  TTD: 539 bars
+  TTEK: 539 bars
+  TTMI: 539 bars
+  TTWO: 539 bars
+  TWLO: 539 bars
+  TXN: 539 bars
+  TXNM: 539 bars
+  TXRH: 539 bars
+  TXT: 539 bars
+  TYL: 539 bars
+  UAL: 539 bars
+  UBER: 539 bars
+  UBSI: 539 bars
+  UDR: 539 bars
+  UFPI: 539 bars
+  UGI: 539 bars
+  UHS: 539 bars
+  ULS: 469 bars
+  ULTA: 539 bars
+  UMBF: 539 bars
+  UNH: 539 bars
+  UNM: 539 bars
+  UNP: 539 bars
+  UPS: 539 bars
+  URI: 539 bars
+  USB: 539 bars
+  USFD: 539 bars
+  UTHR: 539 bars
+  V: 539 bars
+  VAL: 539 bars
+  VC: 539 bars
+  VFC: 539 bars
+  VICI: 539 bars
+  VLO: 539 bars
+  VLTO: 539 bars
+  VLY: 539 bars
+  VMC: 539 bars
+  VMI: 539 bars
+  VNO: 539 bars
+  VNOM: 539 bars
+  VNT: 539 bars
+  VOYA: 539 bars
+  VRSK: 539 bars
+  VRSN: 539 bars
+  VRTX: 539 bars
+  VST: 539 bars
+  VTR: 539 bars
+  VTRS: 539 bars
+  VVV: 539 bars
+  VZ: 539 bars
+  WAB: 539 bars
+  WAL: 539 bars
+  WAT: 539 bars
+  WBD: 539 bars
+  WBS: 539 bars
+  WCC: 539 bars
+  WDAY: 539 bars
+  WDC: 539 bars
+  WEC: 539 bars
+  WELL: 539 bars
+  WEX: 539 bars
+  WFC: 539 bars
+  WFRD: 539 bars
+  WH: 539 bars
+  WHR: 539 bars
+  WING: 539 bars
+  WLK: 539 bars
+  WM: 539 bars
+  WMB: 539 bars
+  WMG: 539 bars
+  WMS: 539 bars
+  WMT: 539 bars
+  WPC: 539 bars
+  WRB: 539 bars
+  WSM: 539 bars
+  WSO: 539 bars
+  WST: 539 bars
+  WTFC: 539 bars
+  WTRG: 539 bars
+  WTS: 539 bars
+  WTW: 539 bars
+  WWD: 539 bars
+  WY: 539 bars
+  WYNN: 539 bars
+  XEL: 539 bars
+  XOM: 539 bars
+  XPO: 539 bars
+  XRAY: 539 bars
+  XYL: 539 bars
+  XYZ: 539 bars
+  YETI: 539 bars
+  YUM: 539 bars
+  ZBH: 539 bars
+  ZBRA: 539 bars
+  ZION: 539 bars
+  ZTS: 539 bars
+  Liquidity filter applied: trading top 200 symbols by 20D ADV
+  Computing cross-asset signals...
+2026-02-27 10:39:26,269 | INFO | quantum_alpha.strategy.signals | Cross-asset signals computed for 200 symbols over 258 periods
+
+Running backtest...
+2026-02-27 10:41:48,611 | INFO | quantum_alpha.risk.drawdown_control | Drawdown state transition: normal -> warning
+2026-02-27 10:41:48,696 | INFO | quantum_alpha.risk.drawdown_control | Drawdown state transition: warning -> recovery
+2026-02-27 10:41:48,795 | INFO | quantum_alpha.risk.drawdown_control | Drawdown state transition: recovery -> normal
+2026-02-27 10:41:49,290 | INFO | quantum_alpha.risk.drawdown_control | Drawdown state transition: normal -> warning
+2026-02-27 10:41:49,317 | INFO | quantum_alpha.risk.drawdown_control | Drawdown state transition: warning -> critical
+2026-02-27 10:41:49,471 | INFO | quantum_alpha.risk.drawdown_control | Drawdown state transition: critical -> warning
+2026-02-27 10:41:49,498 | INFO | quantum_alpha.risk.drawdown_control | Drawdown state transition: warning -> critical
+2026-02-27 10:41:49,526 | INFO | quantum_alpha.risk.drawdown_control | Drawdown state transition: critical -> warning
+2026-02-27 10:41:49,801 | INFO | quantum_alpha.risk.drawdown_control | Drawdown state transition: warning -> critical
+2026-02-27 10:41:49,830 | INFO | quantum_alpha.risk.drawdown_control | Drawdown state transition: critical -> warning
+2026-02-27 10:41:50,301 | INFO | quantum_alpha.risk.drawdown_control | Drawdown state transition: warning -> recovery
+2026-02-27 10:41:50,329 | INFO | quantum_alpha.risk.drawdown_control | Drawdown state transition: recovery -> normal
+
+============================================================
+BACKTEST RESULTS
+============================================================
+Total Return:         49.79%
+Annual Return:        20.84%
+Volatility:           15.76%
+Sharpe Ratio:          1.19
+Sortino Ratio:         1.45
+Max Drawdown:        -21.42%
+Calmar Ratio:          0.97
+Win Rate:             58.18%
+Profit Factor:         1.27
+Total Trades:           118
+Final Equity:    $149,793.87
+Excess vs QQQ/IWM:      3.91%
+Quant Beta:            0.73
+Quant InfoRatio:       0.03
+Bench Constraints:   FALSE
+Gate Passed:           TRUE
+Gate Coverage:           32
+Gate Available:          32
+Gate Required:           32
+Gate Relaxed:          TRUE
+Gate Good:               31
+Gate Ratio:          96.88%
+============================================================
+
+                   GATE DETAIL BREAKDOWN                    
+Metric                          Value   Market    Quant   Pass
+------------------------------------------------------------
+annual_volatility              0.1576   0.1611   0.1962    YES
+beta                           0.8920   1.0019   1.1601    YES
+cagr                           0.2084   0.2153   0.2045    YES
+calmar_ratio                   0.9728   1.1479   0.8624    YES
+capture_ratio                  1.0173   1.0000   0.9512    YES
+cvar                           0.0247   0.0234   0.0285    YES
+dividend_yield                 2.2342   1.0500   0.7150    YES
+downside_capture               0.9177   1.0000   1.2648    YES
+downside_deviation             0.1302   0.1267   0.1433    YES
+information_ratio             -0.0956   0.0000  -0.1924    YES
+jensen_alpha                   0.0245   0.0070  -0.0335    YES
+m2                             0.2124   0.2153   0.1715    YES
+max_consecutive_losses         5.0000   6.0000   6.0000    YES
+max_consecutive_wins          10.0000  10.0000   7.0000    YES
+max_drawdown                  -0.2142  -0.1876  -0.2371    YES
+omega_ratio                    1.2708   1.2862   1.2067    YES
+payoff_ratio                   0.9013   0.9347   1.0355     NO
+price_to_book                  6.2149   1.5965   1.4466    YES
+price_to_earnings             44.8264  27.5915  25.7584    YES
+profit_factor                  1.2708   1.2862   1.2067    YES
+r_squared                      0.8270   1.0000   0.9039    YES
+recovery_time                  0.0000   0.0000   0.0000    YES
+sharpe_ratio                   1.1950   1.2126   0.9404    YES
+sortino_ratio                  1.4472   1.5410   1.2871    YES
+sterling_ratio                 0.9728   1.1479   0.8624    YES
+total_return                   0.4979   0.5151   0.4865    YES
+tracking_error                 0.0678   0.0000   0.0659    YES
+treynor_ratio                  0.2112   0.1949   0.1590    YES
+ulcer_index                    0.0500   0.0352   0.0530    YES
+upside_capture                 0.9336   1.0000   1.2030    YES
+var                            0.0136   0.0153   0.0199    YES
+win_rate                       0.5818   0.5791   0.5382    YES
+
+Running MCPT validation...
+Running MCPT:   0%|          | 0/500 [00:00<?, ?it/s]Running MCPT: 100%|██████████| 500/500 [00:00<00:00, 8337.98it/s]
+
+MCPT Results:
+  P-Value: 0.0200
+  Significant: YES
+  Percentile: 98.0%
+  Stage1 (p<0.10): PASS
+  Stage2 (p<0.05): PASS
+
+Rolling OOS vs QQQ/IWM:
+  Windows: 4
+  Beats:   2
+  Needed:  3
+  Passed:  NO
+  Promotion (>=3/4 + constraints + MCPT stage2): NO
+2026-02-27 10:49:43,204 | WARNING | quantum_alpha.monitoring.alert_system | Max drawdown -21.42% exceeds threshold 15.00%

@@ -1,0 +1,15 @@
+Loaded 718,262 predictions from walk_forward_predictions.pkl
+  Date range: 2011-01-04 00:00:00 to 2026-01-15 00:00:00
+  Symbols: 99
+  Columns: ['date', 'symbol', 'y_true', 'y_pred', 'y_proba', 'forward_return', 'strategy_return']
+  Deduplicated: 718,262 -> 369,842 predictions (348,420 overlapping duplicates removed)
+
+Robustness suite complete
+Output: artifacts/robustness_suite_constrained_20260227_101105
+Base full annual return: 0.14326907158875124
+Best full annual return: 0.15161298992679306
+Best full excess vs quant: 0.007824952901190674
+Equal-weight full annual return: 0.1827577629121806
+SPY full annual return: 0.13917917385424317
+Quant composite full annual return: 0.1437880370256024
+Best tuned config: {'signal_threshold': 0.52, 'short_threshold': None, 'confidence': 0.0, 'long_only': True, 'commission_bps': 5.0, 'hold_days': 10, 'top_k': 10, 'max_positions': 20, 'confidence_weight': False, 'semiconductor_short_gate': False, 'gate_threshold': 0.0}

@@ -300,6 +300,7 @@ def _rolling_oos_vs_benchmark(
     benchmark_returns: pd.Series,
     window_days: int = 126,
     min_windows: int = 3,
+    min_beat_ratio: float = 0.75,
 ) -> Dict[str, object]:
     strat = (
         pd.Series(strategy_returns)
@@ -363,7 +364,12 @@ def _rolling_oos_vs_benchmark(
             }
         )
 
-    required = min(min_windows, len(windows))
+    ratio = float(min_beat_ratio)
+    if not np.isfinite(ratio):
+        ratio = 0.75
+    ratio = float(np.clip(ratio, 0.0, 1.0))
+    ratio_required = int(np.ceil(ratio * len(windows))) if windows else 0
+    required = max(int(min_windows), int(ratio_required))
     passed = len(windows) >= min_windows and beats >= required
     return {
         "available": True,
@@ -372,6 +378,7 @@ def _rolling_oos_vs_benchmark(
         "required_beats": int(required),
         "passed": bool(passed),
         "window_days": int(window_days),
+        "min_beat_ratio": ratio,
         "windows": windows,
     }
 
@@ -1248,6 +1255,13 @@ def run_backtest(
         mcpt_p05 = float(validation_cfg.get("mcpt_threshold_stage2", 0.05))
         oos_window_days = int(validation_cfg.get("rolling_oos_window_days", 126))
         oos_min_windows = int(validation_cfg.get("rolling_oos_min_windows", 3))
+        oos_min_beat_ratio = float(
+            validation_cfg.get("rolling_oos_min_beat_ratio", 0.75)
+        )
+        promo_req_windows = int(
+            validation_cfg.get("promotion_oos_required_windows", 4)
+        )
+        promo_req_beats = int(validation_cfg.get("promotion_oos_required_beats", 3))
 
         mcpt = MCPT(n_permutations=500, test_statistic="sharpe")
         mcpt_results = mcpt.run_on_returns(
@@ -1269,11 +1283,29 @@ def run_backtest(
                 benchmark_returns=quant_returns,
                 window_days=oos_window_days,
                 min_windows=oos_min_windows,
+                min_beat_ratio=oos_min_beat_ratio,
             )
             results["rolling_oos_vs_quant"] = rolling_oos
             metrics["rolling_oos_n_windows"] = int(rolling_oos.get("n_windows", 0))
             metrics["rolling_oos_beats"] = int(rolling_oos.get("beats", 0))
             metrics["rolling_oos_pass"] = bool(rolling_oos.get("passed", False))
+            metrics["rolling_oos_required_beats"] = int(
+                rolling_oos.get("required_beats", 0)
+            )
+            metrics["rolling_oos_min_beat_ratio"] = float(
+                rolling_oos.get("min_beat_ratio", oos_min_beat_ratio)
+            )
+            metrics["promotion_oos_required_windows"] = int(promo_req_windows)
+            metrics["promotion_oos_required_beats"] = int(promo_req_beats)
+
+            metrics["promotion_ready"] = bool(
+                metrics.get("mcpt_pass_stage2_0_05", False)
+                and metrics.get("benchmark_constraints_passed", False)
+                and metrics["rolling_oos_n_windows"] >= promo_req_windows
+                and metrics["rolling_oos_beats"] >= promo_req_beats
+            )
+        else:
+            metrics["promotion_ready"] = False
 
         if verbose:
             print(f"\nMCPT Results:")
@@ -1293,7 +1325,12 @@ def run_backtest(
                 print("\nRolling OOS vs QQQ/IWM:")
                 print(f"  Windows: {oos.get('n_windows', 0)}")
                 print(f"  Beats:   {oos.get('beats', 0)}")
+                print(f"  Needed:  {oos.get('required_beats', 0)}")
                 print(f"  Passed:  {'YES' if oos.get('passed', False) else 'NO'}")
+                print(
+                    "  Promotion (>=3/4 + constraints + MCPT stage2): "
+                    f"{'YES' if metrics.get('promotion_ready', False) else 'NO'}"
+                )
 
     return results
 

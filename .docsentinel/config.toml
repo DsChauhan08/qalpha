@@ -1,0 +1,34 @@
+doc_patterns = [
+    "*.md",
+    "*.mdx",
+    "*.rst",
+    "docs/**/*",
+    "README*",
+    "CHANGELOG*",
+]
+code_patterns = [
+    "*.rs",
+    "*.py",
+    "src/**/*.rs",
+    "src/**/*.py",
+    "lib/**/*.rs",
+    "lib/**/*.py",
+]
+ignore_patterns = [
+    "target/**",
+    "node_modules/**",
+    ".git/**",
+    ".docsentinel/**",
+    "*.lock",
+    "*.min.js",
+]
+languages = [
+    "rust",
+    "python",
+]
+similarity_threshold = 0.699999988079071
+top_k = 5
+
+[llm]
+max_tokens = 0
+temperature = 0.0

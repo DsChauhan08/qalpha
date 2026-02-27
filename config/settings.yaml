@@ -29,34 +29,38 @@ backtest:
 
 # Risk Management
 risk:
-  max_position_size: 0.30  # Max 30% per position
-  max_portfolio_leverage: 1.30
+  max_position_size: 0.05  # Max 5% per position
+  max_portfolio_leverage: 1.00
   max_drawdown: 0.10  # 10% max drawdown
   var_confidence: 0.95
   kelly_fraction: 0.6  # modest boost to sizing
   target_volatility: 0.095
   vol_of_vol_threshold: 0.03
   vol_of_vol_scale: 0.6
-  dd_warning: 0.15
-  dd_critical: 0.25
-  dd_circuit_breaker: 0.40
-  dd_max_limit: 0.50
-  dd_min_exposure: 0.25
-  dd_leverage_cap_warning: 0.85
-  dd_leverage_cap_critical: 0.8
-  market_off_leverage_cap: 0.85
+  dd_warning: 0.10
+  dd_critical: 0.16
+  dd_circuit_breaker: 0.25
+  dd_max_limit: 0.30
+  dd_min_exposure: 0.10
+  dd_leverage_cap_warning: 0.65
+  dd_leverage_cap_critical: 0.45
+  market_off_leverage_cap: 0.50
 
 # Strategy
 strategy:
   lookback_window: 60
   signal_threshold: 0.28  # Min signal strength to trade
-  rebalance_frequency: "monthly"
+  rebalance_frequency: "weekly"
   paper_rebalance_frequency: "weekly"
   momentum_top_pct: 80
   momentum_bottom_pct: 35
-  relative_strength_top_n: 5
+  relative_strength_top_n: 60
   relative_strength_min_mom: -0.02
   use_relative_strength: true
+  liquid_subset_size: 200
+  liquid_adv_window: 20
+  liquid_min_history: 120
+  liquid_for_full_only: true
   long_only: true
   risk_off_cash: false
   signal_scale: 1.9
@@ -94,3 +98,15 @@ benchmarks:
       - "man_ahl_style_trend"
     min_assets: 2
     interval: "1d"
+
+# Validation protocol
+validation:
+  mcpt_threshold_stage1: 0.10
+  mcpt_threshold_stage2: 0.05
+  rolling_oos_window_days: 126
+  rolling_oos_min_windows: 3
+  paper_min_bars: 120
+  constraint_max_drawdown: 0.25
+  constraint_beta_min: 0.8
+  constraint_beta_max: 1.2
+  constraint_min_information_ratio: 0.0

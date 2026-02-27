@@ -254,6 +254,128 @@ def _format_symbols(symbols: list) -> str:
     return f"{len(symbols)} symbols (e.g., {head}, ...)"
 
 
+def _select_liquid_subset(
+    frames: Dict[str, pd.DataFrame],
+    subset_size: int,
+    adv_window: int = 20,
+    min_history: int = 120,
+) -> list:
+    if subset_size <= 0 or not frames:
+        return list(frames.keys())
+
+    scores = []
+    for symbol, df in frames.items():
+        if df is None or len(df) < min_history:
+            continue
+        close = pd.to_numeric(df.get("close"), errors="coerce")
+        volume = pd.to_numeric(df.get("volume"), errors="coerce")
+        if close is None or volume is None:
+            continue
+        dollar_volume = (close * volume).replace([np.inf, -np.inf], np.nan).dropna()
+        if len(dollar_volume) < max(5, adv_window):
+            continue
+        adv = float(dollar_volume.tail(adv_window).mean())
+        if np.isfinite(adv) and adv > 0:
+            scores.append((symbol, adv))
+
+    if not scores:
+        return list(frames.keys())
+
+    scores.sort(key=lambda x: x[1], reverse=True)
+    selected = [sym for sym, _ in scores[:subset_size]]
+    return selected
+
+
+def _total_return_from_returns(returns: pd.Series) -> float:
+    if returns is None:
+        return 0.0
+    s = pd.Series(returns).astype(float).replace([np.inf, -np.inf], np.nan).dropna()
+    if len(s) < 1:
+        return 0.0
+    return float((1.0 + s).prod() - 1.0)
+
+
+def _rolling_oos_vs_benchmark(
+    strategy_returns: pd.Series,
+    benchmark_returns: pd.Series,
+    window_days: int = 126,
+    min_windows: int = 3,
+) -> Dict[str, object]:
+    strat = (
+        pd.Series(strategy_returns)
+        .astype(float)
+        .replace([np.inf, -np.inf], np.nan)
+        .dropna()
+    )
+    bench = (
+        pd.Series(benchmark_returns)
+        .astype(float)
+        .replace([np.inf, -np.inf], np.nan)
+        .dropna()
+    )
+    aligned = strat.align(bench, join="inner")
+    if aligned[0].empty or window_days <= 1:
+        return {
+            "available": False,
+            "reason": "insufficient_overlap",
+            "n_windows": 0,
+            "beats": 0,
+            "passed": False,
+            "windows": [],
+        }
+
+    strat_aligned, bench_aligned = aligned
+    n = len(strat_aligned)
+    n_windows = n // window_days
+    if n_windows < 1:
+        return {
+            "available": False,
+            "reason": "insufficient_length",
+            "n_windows": 0,
+            "beats": 0,
+            "passed": False,
+            "windows": [],
+        }
+
+    start_idx = n - (n_windows * window_days)
+    windows = []
+    beats = 0
+    for w in range(n_windows):
+        lo = start_idx + w * window_days
+        hi = lo + window_days
+        s_win = strat_aligned.iloc[lo:hi]
+        b_win = bench_aligned.iloc[lo:hi]
+        if s_win.empty or b_win.empty:
+            continue
+        s_ret = _total_return_from_returns(s_win)
+        b_ret = _total_return_from_returns(b_win)
+        beat = s_ret > b_ret
+        if beat:
+            beats += 1
+        windows.append(
+            {
+                "window_id": w + 1,
+                "start": str(s_win.index[0].date()),
+                "end": str(s_win.index[-1].date()),
+                "strategy_total_return": s_ret,
+                "benchmark_total_return": b_ret,
+                "beat": bool(beat),
+            }
+        )
+
+    required = min(min_windows, len(windows))
+    passed = len(windows) >= min_windows and beats >= required
+    return {
+        "available": True,
+        "n_windows": int(len(windows)),
+        "beats": int(beats),
+        "required_beats": int(required),
+        "passed": bool(passed),
+        "window_days": int(window_days),
+        "windows": windows,
+    }
+
+
 def _should_rebalance(
     ts: datetime, last_ts: Optional[datetime], frequency: str
 ) -> bool:
@@ -281,7 +403,7 @@ def run_backtest(
     start_date: datetime,
     end_date: datetime,
     initial_capital: float = 100000,
-    strategy_type: str = "momentum",
+    strategy_type: str = "enhanced",
     validate: bool = False,
     verbose: bool = True,
     config_path: Optional[str] = None,
@@ -296,7 +418,7 @@ def run_backtest(
         start_date: Backtest start date
         end_date: Backtest end date
         initial_capital: Starting capital
-        strategy_type: 'momentum', 'mean_reversion', 'composite'
+        strategy_type: Trading strategy key (default 'enhanced')
         validate: Whether to run MCPT validation
         verbose: Print progress
         config_path: Path to config directory or settings.yaml
@@ -319,6 +441,7 @@ def run_backtest(
     settings = load_config(config_path)
     risk_cfg = settings.get("risk", {}) if settings else {}
     strategy_cfg = settings.get("strategy", {}) if settings else {}
+    validation_cfg = settings.get("validation", {}) if settings else {}
     config_dir = _resolve_config_dir(config_path)
     strategies_cfg = _load_optional_yaml(config_dir / "strategies.yaml")
     sentiment_cfg = {}
@@ -343,6 +466,10 @@ def run_backtest(
     rs_top_n = int(strategy_cfg.get("relative_strength_top_n", 0))
     rs_min_mom = float(strategy_cfg.get("relative_strength_min_mom", 0.0))
     use_relative_strength = bool(strategy_cfg.get("use_relative_strength", False))
+    liquid_subset_size = int(strategy_cfg.get("liquid_subset_size", 0))
+    liquid_adv_window = int(strategy_cfg.get("liquid_adv_window", 20))
+    liquid_min_history = int(strategy_cfg.get("liquid_min_history", 120))
+    liquid_for_full_only = bool(strategy_cfg.get("liquid_for_full_only", True))
     long_only = bool(strategy_cfg.get("long_only", False))
     risk_off_cash = bool(strategy_cfg.get("risk_off_cash", False))
     if max_leverage <= 0:
@@ -359,6 +486,11 @@ def run_backtest(
     cleaner = DataCleaner()
     imputer = MissingValueImputer()
 
+    full_token_requested = bool(
+        symbols
+        and len(symbols) == 1
+        and str(symbols[0]).upper() in {"FULL", "ALL", "UNIVERSE"}
+    )
     symbols = _resolve_symbols(symbols, collector, settings)
 
     if strategy_type == "momentum":
@@ -567,6 +699,29 @@ def run_backtest(
         except Exception as e:
             if verbose:
                 print(f"  {symbol}: FAILED - {e}")
+
+    apply_liquid_filter = (
+        liquid_subset_size > 0
+        and len(raw_featured) > liquid_subset_size
+        and (full_token_requested or not liquid_for_full_only)
+    )
+    if apply_liquid_filter:
+        selected = _select_liquid_subset(
+            raw_featured,
+            subset_size=liquid_subset_size,
+            adv_window=liquid_adv_window,
+            min_history=liquid_min_history,
+        )
+        selected_set = set(selected)
+        raw_featured = {
+            sym: df for sym, df in raw_featured.items() if sym in selected_set
+        }
+        data = {sym: df for sym, df in data.items() if sym in selected_set}
+        if verbose:
+            print(
+                "  Liquidity filter applied: "
+                f"trading top {len(selected)} symbols by {liquid_adv_window}D ADV"
+            )
 
     # Enhanced strategy: fit cross-asset signals, then generate per-symbol
     if use_enhanced and raw_featured:
@@ -900,6 +1055,31 @@ def run_backtest(
         else {}
     )
 
+    if quant_returns is not None and not quant_returns.empty:
+        strategy_returns = backtester.get_equity_series().pct_change().dropna()
+        strat_aligned, quant_aligned = strategy_returns.align(quant_returns, join="inner")
+        if not strat_aligned.empty:
+            rel_metrics = compute_metrics_from_returns(
+                strat_aligned, benchmark_returns=quant_aligned
+            )
+            quant_total = _total_return_from_returns(quant_aligned)
+            strat_total = _total_return_from_returns(strat_aligned)
+            metrics["excess_total_return_vs_quant"] = float(strat_total - quant_total)
+            metrics["quant_beta"] = float(rel_metrics.get("beta", 0.0))
+            metrics["quant_information_ratio"] = float(
+                rel_metrics.get("information_ratio", 0.0)
+            )
+            md_limit = float(validation_cfg.get("constraint_max_drawdown", 0.25))
+            beta_min = float(validation_cfg.get("constraint_beta_min", 0.8))
+            beta_max = float(validation_cfg.get("constraint_beta_max", 1.2))
+            min_info = float(validation_cfg.get("constraint_min_information_ratio", 0.0))
+            constraints_pass = (
+                abs(float(metrics.get("max_drawdown", 0.0))) <= md_limit
+                and beta_min <= float(rel_metrics.get("beta", 0.0)) <= beta_max
+                and float(rel_metrics.get("information_ratio", 0.0)) > min_info
+            )
+            metrics["benchmark_constraints_passed"] = bool(constraints_pass)
+
     try:
         market_fund = collector.fetch_fundamentals(market_benchmark)
         market_metrics.update(aggregate_fundamentals([market_fund]))
@@ -980,6 +1160,21 @@ def run_backtest(
         print(f"Profit Factor:   {metrics['profit_factor']:>10.2f}")
         print(f"Total Trades:    {metrics['n_trades']:>10d}")
         print(f"Final Equity:    ${metrics['final_equity']:>10,.2f}")
+        if "excess_total_return_vs_quant" in metrics:
+            print(
+                "Excess vs QQQ/IWM:"
+                f" {metrics['excess_total_return_vs_quant'] * 100:>9.2f}%"
+            )
+            print(f"Quant Beta:      {metrics.get('quant_beta', 0.0):>10.2f}")
+            print(
+                "Quant InfoRatio: "
+                f"{metrics.get('quant_information_ratio', 0.0):>10.2f}"
+            )
+            if "benchmark_constraints_passed" in metrics:
+                print(
+                    "Bench Constraints: "
+                    f"{str(metrics['benchmark_constraints_passed']).upper():>7}"
+                )
         if "gate_passed" in metrics:
             print(f"Gate Passed:     {str(metrics['gate_passed']).upper():>10}")
             print(f"Gate Coverage:   {metrics['gate_coverage']:>10d}")
@@ -1049,19 +1244,56 @@ def run_backtest(
 
         equity_series = backtester.get_equity_series()
         returns = equity_series.pct_change().dropna().values
+        mcpt_p10 = float(validation_cfg.get("mcpt_threshold_stage1", 0.10))
+        mcpt_p05 = float(validation_cfg.get("mcpt_threshold_stage2", 0.05))
+        oos_window_days = int(validation_cfg.get("rolling_oos_window_days", 126))
+        oos_min_windows = int(validation_cfg.get("rolling_oos_min_windows", 3))
 
         mcpt = MCPT(n_permutations=500, test_statistic="sharpe")
         mcpt_results = mcpt.run_on_returns(
             returns, show_progress=verbose, block_size=5, method="sign_flip"
         )
+        p_value = float(mcpt_results.get("p_value", 1.0))
+        mcpt_results["passes_stage1_0_10"] = p_value < mcpt_p10
+        mcpt_results["passes_stage2_0_05"] = p_value < mcpt_p05
 
         results["mcpt"] = mcpt_results
+        metrics["mcpt_p_value"] = p_value
+        metrics["mcpt_pass_stage1_0_10"] = bool(mcpt_results["passes_stage1_0_10"])
+        metrics["mcpt_pass_stage2_0_05"] = bool(mcpt_results["passes_stage2_0_05"])
+
+        if quant_returns is not None and not quant_returns.empty:
+            strategy_returns = equity_series.pct_change().dropna()
+            rolling_oos = _rolling_oos_vs_benchmark(
+                strategy_returns=strategy_returns,
+                benchmark_returns=quant_returns,
+                window_days=oos_window_days,
+                min_windows=oos_min_windows,
+            )
+            results["rolling_oos_vs_quant"] = rolling_oos
+            metrics["rolling_oos_n_windows"] = int(rolling_oos.get("n_windows", 0))
+            metrics["rolling_oos_beats"] = int(rolling_oos.get("beats", 0))
+            metrics["rolling_oos_pass"] = bool(rolling_oos.get("passed", False))
 
         if verbose:
             print(f"\nMCPT Results:")
             print(f"  P-Value: {mcpt_results['p_value']:.4f}")
             print(f"  Significant: {'YES' if mcpt_results['is_significant'] else 'NO'}")
             print(f"  Percentile: {mcpt_results['percentile']:.1f}%")
+            print(
+                f"  Stage1 (p<{mcpt_p10:.2f}): "
+                f"{'PASS' if mcpt_results['passes_stage1_0_10'] else 'FAIL'}"
+            )
+            print(
+                f"  Stage2 (p<{mcpt_p05:.2f}): "
+                f"{'PASS' if mcpt_results['passes_stage2_0_05'] else 'FAIL'}"
+            )
+            if "rolling_oos_vs_quant" in results:
+                oos = results["rolling_oos_vs_quant"]
+                print("\nRolling OOS vs QQQ/IWM:")
+                print(f"  Windows: {oos.get('n_windows', 0)}")
+                print(f"  Beats:   {oos.get('beats', 0)}")
+                print(f"  Passed:  {'YES' if oos.get('passed', False) else 'NO'}")
 
     return results
 
@@ -1071,8 +1303,8 @@ def run_paper(
     start_date: datetime,
     end_date: datetime,
     initial_capital: float = 100000,
-    strategy_type: str = "momentum",
-    paper_bars: int = 30,
+    strategy_type: str = "enhanced",
+    paper_bars: int = 120,
     strategy_kwargs: Optional[Dict] = None,
     verbose: bool = True,
 ) -> Dict:
@@ -1093,6 +1325,7 @@ def run_paper(
     settings = load_config(None)
     risk_cfg = settings.get("risk", {}) if settings else {}
     strategy_cfg = settings.get("strategy", {}) if settings else {}
+    validation_cfg = settings.get("validation", {}) if settings else {}
     config_dir = _resolve_config_dir(None)
     strategies_cfg = _load_optional_yaml(config_dir / "strategies.yaml")
     sentiment_cfg = {}
@@ -1112,24 +1345,49 @@ def run_paper(
     rs_top_n = int(strategy_cfg.get("relative_strength_top_n", 0))
     rs_min_mom = float(strategy_cfg.get("relative_strength_min_mom", 0.0))
     use_relative_strength = bool(strategy_cfg.get("use_relative_strength", False))
+    liquid_subset_size = int(strategy_cfg.get("liquid_subset_size", 0))
+    liquid_adv_window = int(strategy_cfg.get("liquid_adv_window", 20))
+    liquid_min_history = int(strategy_cfg.get("liquid_min_history", 120))
+    liquid_for_full_only = bool(strategy_cfg.get("liquid_for_full_only", True))
     long_only = bool(strategy_cfg.get("long_only", False))
     risk_off_cash = bool(strategy_cfg.get("risk_off_cash", False))
     target_vol = float(risk_cfg.get("target_volatility", 0.15))
+    dd_warning = float(risk_cfg.get("dd_warning", 0.15))
+    dd_critical = float(risk_cfg.get("dd_critical", 0.25))
+    dd_breaker = float(risk_cfg.get("dd_circuit_breaker", 0.40))
+    dd_limit = float(risk_cfg.get("dd_max_limit", 0.50))
+    dd_min_exposure = float(risk_cfg.get("dd_min_exposure", 0.25))
+    dd_leverage_cap_warning = float(risk_cfg.get("dd_leverage_cap_warning", 0.85))
+    dd_leverage_cap_critical = float(risk_cfg.get("dd_leverage_cap_critical", 0.8))
+    market_off_leverage_cap = float(risk_cfg.get("market_off_leverage_cap", 0.85))
     if max_leverage <= 0:
         max_leverage = 1.0
+    min_paper_bars = int(validation_cfg.get("paper_min_bars", 120))
+    if paper_bars < min_paper_bars:
+        if verbose:
+            print(
+                f"paper-bars {paper_bars} is below validation minimum "
+                f"{min_paper_bars}; using {min_paper_bars}"
+            )
+        paper_bars = min_paper_bars
 
     collector = DataCollector()
     feature_gen = TechnicalFeatureGenerator()
     cleaner = DataCleaner()
     imputer = MissingValueImputer()
 
+    full_token_requested = bool(
+        symbols
+        and len(symbols) == 1
+        and str(symbols[0]).upper() in {"FULL", "ALL", "UNIVERSE"}
+    )
     symbols = _resolve_symbols(symbols, collector, settings)
 
     if strategy_type == "momentum":
         strategy = MomentumStrategy()
     elif strategy_type == "composite":
         strategy = CompositeStrategy()
-    elif strategy_type == "adaptive":
+    elif strategy_type in ("adaptive", "enhanced"):
         strategy = EnhancedCompositeStrategy()
     elif strategy_type == "sentiment":
         from quantum_alpha.strategy.sentiment_strategies import SocialSentimentStrategy
@@ -1139,6 +1397,10 @@ def run_paper(
         from quantum_alpha.strategy.ml_strategies import MLTradingStrategy
 
         strategy = MLTradingStrategy(**(strategy_kwargs or {}))
+    elif strategy_type == "meta_ensemble":
+        from quantum_alpha.strategy.meta_ensemble_strategy import MetaEnsembleStrategy
+
+        strategy = MetaEnsembleStrategy(**(strategy_kwargs or {}))
     else:
         strategy = MomentumStrategy()
 
@@ -1284,6 +1546,22 @@ def run_paper(
             if verbose:
                 print(f"  {symbol}: FAILED - {e}")
 
+    if liquid_subset_size > 0 and len(data) > liquid_subset_size:
+        if full_token_requested or not liquid_for_full_only:
+            selected = _select_liquid_subset(
+                data,
+                subset_size=liquid_subset_size,
+                adv_window=liquid_adv_window,
+                min_history=liquid_min_history,
+            )
+            selected_set = set(selected)
+            data = {sym: df for sym, df in data.items() if sym in selected_set}
+            if verbose:
+                print(
+                    "  Liquidity filter applied: "
+                    f"trading top {len(selected)} symbols by {liquid_adv_window}D ADV"
+                )
+
     if not data:
         return {"error": "No data collected"}
 
@@ -1297,12 +1575,25 @@ def run_paper(
         "peak_equity": initial_capital,
         "last_rebalance": None,
     }
+    dd_controller = DrawdownController(
+        warning_threshold=dd_warning,
+        critical_threshold=dd_critical,
+        circuit_breaker_threshold=dd_breaker,
+        max_drawdown_limit=dd_limit,
+        scaling_method="linear",
+        min_exposure=dd_min_exposure,
+        cooldown_days=10,
+    )
+    dd_controller.reset(initial_capital)
 
     def trading_strategy(timestamp, bars, bt):
+        equity = bt._total_equity()
+        dd_metrics = dd_controller.update(equity, timestamp)
+        exposure_mult = dd_metrics.exposure_multiplier
+
         if not _should_rebalance(
             timestamp, state["last_rebalance"], rebalance_frequency
         ):
-            equity = bt._total_equity()
             state["peak_equity"] = max(state["peak_equity"], equity)
             state["current_drawdown"] = (equity - state["peak_equity"]) / state[
                 "peak_equity"
@@ -1440,6 +1731,11 @@ def run_paper(
         if vol_scale != 1.0:
             target_positions = {s: w * vol_scale for s, w in target_positions.items()}
 
+        if exposure_mult < 1.0:
+            target_positions = {
+                s: w * exposure_mult for s, w in target_positions.items()
+            }
+
         total_abs = sum(abs(w) for w in target_positions.values())
         cap = max_leverage
         if dd_metrics.state == DrawdownState.WARNING:
@@ -1542,8 +1838,9 @@ def main():
             "sentiment",
             "ml",
             "news_lstm",
+            "meta_ensemble",
         ],
-        default="momentum",
+        default="enhanced",
         help="Strategy type",
     )
     parser.add_argument(
@@ -1559,7 +1856,7 @@ def main():
     parser.add_argument(
         "--paper-bars",
         type=int,
-        default=30,
+        default=120,
         help="Number of most recent bars to simulate in paper mode",
     )
     parser.add_argument("--validate", action="store_true", help="Run MCPT validation")

@@ -31,7 +31,7 @@ backtest:
 
 # Risk Management
 risk:
-  max_position_size: 0.25
+  max_position_size: 0.05
   max_portfolio_leverage: 1.0
   max_drawdown: 0.15
   var_confidence: 0.95
@@ -39,11 +39,14 @@ risk:
   target_volatility: 0.10
   vol_of_vol_threshold: 0.03
   vol_of_vol_scale: 0.6
-  dd_warning: 0.15
-  dd_critical: 0.25
-  dd_circuit_breaker: 0.40
-  dd_max_limit: 0.50
-  dd_min_exposure: 0.25
+  dd_warning: 0.10
+  dd_critical: 0.16
+  dd_circuit_breaker: 0.25
+  dd_max_limit: 0.30
+  dd_min_exposure: 0.10
+  dd_leverage_cap_warning: 0.65
+  dd_leverage_cap_critical: 0.45
+  market_off_leverage_cap: 0.50
 
 # Strategy — tuned for meta-ensemble
 strategy:
@@ -51,6 +54,10 @@ strategy:
   signal_threshold: 0.01
   rebalance_frequency: "daily"
   use_relative_strength: false
+  liquid_subset_size: 200
+  liquid_adv_window: 20
+  liquid_min_history: 120
+  liquid_for_full_only: true
   long_only: true
   risk_off_cash: false
   signal_scale: 1.0
@@ -88,3 +95,14 @@ benchmarks:
       - "man_ahl_style_trend"
     min_assets: 2
     interval: "1d"
+
+validation:
+  mcpt_threshold_stage1: 0.10
+  mcpt_threshold_stage2: 0.05
+  rolling_oos_window_days: 126
+  rolling_oos_min_windows: 3
+  paper_min_bars: 120
+  constraint_max_drawdown: 0.25
+  constraint_beta_min: 0.8
+  constraint_beta_max: 1.2
+  constraint_min_information_ratio: 0.0

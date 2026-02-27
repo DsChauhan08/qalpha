@@ -2,9 +2,10 @@
 """
 Robustness/tuning suite for meta-ensemble execution settings.
 
-Evaluates the model against two baselines:
+Evaluates the model against three baselines:
 1) Cost-aware equal-weight benchmark (same commission/hold mechanics)
 2) SPY buy-and-hold benchmark
+3) Quant composite benchmark (default QQQ/IWM)
 
 Also reports:
 - Full/old/recent/very-recent segment metrics
@@ -207,6 +208,73 @@ def _run_spy_returns(
     return spy_ret
 
 
+def _run_quant_composite_returns(
+    index: pd.DatetimeIndex,
+    tickers: List[str],
+    commission_bps: float = 0.0,
+) -> pd.Series:
+    collector = DataCollector()
+    parts: List[pd.Series] = []
+    for symbol in tickers:
+        try:
+            df = collector.fetch_ohlcv(
+                symbol,
+                start=index.min().to_pydatetime(),
+                end=index.max().to_pydatetime(),
+                interval="1d",
+            )
+        except Exception:
+            continue
+        if df is None or df.empty or "close" not in df.columns:
+            continue
+        close = pd.Series(
+            pd.to_numeric(df["close"], errors="coerce").values,
+            index=_to_date_index(df.index),
+        ).sort_index()
+        ret = close.pct_change(fill_method=None).fillna(0.0)
+        parts.append(ret)
+
+    if not parts:
+        raise RuntimeError("Failed to fetch quant composite benchmark components")
+
+    quant = pd.concat(parts, axis=1).mean(axis=1)
+    quant = quant.reindex(index).ffill().bfill().fillna(0.0)
+    if len(quant) > 1 and commission_bps > 0:
+        commission_rate = float(commission_bps) / 10_000.0
+        quant.iloc[0] -= commission_rate
+        quant.iloc[-1] -= commission_rate
+    quant.name = "quant_composite"
+    return quant
+
+
+def _benchmark_relative_metrics(
+    strategy_returns: pd.Series,
+    benchmark_returns: pd.Series,
+) -> Dict[str, float]:
+    strat, bench = strategy_returns.align(benchmark_returns, join="inner")
+    if strat.empty:
+        return {"beta": 0.0, "information_ratio": 0.0, "tracking_error": 0.0}
+
+    cov = float(np.cov(strat.values, bench.values)[0, 1]) if len(strat) > 1 else 0.0
+    var_bench = float(np.var(bench.values))
+    beta = cov / var_bench if var_bench > 0 else 0.0
+
+    diff = strat - bench
+    tracking_error = float(np.std(diff.values) * np.sqrt(252.0))
+    strat_ann = _returns_to_metrics(strat).get("annual_return", 0.0)
+    bench_ann = _returns_to_metrics(bench).get("annual_return", 0.0)
+    info = (
+        float((strat_ann - bench_ann) / tracking_error)
+        if tracking_error > 1e-10
+        else 0.0
+    )
+    return {
+        "beta": float(beta),
+        "information_ratio": float(info),
+        "tracking_error": float(tracking_error),
+    }
+
+
 def _segment_slice(
     s: pd.Series, start: pd.Timestamp | None, end: pd.Timestamp | None
 ) -> pd.Series:
@@ -244,7 +312,8 @@ def _segment_table(
 
 
 def _score_candidate(
-    seg_results: Dict[str, Dict[str, Dict[str, float]]]
+    seg_results: Dict[str, Dict[str, Dict[str, float]]],
+    rel_full: Dict[str, float],
 ) -> float:
     weights = {"full": 0.35, "old": 0.20, "recent": 0.25, "very_recent": 0.20}
     score = 0.0
@@ -255,15 +324,22 @@ def _score_candidate(
         m = blob["model"]
         ew = blob["equal_weight"]
         spy = blob["spy"]
+        quant = blob["quant_composite"]
         score += w * (
-            3.0 * (m["annual_return"] - ew["annual_return"])
-            + 1.5 * (m["annual_return"] - spy["annual_return"])
-            + 0.4 * (m["sharpe"] - ew["sharpe"])
-            + 0.2 * (m["sharpe"] - spy["sharpe"])
+            4.5 * (m["annual_return"] - quant["annual_return"])
+            + 1.5 * (m["annual_return"] - ew["annual_return"])
+            + 1.0 * (m["annual_return"] - spy["annual_return"])
+            + 0.6 * (m["sharpe"] - quant["sharpe"])
+            + 0.3 * (m["sharpe"] - ew["sharpe"])
         )
-        dd_baseline = min(abs(ew["max_drawdown"]), abs(spy["max_drawdown"]))
+        dd_baseline = min(
+            abs(ew["max_drawdown"]),
+            abs(spy["max_drawdown"]),
+            abs(quant["max_drawdown"]),
+        )
         dd_penalty = max(0.0, abs(m["max_drawdown"]) - dd_baseline)
-        score -= w * dd_penalty
+        score -= w * dd_penalty * 2.0
+    score += 0.3 * float(rel_full.get("information_ratio", 0.0))
     return float(score)
 
 
@@ -309,9 +385,17 @@ def _evaluate_random_windows(
                 "model_annual_return": metrics["model"]["annual_return"],
                 "equal_weight_annual_return": metrics["equal_weight"]["annual_return"],
                 "spy_annual_return": metrics["spy"]["annual_return"],
+                "quant_composite_annual_return": metrics["quant_composite"][
+                    "annual_return"
+                ],
+                "model_excess_vs_quant": (
+                    metrics["model"]["annual_return"]
+                    - metrics["quant_composite"]["annual_return"]
+                ),
                 "model_sharpe": metrics["model"]["sharpe"],
                 "equal_weight_sharpe": metrics["equal_weight"]["sharpe"],
                 "spy_sharpe": metrics["spy"]["sharpe"],
+                "quant_composite_sharpe": metrics["quant_composite"]["sharpe"],
             }
         )
 
@@ -386,10 +470,16 @@ def _simulate_block_bootstrap(
             np.mean(annual_dists["model"] > annual_dists["equal_weight"])
         ),
         "p_model_ann_gt_spy": float(np.mean(annual_dists["model"] > annual_dists["spy"])),
+        "p_model_ann_gt_quant_composite": float(
+            np.mean(annual_dists["model"] > annual_dists["quant_composite"])
+        ),
         "p_model_sharpe_gt_equal_weight": float(
             np.mean(sharpe_dists["model"] > sharpe_dists["equal_weight"])
         ),
         "p_model_sharpe_gt_spy": float(np.mean(sharpe_dists["model"] > sharpe_dists["spy"])),
+        "p_model_sharpe_gt_quant_composite": float(
+            np.mean(sharpe_dists["model"] > sharpe_dists["quant_composite"])
+        ),
     }
     return summary
 
@@ -403,12 +493,21 @@ def _run_tuning_grid(
     top_ks: List[int],
     hold_days: List[int],
     confidence_vals: List[float],
+    max_drawdown_limit: float,
+    beta_min: float,
+    beta_max: float,
+    min_information_ratio: float,
+    require_constraints: bool = True,
 ) -> Tuple[pd.DataFrame, StrategyConfig, Dict[str, Dict[str, Dict[str, float]]], pd.Series]:
     rows = []
     best_score = float("-inf")
+    best_any_score = float("-inf")
     best_cfg = base_cfg
     best_seg = {}
     best_model_ret = pd.Series(dtype=float)
+    best_any_cfg = base_cfg
+    best_any_seg = {}
+    best_any_model_ret = pd.Series(dtype=float)
 
     combos = list(
         itertools.product(signal_thresholds, top_ks, hold_days, confidence_vals)
@@ -436,9 +535,21 @@ def _run_tuning_grid(
             "model": model_ret,
             "equal_weight": baseline_returns["equal_weight"],
             "spy": baseline_returns["spy"],
+            "quant_composite": baseline_returns["quant_composite"],
         }
         seg = _evaluate_segments(aligned, segments)
-        score = _score_candidate(seg)
+        rel_full = _benchmark_relative_metrics(
+            model_ret, baseline_returns["quant_composite"]
+        )
+        m_full = seg["full"]["model"]
+        constraints_pass = (
+            abs(float(m_full["max_drawdown"])) <= float(max_drawdown_limit)
+            and float(beta_min) <= float(rel_full["beta"]) <= float(beta_max)
+            and float(rel_full["information_ratio"]) > float(min_information_ratio)
+        )
+        score = _score_candidate(seg, rel_full)
+        if require_constraints and not constraints_pass:
+            score -= 100.0
 
         rows.append(
             {
@@ -451,12 +562,30 @@ def _run_tuning_grid(
                 "full_ann_model": seg["full"]["model"]["annual_return"],
                 "full_ann_ew": seg["full"]["equal_weight"]["annual_return"],
                 "full_ann_spy": seg["full"]["spy"]["annual_return"],
+                "full_ann_quant": seg["full"]["quant_composite"]["annual_return"],
+                "full_excess_vs_quant": (
+                    seg["full"]["model"]["annual_return"]
+                    - seg["full"]["quant_composite"]["annual_return"]
+                ),
+                "full_max_drawdown": seg["full"]["model"]["max_drawdown"],
+                "full_beta_vs_quant": rel_full["beta"],
+                "full_information_ratio_vs_quant": rel_full["information_ratio"],
+                "constraints_passed": bool(constraints_pass),
                 "recent_ann_model": seg["recent"]["model"]["annual_return"],
                 "recent_ann_ew": seg["recent"]["equal_weight"]["annual_return"],
                 "recent_ann_spy": seg["recent"]["spy"]["annual_return"],
+                "recent_ann_quant": seg["recent"]["quant_composite"]["annual_return"],
             }
         )
 
+        if score > best_any_score:
+            best_any_score = score
+            best_any_cfg = cfg
+            best_any_seg = seg
+            best_any_model_ret = model_ret
+
+        if require_constraints and not constraints_pass:
+            continue
         if score > best_score:
             best_score = score
             best_cfg = cfg
@@ -465,6 +594,11 @@ def _run_tuning_grid(
 
     if not rows:
         raise RuntimeError("No valid tuning candidates were produced")
+
+    if best_score == float("-inf"):
+        best_cfg = best_any_cfg
+        best_seg = best_any_seg
+        best_model_ret = best_any_model_ret
 
     df = pd.DataFrame(rows).sort_values("score", ascending=False).reset_index(drop=True)
     return df, best_cfg, best_seg, best_model_ret
@@ -511,6 +645,41 @@ def main() -> None:
     parser.add_argument("--random-window-days", type=int, default=504)
     parser.add_argument("--sim-paths", type=int, default=500)
     parser.add_argument("--sim-block-size", type=int, default=20)
+    parser.add_argument(
+        "--quant-benchmark",
+        type=str,
+        default="QQQ,IWM",
+        help="Comma-separated quant composite benchmark tickers",
+    )
+    parser.add_argument(
+        "--constraint-max-drawdown",
+        type=float,
+        default=0.25,
+        help="Hard constraint for absolute max drawdown",
+    )
+    parser.add_argument(
+        "--constraint-beta-min",
+        type=float,
+        default=0.8,
+        help="Hard constraint minimum beta vs quant composite",
+    )
+    parser.add_argument(
+        "--constraint-beta-max",
+        type=float,
+        default=1.2,
+        help="Hard constraint maximum beta vs quant composite",
+    )
+    parser.add_argument(
+        "--constraint-min-information-ratio",
+        type=float,
+        default=0.0,
+        help="Hard constraint minimum information ratio vs quant composite",
+    )
+    parser.add_argument(
+        "--allow-constraint-violations",
+        action="store_true",
+        help="Allow tuned candidates that violate hard constraints",
+    )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--no-tune", action="store_true", help="Skip parameter grid search")
     parser.add_argument(
@@ -570,6 +739,13 @@ def main() -> None:
     model_ret_base = model_ret_base.reindex(common_idx).fillna(0.0)
     spy_ret = _run_spy_returns(common_idx, commission_bps=base_cfg.commission_bps)
     spy_ret = spy_ret.reindex(common_idx).fillna(0.0)
+    quant_tickers = [x.strip().upper() for x in args.quant_benchmark.split(",") if x.strip()]
+    quant_ret = _run_quant_composite_returns(
+        common_idx,
+        tickers=quant_tickers,
+        commission_bps=base_cfg.commission_bps,
+    )
+    quant_ret = quant_ret.reindex(common_idx).fillna(0.0)
 
     segments = {
         "full": (None, None),
@@ -578,7 +754,12 @@ def main() -> None:
         "very_recent": (pd.Timestamp("2023-01-01"), None),
     }
 
-    returns_map_base = {"model": model_ret_base, "equal_weight": ew_ret, "spy": spy_ret}
+    returns_map_base = {
+        "model": model_ret_base,
+        "equal_weight": ew_ret,
+        "spy": spy_ret,
+        "quant_composite": quant_ret,
+    }
     seg_base = _evaluate_segments(returns_map_base, segments)
 
     best_cfg = base_cfg
@@ -590,18 +771,28 @@ def main() -> None:
         tuning_df, best_cfg, seg_best, best_model_ret = _run_tuning_grid(
             pred=pred,
             base_cfg=base_cfg,
-            baseline_returns={"equal_weight": ew_ret, "spy": spy_ret},
+            baseline_returns={
+                "equal_weight": ew_ret,
+                "spy": spy_ret,
+                "quant_composite": quant_ret,
+            },
             segments=segments,
             signal_thresholds=_parse_csv_floats(args.tune_signal_thresholds),
             top_ks=_parse_csv_ints(args.tune_top_k),
             hold_days=_parse_csv_ints(args.tune_hold_days),
             confidence_vals=_parse_csv_floats(args.tune_confidence),
+            max_drawdown_limit=float(args.constraint_max_drawdown),
+            beta_min=float(args.constraint_beta_min),
+            beta_max=float(args.constraint_beta_max),
+            min_information_ratio=float(args.constraint_min_information_ratio),
+            require_constraints=not bool(args.allow_constraint_violations),
         )
         best_model_ret = best_model_ret.reindex(common_idx).fillna(0.0)
         returns_map_best = {
             "model": best_model_ret,
             "equal_weight": ew_ret,
             "spy": spy_ret,
+            "quant_composite": quant_ret,
         }
         seg_best = _evaluate_segments(returns_map_best, segments)
 
@@ -612,7 +803,12 @@ def main() -> None:
         seed=args.seed,
     )
     random_best = _evaluate_random_windows(
-        returns_map={"model": best_model_ret, "equal_weight": ew_ret, "spy": spy_ret},
+        returns_map={
+            "model": best_model_ret,
+            "equal_weight": ew_ret,
+            "spy": spy_ret,
+            "quant_composite": quant_ret,
+        },
         n_windows=args.random_windows,
         window_days=args.random_window_days,
         seed=args.seed + 1,
@@ -625,7 +821,12 @@ def main() -> None:
         seed=args.seed,
     )
     sim_best = _simulate_block_bootstrap(
-        returns_map={"model": best_model_ret, "equal_weight": ew_ret, "spy": spy_ret},
+        returns_map={
+            "model": best_model_ret,
+            "equal_weight": ew_ret,
+            "spy": spy_ret,
+            "quant_composite": quant_ret,
+        },
         n_paths=args.sim_paths,
         block_size=args.sim_block_size,
         seed=args.seed + 1,
@@ -649,6 +850,7 @@ def main() -> None:
             "model_best": best_model_ret.values,
             "equal_weight": ew_ret.values,
             "spy": spy_ret.values,
+            "quant_composite": quant_ret.values,
         }
     )
     curves.to_csv(out_dir / "daily_returns.csv", index=False)
@@ -658,6 +860,14 @@ def main() -> None:
         "checkpoint_dir": args.checkpoint_dir,
         "blend_checkpoint_dirs": args.blend_checkpoint_dirs,
         "blend_weights": args.blend_weights,
+        "quant_benchmark_tickers": quant_tickers,
+        "hard_constraints": {
+            "max_drawdown": float(args.constraint_max_drawdown),
+            "beta_min": float(args.constraint_beta_min),
+            "beta_max": float(args.constraint_beta_max),
+            "min_information_ratio": float(args.constraint_min_information_ratio),
+            "enforced": not bool(args.allow_constraint_violations),
+        },
         "base_config": asdict(base_cfg),
         "best_config": asdict(best_cfg),
         "segments_base": seg_base,
@@ -673,8 +883,14 @@ def main() -> None:
     print(f"Output: {out_dir}")
     print("Base full annual return:", seg_base["full"]["model"]["annual_return"])
     print("Best full annual return:", seg_best["full"]["model"]["annual_return"])
+    print(
+        "Best full excess vs quant:",
+        seg_best["full"]["model"]["annual_return"]
+        - seg_best["full"]["quant_composite"]["annual_return"],
+    )
     print("Equal-weight full annual return:", seg_best["full"]["equal_weight"]["annual_return"])
     print("SPY full annual return:", seg_best["full"]["spy"]["annual_return"])
+    print("Quant composite full annual return:", seg_best["full"]["quant_composite"]["annual_return"])
     if not tuning_df.empty:
         print("Best tuned config:", asdict(best_cfg))
 

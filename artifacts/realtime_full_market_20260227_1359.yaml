@@ -1,0 +1,115 @@
+# Quantum Alpha V1 Configuration
+version: "1.0.0"
+
+# Data Sources
+data:
+  primary_source: "yfinance"
+  cache_enabled: true
+  cache_ttl_hours: 24
+  universe_limit: 0  # 0 = no limit. Use --symbols SP500/FULL/LIQUID tokens in CLI
+  default_universe:
+    # Quick-test preset (10 tickers). For full universe, use: --symbols FULL
+    - "SPY"
+    - "QQQ"
+    - "IWM"
+    - "AAPL"
+    - "MSFT"
+    - "GOOGL"
+    - "AMZN"
+    - "NVDA"
+    - "META"
+    - "TSLA"
+
+# Backtesting
+backtest:
+  initial_capital: 100000
+  commission_rate: 0.001  # 0.1% per trade
+  slippage_bps: 5  # 5 basis points
+  min_commission: 1.0
+
+# Risk Management
+risk:
+  max_position_size: 0.05
+  max_portfolio_leverage: 1.00
+  max_drawdown: 0.10  # 10% max drawdown
+  var_confidence: 0.95
+  kelly_fraction: 0.6  # modest boost to sizing
+  target_volatility: 0.11
+  vol_of_vol_threshold: 0.03
+  vol_of_vol_scale: 0.6
+  dd_warning: 0.12
+  dd_critical: 0.18
+  dd_circuit_breaker: 0.25
+  dd_max_limit: 0.30
+  dd_min_exposure: 0.10
+  dd_leverage_cap_warning: 0.80
+  dd_leverage_cap_critical: 0.60
+  market_off_leverage_cap: 0.70
+
+# Strategy
+strategy:
+  lookback_window: 60
+  signal_threshold: 0.03  # broader realtime entry coverage
+  rebalance_frequency: "weekly"
+  paper_rebalance_frequency: "weekly"
+  momentum_top_pct: 80
+  momentum_bottom_pct: 35
+  relative_strength_top_n: 80
+  relative_strength_min_mom: -0.02
+  use_relative_strength: true
+  liquid_subset_size: 300
+  liquid_adv_window: 20
+  liquid_min_history: 120
+  liquid_for_full_only: true
+  long_only: true
+  risk_off_cash: false
+  signal_scale: 1.9
+  min_long_signal: 0.02
+  market_off_scale: 0.60
+
+# Technical Indicators
+indicators:
+  rsi_period: 14
+  macd_fast: 12
+  macd_slow: 26
+  macd_signal: 9
+  bb_period: 20
+  bb_std: 2
+  atr_period: 14
+
+# Logging
+logging:
+  level: "INFO"
+  file: "quantum_alpha.log"
+
+# Benchmarks
+benchmarks:
+  market: "SPY"
+  quant_composite:
+    - "QQQ"
+    - "IWM"
+  quant_firm_proxies:
+    enabled: true
+    profiles:
+      - "aqr_style_factors"
+      - "citadel_style_multistrat"
+      - "two_sigma_style_data"
+      - "de_shaw_style_macro"
+      - "man_ahl_style_trend"
+    min_assets: 2
+    interval: "1d"
+
+# Validation protocol
+validation:
+  mcpt_threshold_stage1: 0.10
+  mcpt_threshold_stage2: 0.05
+  rolling_oos_window_days: 126
+  rolling_oos_min_windows: 3
+  rolling_oos_min_beat_ratio: 0.75
+  promotion_oos_required_windows: 4
+  promotion_oos_required_beats: 3
+  paper_min_bars: 120
+  constraint_max_drawdown: 0.25
+  constraint_beta_min: 0.8
+  constraint_beta_max: 1.2
+  constraint_min_information_ratio: 0.0

@@ -1,0 +1,17 @@
+{
+  "status": "running",
+  "timestamp_utc": "2026-02-27 19:43:24.788924+00:00",
+  "latest_bar": "2026-02-27 14:15:00-05:00",
+  "equity": 9995.39232368294,
+  "cash": 3413.937792822556,
+  "trades": 159,
+  "positions": 159,
+  "note": "No new bar yet",
+  "starting_capital": 10000.0,
+  "profit_dollars": -4.607676317060395,
+  "return_pct": -0.046076763170603954,
+  "pnl_direction": "down",
+  "equity_change_dollars": 0.0,
+  "equity_change_pct": 0.0,
+  "equity_change_direction": "flat"
+}

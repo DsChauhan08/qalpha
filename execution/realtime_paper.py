@@ -12,7 +12,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Callable, Dict, List, Optional
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -149,11 +149,31 @@ def _load_settings(config_path: Optional[str]) -> Dict:
 
 
 def _resolve_symbols(input_symbols: List[str], settings: Dict) -> List[str]:
-    if len(input_symbols) == 1 and input_symbols[0].upper() == "AUTO":
-        data_cfg = settings.get("data", {})
-        default = data_cfg.get("default_universe", [])
-        limit = int(data_cfg.get("universe_limit", len(default)))
-        return [str(s).upper() for s in default[:limit]]
+    data_cfg = settings.get("data", {})
+    universe_limit = int(data_cfg.get("universe_limit", 0))
+
+    def _limit(symbols: List[str]) -> List[str]:
+        if universe_limit > 0:
+            return symbols[:universe_limit]
+        return symbols
+
+    if len(input_symbols) == 1:
+        token = str(input_symbols[0]).upper()
+        if token == "AUTO":
+            default = [str(s).upper() for s in data_cfg.get("default_universe", [])]
+            return _limit(default)
+        if token in {"FULL", "ALL", "UNIVERSE"}:
+            try:
+                from quantum_alpha import universe as _u
+
+                return _limit([str(s).upper() for s in _u.get_stocks_only()])
+            except Exception:
+                dc = DataCollector()
+                return _limit([str(s).upper() for s in dc.get_sp500_symbols()])
+        if token in {"SP500", "S&P500", "SPX"}:
+            dc = DataCollector()
+            return _limit([str(s).upper() for s in dc.get_sp500_symbols()])
+
     return [str(s).upper() for s in input_symbols]
 
 
@@ -213,17 +233,19 @@ def _collect_featured_data(
     end_time: datetime,
     lookback_days: int,
     interval: str,
+    progress_callback: Optional[Callable[[int, int, int, str], None]] = None,
 ) -> Dict[str, pd.DataFrame]:
     start_time = end_time - timedelta(days=lookback_days)
     featured: Dict[str, pd.DataFrame] = {}
-    for symbol in symbols:
+    total = len(symbols)
+    for idx, symbol in enumerate(symbols, start=1):
         try:
             df = collector.fetch_ohlcv(
                 symbol=symbol,
                 start=start_time,
                 end=end_time,
                 interval=interval,
-                use_cache=False,
+                use_cache=True,
             )
             df = cleaner.clean(df)
             df = imputer.impute(df)
@@ -231,7 +253,13 @@ def _collect_featured_data(
             if not df.empty:
                 featured[symbol] = df
         except Exception:
-            continue
+            pass
+        finally:
+            if (
+                progress_callback is not None
+                and (idx == 1 or idx % 25 == 0 or idx == total)
+            ):
+                progress_callback(idx, total, len(featured), symbol)
     return featured
 
 
@@ -398,9 +426,56 @@ def run_realtime_paper(cfg: SessionConfig) -> Dict:
     equity_curve: List[Dict] = []
     cycle = 0
 
+    _write_live_status(
+        cfg,
+        {
+            "status": "running",
+            "timestamp_utc": str(datetime.now(timezone.utc)),
+            "equity": account.cash,
+            "cash": account.cash,
+            "trades": 0,
+            "positions": 0,
+            "cycle": 0,
+            "symbols_total": len(cfg.symbols),
+            "note": "Session started, waiting for first data collection cycle",
+            **_pnl_fields(
+                equity=account.cash,
+                starting_capital=cfg.capital,
+                previous_equity=previous_equity,
+            ),
+        },
+    )
+
     while datetime.now(timezone.utc) < session_end:
         cycle += 1
         now = datetime.now(timezone.utc)
+
+        def _progress_update(
+            completed: int, total: int, featured_count: int, last_symbol: str
+        ) -> None:
+            _write_live_status(
+                cfg,
+                {
+                    "status": "running",
+                    "timestamp_utc": str(datetime.now(timezone.utc)),
+                    "equity": account.cash,
+                    "cash": account.cash,
+                    "trades": len(account.trades),
+                    "positions": len(account.positions),
+                    "cycle": cycle,
+                    "symbols_total": total,
+                    "symbols_completed": completed,
+                    "featured_symbols": featured_count,
+                    "last_symbol": last_symbol,
+                    "note": "Collecting full-universe data for current cycle",
+                    **_pnl_fields(
+                        equity=account.cash,
+                        starting_capital=cfg.capital,
+                        previous_equity=previous_equity,
+                    ),
+                },
+            )
+
         featured = _collect_featured_data(
             collector=collector,
             cleaner=cleaner,
@@ -410,6 +485,7 @@ def run_realtime_paper(cfg: SessionConfig) -> Dict:
             end_time=now,
             lookback_days=cfg.lookback_days,
             interval=cfg.interval,
+            progress_callback=_progress_update,
         )
 
         if not featured:

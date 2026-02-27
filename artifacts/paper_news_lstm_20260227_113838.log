@@ -1,0 +1,59 @@
+
+============================================================
+QUANTUM ALPHA V1 - PAPER TRADING
+============================================================
+Symbols: ['SPY', 'QQQ', 'AAPL', 'MSFT', 'NVDA']
+Period: 2025-01-01 to 2026-02-27
+Capital: $100,000
+Strategy: news_lstm
+Paper Bars: 120
+============================================================
+
+Collecting price data...
+  SPY: 288 bars
+  QQQ: 288 bars
+  AAPL: 288 bars
+  MSFT: 288 bars
+  NVDA: 288 bars
+
+Running paper trading simulation...
+
+============================================================
+PAPER RESULTS
+============================================================
+Paper Start:    2025-09-05
+Total Return:        -2.47%
+Annual Return:       -2.17%
+Volatility:           7.68%
+Sharpe Ratio:        -0.54
+Sortino Ratio:       -0.44
+Max Drawdown:        -9.09%
+Calmar Ratio:        -0.24
+Win Rate:            48.65%
+Profit Factor:        0.73
+Total Trades:           37
+Final Equity:   $ 97,529.58
+============================================================
+
+WROTE artifacts/paper_news_lstm_20260227_113838.json
+{
+  "symbols": [
+    "SPY",
+    "QQQ",
+    "AAPL",
+    "MSFT",
+    "NVDA"
+  ],
+  "paper_start": "2025-09-05 00:00:00-04:00",
+  "metrics": {
+    "total_return": -0.024704158809998877,
+    "annual_return": -0.021724437367177774,
+    "volatility": 0.07679377903980769,
+    "sharpe_ratio": -0.5433309558258492,
+    "max_drawdown": -0.09087033013765777,
+    "win_rate": 0.4864864864864865,
+    "profit_factor": 0.7257369439273913,
+    "n_trades": 37,
+    "final_equity": 97529.58411900011
+  }
+}

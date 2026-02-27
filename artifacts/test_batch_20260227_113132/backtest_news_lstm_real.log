@@ -1,0 +1,125 @@
+
+############################################################
+# NEWS-DRIVEN LSTM BACKTEST
+############################################################
+Symbols:    ['SPY', 'QQQ', 'IWM', 'AAPL', 'MSFT', 'NVDA']
+Period:     2025-01-01 to 2026-02-27
+Capital:    $100,000
+Checkpoint: news_lstm_v16c_real_multi
+Validate:   True
+LLM:        enabled=False mode=off min=0.80
+
+============================================================
+QUANTUM ALPHA V1 - BACKTEST
+============================================================
+Symbols: ['SPY', 'QQQ', 'IWM', 'AAPL', 'MSFT', 'NVDA']
+Period: 2025-01-01 to 2026-02-27
+Capital: $100,000
+Strategy: news_lstm
+============================================================
+
+Collecting price data...
+/home/regulus/Trade/quantum_alpha/strategy/news_lstm_strategy.py:163: UserWarning: PyTorch not available. NewsLSTMStrategy will output hold signals.
+  warnings.warn(
+No model loaded. Returning hold signals.
+  SPY: 288 bars
+No model loaded. Returning hold signals.
+  QQQ: 288 bars
+No model loaded. Returning hold signals.
+  IWM: 288 bars
+No model loaded. Returning hold signals.
+  AAPL: 288 bars
+No model loaded. Returning hold signals.
+  MSFT: 288 bars
+No model loaded. Returning hold signals.
+  NVDA: 288 bars
+
+Running backtest...
+
+============================================================
+BACKTEST RESULTS
+============================================================
+Total Return:          2.06%
+Annual Return:         0.57%
+Volatility:           11.66%
+Sharpe Ratio:         -0.02
+Sortino Ratio:        -0.02
+Max Drawdown:        -12.72%
+Calmar Ratio:          0.14
+Win Rate:             56.79%
+Profit Factor:         1.04
+Total Trades:            88
+Final Equity:    $100,644.10
+Excess vs QQQ/IWM:    -19.08%
+Quant Beta:            0.48
+Quant InfoRatio:      -1.24
+Bench Constraints:   FALSE
+Gate Passed:          FALSE
+Gate Coverage:           32
+Gate Available:          32
+Gate Required:           32
+Gate Relaxed:          TRUE
+Gate Good:               18
+Gate Ratio:          56.25%
+============================================================
+
+                   GATE DETAIL BREAKDOWN                    
+Metric                          Value   Market    Quant   Pass
+------------------------------------------------------------
+annual_volatility              0.1166   0.1867   0.2147    YES
+beta                           0.5435   1.0035   1.1122    YES
+cagr                           0.0181   0.1554   0.1680     NO
+calmar_ratio                   0.1420   0.8285   0.7372     NO
+capture_ratio                  0.8607   1.0000   0.9882     NO
+cvar                           0.0180   0.0263   0.0297    YES
+dividend_yield                 0.6317   1.0500   0.7150    YES
+downside_capture               0.7432   1.0000   1.1881    YES
+downside_deviation             0.0900   0.1462   0.1572    YES
+information_ratio             -1.3245   0.0000   0.3051     NO
+jensen_alpha                  -0.0846  -0.0068  -0.0095     NO
+m2                             0.0169   0.1554   0.1487     NO
+max_consecutive_losses         6.0000   5.0000   5.0000    YES
+max_consecutive_wins           7.0000   9.0000   7.0000    YES
+max_drawdown                  -0.1272  -0.1876  -0.2279    YES
+omega_ratio                    1.0379   1.1954   1.1691     NO
+payoff_ratio                   0.7895   0.9150   1.0021     NO
+price_to_book                 14.1396   1.5977   1.4469    YES
+price_to_earnings             30.4326  27.6137  25.7626    YES
+profit_factor                  1.0379   1.1954   1.1691     NO
+r_squared                      0.7523   1.0000   0.9291    YES
+recovery_time                  0.0000   0.0000   0.0000    YES
+sharpe_ratio                  -0.0166   0.7250   0.6894     NO
+sortino_ratio                 -0.0214   0.9258   0.9416     NO
+sterling_ratio                 0.1420   0.8285   0.7372     NO
+total_return                   0.0206   0.1781   0.1928     NO
+tracking_error                 0.1032   0.0000   0.0605    YES
+treynor_ratio                 -0.0036   0.1349   0.1331     NO
+ulcer_index                    0.0499   0.0445   0.0606    YES
+upside_capture                 0.6396   1.0000   1.1741    YES
+var                            0.0138   0.0163   0.0208    YES
+win_rate                       0.5679   0.5664   0.5385    YES
+
+Running MCPT validation...
+Running MCPT:   0%|          | 0/500 [00:00<?, ?it/s]Running MCPT: 100%|██████████| 500/500 [00:00<00:00, 10348.74it/s]
+
+MCPT Results:
+  P-Value: 0.4291
+  Significant: NO
+  Percentile: 57.1%
+  Stage1 (p<0.10): FAIL
+  Stage2 (p<0.05): FAIL
+
+Rolling OOS vs QQQ/IWM:
+  Windows: 2
+  Beats:   0
+  Needed:  3
+  Passed:  NO
+  Promotion (>=3/4 + constraints + MCPT stage2): NO
+
+============================================================
+SUMMARY
+============================================================
+
+============================================================
+VERDICT: UNPROFITABLE - Needs retraining or architecture changes
+============================================================

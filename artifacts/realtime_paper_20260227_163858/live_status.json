@@ -1,0 +1,9 @@
+{
+  "status": "running",
+  "timestamp_utc": "2026-02-27 16:40:30.382447+00:00",
+  "latest_bar": "2026-02-27 11:40:00-05:00",
+  "equity": 100000.0,
+  "cash": 100000.0,
+  "trades": 0,
+  "positions": 0
+}

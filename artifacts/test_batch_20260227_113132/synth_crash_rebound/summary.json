@@ -1,0 +1,27 @@
+{
+  "run_at_utc": "2026-02-27T16:33:24.036399+00:00",
+  "config": {
+    "signal_threshold": 0.52,
+    "short_threshold": null,
+    "confidence": 0.0,
+    "long_only": true,
+    "commission_bps": 5.0,
+    "hold_days": 5,
+    "top_k": 10,
+    "max_positions": 20
+  },
+  "checkpoint_dir": "models/checkpoints/meta_ensemble",
+  "blend_checkpoint_dirs": [],
+  "blend_weights": [],
+  "scenarios": [
+    "crash_rebound"
+  ],
+  "n_paths": 6,
+  "output_dir": "artifacts/test_batch_20260227_113132/synth_crash_rebound",
+  "overall": {
+    "p_model_ann_gt_equal_weight": 0.0,
+    "p_model_ann_gt_market_proxy": 0.0,
+    "p_model_sharpe_gt_equal_weight": 0.0,
+    "p_model_sharpe_gt_market_proxy": 0.0
+  }
+}

@@ -1,0 +1,149 @@
+
+============================================================
+QUANTUM ALPHA V1 - BACKTEST
+============================================================
+Symbols: ['LIQUID']
+Period: 2024-01-01 to 2026-02-27
+Capital: $100,000
+Strategy: enhanced
+============================================================
+
+Collecting price data...
+  AAPL: 540 bars
+  MSFT: 540 bars
+  AMZN: 540 bars
+  NVDA: 540 bars
+  GOOGL: 540 bars
+  META: 540 bars
+  TSLA: 540 bars
+  BRK-B: 540 bars
+  UNH: 540 bars
+  JNJ: 540 bars
+  JPM: 540 bars
+  V: 540 bars
+  XOM: 540 bars
+  PG: 540 bars
+  MA: 540 bars
+  HD: 540 bars
+  CVX: 540 bars
+  MRK: 540 bars
+  ABBV: 540 bars
+  LLY: 540 bars
+  PEP: 540 bars
+  KO: 540 bars
+  COST: 540 bars
+  AVGO: 540 bars
+  WMT: 540 bars
+  MCD: 540 bars
+  CSCO: 540 bars
+  ACN: 540 bars
+  TMO: 540 bars
+  ABT: 540 bars
+  CRM: 540 bars
+  DHR: 540 bars
+  LIN: 540 bars
+  NEE: 540 bars
+  TXN: 540 bars
+  PM: 540 bars
+  AMGN: 540 bars
+  UNP: 540 bars
+  ORCL: 540 bars
+  AMD: 540 bars
+  INTC: 540 bars
+  HON: 540 bars
+  QCOM: 540 bars
+  CMCSA: 540 bars
+  LOW: 540 bars
+  BA: 540 bars
+  CAT: 540 bars
+  GS: 540 bars
+  BLK: 540 bars
+  NFLX: 540 bars
+  Computing cross-asset signals...
+2026-02-27 11:35:48,635 | INFO | quantum_alpha.strategy.signals | Cross-asset signals computed for 50 symbols over 540 periods
+
+Running backtest...
+2026-02-27 11:36:25,087 | INFO | quantum_alpha.risk.drawdown_control | Drawdown state transition: normal -> warning
+2026-02-27 11:36:25,099 | INFO | quantum_alpha.risk.drawdown_control | Drawdown state transition: warning -> recovery
+2026-02-27 11:36:25,104 | INFO | quantum_alpha.risk.drawdown_control | Drawdown state transition: recovery -> normal
+
+============================================================
+BACKTEST RESULTS
+============================================================
+Total Return:         33.15%
+Annual Return:        13.96%
+Volatility:           11.37%
+Sharpe Ratio:          1.08
+Sortino Ratio:         1.47
+Max Drawdown:        -13.03%
+Calmar Ratio:          1.10
+Win Rate:             55.66%
+Profit Factor:         1.24
+Total Trades:           163
+Final Equity:    $132,241.96
+Excess vs QQQ/IWM:    -12.24%
+Quant Beta:            0.49
+Quant InfoRatio:      -0.49
+Bench Constraints:   FALSE
+Gate Passed:           TRUE
+Gate Coverage:           32
+Gate Available:          32
+Gate Required:           32
+Gate Relaxed:          TRUE
+Gate Good:               29
+Gate Ratio:          90.62%
+============================================================
+
+                   GATE DETAIL BREAKDOWN                    
+Metric                          Value   Market    Quant   Pass
+------------------------------------------------------------
+annual_volatility              0.1137   0.1610   0.1960    YES
+beta                           0.6174   1.0019   1.1597    YES
+cagr                           0.1432   0.2117   0.2021     NO
+calmar_ratio                   1.0990   1.1287   0.8527    YES
+capture_ratio                  1.0155   1.0000   0.9529    YES
+cvar                           0.0160   0.0234   0.0285    YES
+dividend_yield                 1.8526   1.0500   0.7150    YES
+downside_capture               0.6522   1.0000   1.2624    YES
+downside_deviation             0.0837   0.1265   0.1431    YES
+information_ratio             -0.8192   0.0000  -0.1728     NO
+jensen_alpha                   0.0116   0.0064  -0.0323    YES
+m2                             0.1944   0.2117   0.1696    YES
+max_consecutive_losses         6.0000   6.0000   6.0000    YES
+max_consecutive_wins          12.0000  10.0000   7.0000    YES
+max_drawdown                  -0.1303  -0.1876  -0.2371    YES
+omega_ratio                    1.2414   1.2816   1.2048    YES
+payoff_ratio                   0.9890   0.9355   1.0380    YES
+price_to_book                  4.5348   1.5977   1.4469    YES
+price_to_earnings             40.2700  27.6137  25.7624    YES
+profit_factor                  1.2414   1.2816   1.2048    YES
+r_squared                      0.7605   1.0000   0.9037    YES
+recovery_time                  0.0000   0.0000   0.0000    YES
+sharpe_ratio                   1.0834   1.1909   0.9294    YES
+sortino_ratio                  1.4726   1.5158   1.2727    YES
+sterling_ratio                 1.0990   1.1287   0.8527    YES
+total_return                   0.3315   0.5067   0.4815     NO
+tracking_error                 0.0831   0.0000   0.0658    YES
+treynor_ratio                  0.1996   0.1913   0.1571    YES
+ulcer_index                    0.0327   0.0352   0.0530    YES
+upside_capture                 0.6623   1.0000   1.2030    YES
+var                            0.0104   0.0153   0.0199    YES
+win_rate                       0.5566   0.5781   0.5372    YES
+
+Running MCPT validation...
+Running MCPT:   0%|          | 0/500 [00:00<?, ?it/s]Running MCPT: 100%|██████████| 500/500 [00:00<00:00, 6845.74it/s]
+
+MCPT Results:
+  P-Value: 0.0499
+  Significant: YES
+  Percentile: 95.0%
+  Stage1 (p<0.10): PASS
+  Stage2 (p<0.05): PASS
+
+Rolling OOS vs QQQ/IWM:
+  Windows: 4
+  Beats:   2
+  Needed:  3
+  Passed:  NO
+  Promotion (>=3/4 + constraints + MCPT stage2): NO
+2026-02-27 11:36:57,130 | WARNING | quantum_alpha.monitoring.alert_system | Max drawdown -13.03% exceeds threshold 10.00%

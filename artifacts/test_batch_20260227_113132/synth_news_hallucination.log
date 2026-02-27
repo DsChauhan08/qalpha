@@ -1,0 +1,13 @@
+Loaded 718,262 predictions from walk_forward_predictions.pkl
+  Date range: 2011-01-04 00:00:00 to 2026-01-15 00:00:00
+  Symbols: 99
+  Columns: ['date', 'symbol', 'y_true', 'y_pred', 'y_proba', 'forward_return', 'strategy_return']
+  Deduplicated: 718,262 -> 369,842 predictions (348,420 overlapping duplicates removed)
+
+Synthetic stress suite complete
+Output: artifacts/test_batch_20260227_113132/synth_news_hallucination
+          scenario  paths  model_ann_mean  model_ann_p10  model_ann_p50  model_ann_p90  model_sharpe_mean  model_mdd_mean  equal_weight_ann_mean  equal_weight_sharpe_mean  market_proxy_ann_mean  market_proxy_sharpe_mean  p_model_ann_gt_equal_weight  p_model_ann_gt_market_proxy  p_model_sharpe_gt_equal_weight  p_model_sharpe_gt_market_proxy  p_model_mdd_better_than_equal_weight
+news_hallucination      6       -0.316573       -0.35159      -0.311985      -0.286143            -1.5716       -0.996373               0.170494                    0.9007               0.170456                  0.900531                          0.0                          0.0                             0.0                             0.0                                   0.0
+
+Overall P(model ann > equal_weight): 0.0%
+Overall P(model ann > market_proxy): 0.0%

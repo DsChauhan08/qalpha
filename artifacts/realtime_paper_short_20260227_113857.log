@@ -1,0 +1,3 @@
+Starting realtime paper session: symbols=['SPY', 'QQQ', 'AAPL', 'MSFT', 'NVDA'] interval=1m duration=8m poll=60s min_notional=$1,000 comm=0.001 min_comm=$1.00 slip=5.0bps
+[2026-02-27 11:38:00-05:00] cycle=1 equity=$100,000.00 cash=$100,000.00 positions=0
+[2026-02-27 11:40:00-05:00] cycle=2 equity=$100,000.00 cash=$100,000.00 positions=0

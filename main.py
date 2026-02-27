@@ -1434,6 +1434,10 @@ def run_paper(
         from quantum_alpha.strategy.ml_strategies import MLTradingStrategy
 
         strategy = MLTradingStrategy(**(strategy_kwargs or {}))
+    elif strategy_type == "news_lstm":
+        from quantum_alpha.strategy.news_lstm_strategy import NewsLSTMStrategy
+
+        strategy = NewsLSTMStrategy(**(strategy_kwargs or {}))
     elif strategy_type == "meta_ensemble":
         from quantum_alpha.strategy.meta_ensemble_strategy import MetaEnsembleStrategy
 

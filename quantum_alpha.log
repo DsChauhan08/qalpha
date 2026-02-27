@@ -66,3 +66,8 @@
 2026-02-27 11:06:27,795 | INFO | quantum_alpha.risk.drawdown_control | Drawdown state transition: warning -> recovery
 2026-02-27 11:06:27,835 | INFO | quantum_alpha.risk.drawdown_control | Drawdown state transition: recovery -> normal
 2026-02-27 11:14:24,880 | WARNING | quantum_alpha.monitoring.alert_system | Max drawdown -23.65% exceeds threshold 15.00%
+2026-02-27 11:35:48,635 | INFO | quantum_alpha.strategy.signals | Cross-asset signals computed for 50 symbols over 540 periods
+2026-02-27 11:36:25,087 | INFO | quantum_alpha.risk.drawdown_control | Drawdown state transition: normal -> warning
+2026-02-27 11:36:25,099 | INFO | quantum_alpha.risk.drawdown_control | Drawdown state transition: warning -> recovery
+2026-02-27 11:36:25,104 | INFO | quantum_alpha.risk.drawdown_control | Drawdown state transition: recovery -> normal
+2026-02-27 11:36:57,130 | WARNING | quantum_alpha.monitoring.alert_system | Max drawdown -13.03% exceeds threshold 10.00%

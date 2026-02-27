@@ -1,0 +1,52 @@
+
+--- Collecting news for SPY ---
+  Fetching Google News for SPY...
+    -> 0 articles
+  Fetching Yahoo Finance news for SPY...
+    -> 10 articles
+  Total after dedup: 10 articles
+  Scoring 10 articles with FinBERT...
+    Scored in 0.0s
+  Stored: 10 new articles (886 total for SPY)
+
+--- Collecting news for QQQ ---
+  Fetching Google News for QQQ...
+    -> 0 articles
+  Fetching Yahoo Finance news for QQQ...
+    -> 10 articles
+  Total after dedup: 10 articles
+  Scoring 10 articles with FinBERT...
+    Scored in 0.0s
+  Stored: 9 new articles (301 total for QQQ)
+
+--- Collecting news for AAPL ---
+  Fetching Google News for AAPL...
+    -> 0 articles
+  Fetching Yahoo Finance news for AAPL...
+    -> 10 articles
+  Total after dedup: 10 articles
+  Scoring 10 articles with FinBERT...
+    Scored in 0.0s
+  Stored: 10 new articles (285 total for AAPL)
+
+--- Collecting news for MSFT ---
+  Fetching Google News for MSFT...
+    -> 1 articles
+  Fetching Yahoo Finance news for MSFT...
+    -> 10 articles
+  Total after dedup: 11 articles
+  Scoring 11 articles with FinBERT...
+    Scored in 0.0s
+  Stored: 11 new articles (296 total for MSFT)
+
+--- Collecting news for NVDA ---
+  Fetching Google News for NVDA...
+    -> 4 articles
+  Fetching Yahoo Finance news for NVDA...
+    -> 10 articles
+  Total after dedup: 13 articles
+  Scoring 13 articles with FinBERT...
+    Scored in 0.0s
+  Stored: 13 new articles (294 total for NVDA)
+
+INGEST_SUMMARY {'SPY': 10, 'QQQ': 9, 'AAPL': 10, 'MSFT': 11, 'NVDA': 13}

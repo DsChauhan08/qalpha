@@ -1,0 +1,25 @@
+{
+  "session_start_utc": "2026-02-27 16:38:58.473192+00:00",
+  "session_end_utc": "2026-02-27 16:47:45.940550+00:00",
+  "duration_minutes": 8,
+  "interval": "1m",
+  "symbols": [
+    "SPY",
+    "QQQ",
+    "AAPL",
+    "MSFT",
+    "NVDA"
+  ],
+  "starting_capital": 100000.0,
+  "final_equity": 99982.53743226311,
+  "profit_dollars": -17.46256773688947,
+  "return_pct": -0.017462567736889468,
+  "trades": 2,
+  "open_positions": {},
+  "commission_rate": 0.001,
+  "slippage_bps": 5.0,
+  "min_commission": 1.0,
+  "min_trade_notional": 1000.0,
+  "output_dir": "artifacts/realtime_paper_20260227_163858",
+  "equity_plot": "artifacts/realtime_paper_20260227_163858/equity_curve.png"
+}

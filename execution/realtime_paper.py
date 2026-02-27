@@ -338,6 +338,46 @@ def _write_live_status(cfg: SessionConfig, status: Dict) -> None:
     status_path.write_text(json.dumps(status, indent=2))
 
 
+def _pnl_fields(
+    equity: Optional[float],
+    starting_capital: float,
+    previous_equity: Optional[float] = None,
+) -> Dict[str, Optional[float] | str]:
+    if equity is None:
+        return {
+            "starting_capital": float(starting_capital),
+            "profit_dollars": None,
+            "return_pct": None,
+            "pnl_direction": "unknown",
+            "equity_change_dollars": None,
+            "equity_change_pct": None,
+            "equity_change_direction": "unknown",
+        }
+
+    profit = float(equity) - float(starting_capital)
+    ret = (profit / float(starting_capital) * 100.0) if starting_capital else 0.0
+    direction = "up" if profit > 0 else "down" if profit < 0 else "flat"
+
+    change = None
+    change_pct = None
+    change_direction = "unknown"
+    if previous_equity is not None:
+        change = float(equity) - float(previous_equity)
+        denom = abs(float(previous_equity))
+        change_pct = (change / denom * 100.0) if denom > 1e-12 else 0.0
+        change_direction = "up" if change > 0 else "down" if change < 0 else "flat"
+
+    return {
+        "starting_capital": float(starting_capital),
+        "profit_dollars": float(profit),
+        "return_pct": float(ret),
+        "pnl_direction": direction,
+        "equity_change_dollars": None if change is None else float(change),
+        "equity_change_pct": None if change_pct is None else float(change_pct),
+        "equity_change_direction": change_direction,
+    }
+
+
 def run_realtime_paper(cfg: SessionConfig) -> Dict:
     collector = DataCollector()
     cleaner = DataCleaner()
@@ -354,6 +394,7 @@ def run_realtime_paper(cfg: SessionConfig) -> Dict:
     session_start = datetime.now(timezone.utc)
     session_end = session_start + timedelta(minutes=cfg.duration_minutes)
     last_bar_time: Optional[pd.Timestamp] = None
+    previous_equity: Optional[float] = float(cfg.capital)
     equity_curve: List[Dict] = []
     cycle = 0
 
@@ -382,6 +423,11 @@ def run_realtime_paper(cfg: SessionConfig) -> Dict:
                     "trades": len(account.trades),
                     "positions": len(account.positions),
                     "note": "No featured data this cycle",
+                    **_pnl_fields(
+                        equity=None,
+                        starting_capital=cfg.capital,
+                        previous_equity=previous_equity,
+                    ),
                 },
             )
             time.sleep(cfg.poll_seconds)
@@ -408,8 +454,14 @@ def run_realtime_paper(cfg: SessionConfig) -> Dict:
                     "trades": len(account.trades),
                     "positions": len(account.positions),
                     "note": "No new bar yet",
+                    **_pnl_fields(
+                        equity=current_equity,
+                        starting_capital=cfg.capital,
+                        previous_equity=previous_equity,
+                    ),
                 },
             )
+            previous_equity = current_equity
             time.sleep(cfg.poll_seconds)
             continue
 
@@ -443,8 +495,14 @@ def run_realtime_paper(cfg: SessionConfig) -> Dict:
                 "cash": account.cash,
                 "trades": len(account.trades),
                 "positions": len(account.positions),
+                **_pnl_fields(
+                    equity=current_equity,
+                    starting_capital=cfg.capital,
+                    previous_equity=previous_equity,
+                ),
             },
         )
+        previous_equity = current_equity
 
         print(
             f"[{latest_ts}] cycle={cycle} equity=${account.equity(prices):,.2f} "

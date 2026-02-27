@@ -1,0 +1,7 @@
+test,type,ann_return_pct,sharpe,max_dd_pct,beats_eq_prob,status
+sim_vol_regime,simulated,17.0,0.64,-51.98,0.0,fail
+sim_crash_rebound,simulated,19.8,0.97,-36.71,0.0,fail
+sim_liquidity_vacuum,simulated,-9.16,-0.2,-84.35,0.0,fail
+sim_news_hallucination,simulated,-31.66,-1.57,-99.64,0.0,fail
+backtest_enhanced_LIQUID,backtest,13.96,1.08,-13.03,,fail
+backtest_news_lstm_real,backtest,0.57,-0.02,-12.72,,invalid_no_torch

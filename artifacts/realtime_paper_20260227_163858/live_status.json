@@ -1,9 +1,9 @@
 {
-  "status": "running",
-  "timestamp_utc": "2026-02-27 16:40:30.382447+00:00",
-  "latest_bar": "2026-02-27 11:40:00-05:00",
-  "equity": 100000.0,
-  "cash": 100000.0,
-  "trades": 0,
-  "positions": 0
+  "status": "completed",
+  "timestamp_utc": "2026-02-27 16:47:46.761596+00:00",
+  "final_equity": 99982.53743226311,
+  "profit_dollars": -17.46256773688947,
+  "return_pct": -0.017462567736889468,
+  "trades": 2,
+  "output_dir": "artifacts/realtime_paper_20260227_163858"
 }

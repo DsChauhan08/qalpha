@@ -7,6 +7,7 @@ import pandas as pd
 from quantum_alpha.execution.realtime_paper import (
     SessionConfig,
     _interval_max_lookback_days,
+    _llm_cycle_active,
     _compute_target_weights_news_lstm,
     _minutes_until_close,
     _normalize_target_weights,
@@ -44,6 +45,7 @@ def _cfg(long_only=True, llm_enabled=True):
         llm_fail_mode="hold",
         llm_scope="latest",
         llm_max_calls=100,
+        llm_decision_interval_cycles=3,
         llm_env_path=None,
         news_poll_seconds=300,
         news_max_articles=6,
@@ -89,6 +91,14 @@ def test_interval_lookback_caps():
     assert _interval_max_lookback_days("1m") == 8
     assert _interval_max_lookback_days("5m") == 59
     assert _interval_max_lookback_days("1h") == 730
+
+
+def test_llm_cycle_schedule():
+    cfg = _cfg(long_only=True, llm_enabled=True)
+    assert _llm_cycle_active(1, cfg) is True
+    assert _llm_cycle_active(2, cfg) is False
+    assert _llm_cycle_active(3, cfg) is False
+    assert _llm_cycle_active(4, cfg) is True
 
 
 def test_normalize_target_weights_respects_caps():
@@ -137,6 +147,7 @@ def test_news_weights_respect_llm_gate_and_long_only():
         featured=featured,
         cfg=cfg,
         news_cache={"AAA": ["Headline"]},
+        llm_active=True,
     )
 
     assert weights["AAA"] > 0.0

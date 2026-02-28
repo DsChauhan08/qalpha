@@ -10,8 +10,13 @@ Supports:
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
+import os
+import subprocess
+import sys
 import time
+import webbrowser
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -55,6 +60,7 @@ class SessionConfig:
     llm_fail_mode: str
     llm_scope: Optional[str]
     llm_max_calls: int
+    llm_decision_interval_cycles: int
     llm_env_path: Optional[str]
     news_poll_seconds: int
     news_max_articles: int
@@ -239,6 +245,86 @@ def _parse_csv_str(value: str | None) -> list[str] | None:
     return out or None
 
 
+def _llm_cycle_active(cycle: int, cfg: SessionConfig) -> bool:
+    if not cfg.llm_enabled:
+        return False
+    interval = max(1, int(cfg.llm_decision_interval_cycles))
+    return ((int(cycle) - 1) % interval) == 0
+
+
+def _start_live_dashboard(
+    cfg: SessionConfig,
+    port: int,
+    refresh_seconds: float,
+    open_browser: bool,
+) -> Dict[str, object]:
+    if importlib.util.find_spec("streamlit") is None:
+        return {"started": False, "reason": "streamlit_not_installed"}
+
+    project_root = Path(__file__).resolve().parents[2]
+    script_path = Path(__file__).resolve().parent / "live_graph_dashboard.py"
+    if not script_path.exists():
+        return {"started": False, "reason": f"missing_script:{script_path}"}
+
+    env = os.environ.copy()
+    prior_pythonpath = env.get("PYTHONPATH", "").strip()
+    env["PYTHONPATH"] = (
+        str(project_root)
+        if not prior_pythonpath
+        else f"{str(project_root)}:{prior_pythonpath}"
+    )
+    url = f"http://127.0.0.1:{int(port)}"
+    log_path = cfg.output_dir / "dashboard.log"
+
+    cmd = [
+        sys.executable,
+        "-m",
+        "streamlit",
+        "run",
+        str(script_path),
+        "--server.address",
+        "127.0.0.1",
+        "--server.port",
+        str(int(port)),
+        "--server.headless",
+        "true",
+        "--browser.gatherUsageStats",
+        "false",
+        "--",
+        "--session-dir",
+        str(cfg.output_dir),
+        "--refresh-seconds",
+        str(float(refresh_seconds)),
+    ]
+
+    with log_path.open("a", encoding="utf-8") as fh:
+        proc = subprocess.Popen(  # noqa: S603
+            cmd,
+            cwd=str(project_root),
+            env=env,
+            stdout=fh,
+            stderr=fh,
+        )
+
+    meta = {
+        "started": True,
+        "url": url,
+        "pid": int(proc.pid),
+        "log_path": str(log_path),
+        "refresh_seconds": float(refresh_seconds),
+        "session_dir": str(cfg.output_dir),
+    }
+    (cfg.output_dir / "dashboard.json").write_text(json.dumps(meta, indent=2))
+
+    if open_browser:
+        try:
+            webbrowser.open(url, new=2)
+        except Exception:
+            pass
+
+    return meta
+
+
 def _build_config(args: argparse.Namespace) -> SessionConfig:
     settings = _load_settings(args.config)
     risk_cfg = settings.get("risk", {})
@@ -281,6 +367,7 @@ def _build_config(args: argparse.Namespace) -> SessionConfig:
         llm_fail_mode=str(args.llm_fail_mode).lower(),
         llm_scope=args.llm_scope,
         llm_max_calls=int(args.llm_max_calls),
+        llm_decision_interval_cycles=max(1, int(args.llm_decision_interval_cycles)),
         llm_env_path=args.llm_env_path,
         news_poll_seconds=max(30, int(args.news_poll_seconds)),
         news_max_articles=max(1, int(args.news_max_articles)),
@@ -498,6 +585,7 @@ def _compute_target_weights_news_lstm(
     featured: Dict[str, pd.DataFrame],
     cfg: SessionConfig,
     news_cache: Dict[str, List[str]],
+    llm_active: bool,
 ) -> tuple[Dict[str, float], List[Dict]]:
     raw_scores: Dict[str, float] = {}
     decisions: List[Dict] = []
@@ -525,6 +613,7 @@ def _compute_target_weights_news_lstm(
                 "action": int(np.sign(action)) if action != 0 else 0,
                 "signal": float(signal),
                 "confidence": float(confidence),
+                "llm_active_cycle": bool(llm_active),
                 "llm_decision": str(live.get("llm_decision", "HOLD")),
                 "llm_alignment_score": float(llm_alignment),
                 "llm_gate_pass": bool(llm_gate_pass),
@@ -533,7 +622,7 @@ def _compute_target_weights_news_lstm(
         )
 
         trade_allowed = abs(signal) >= cfg.signal_threshold and action != 0.0
-        if cfg.llm_enabled and not llm_gate_pass:
+        if llm_active and not llm_gate_pass:
             trade_allowed = False
 
         if not trade_allowed:
@@ -541,7 +630,7 @@ def _compute_target_weights_news_lstm(
 
         if cfg.long_only:
             score = max(signal, 0.0) * max(confidence, 0.05)
-            if cfg.llm_enabled:
+            if llm_active:
                 score *= max(llm_alignment, 0.1)
         else:
             score = signal * max(confidence, 0.05)
@@ -714,6 +803,7 @@ def run_realtime_paper(cfg: SessionConfig) -> Dict:
     news_last_refresh: Optional[datetime] = None
     latest_decisions: List[Dict] = []
     liquid_symbols_cache: Optional[List[str]] = None
+    llm_active_this_cycle = False
 
     _write_live_status(
         cfg,
@@ -727,6 +817,9 @@ def run_realtime_paper(cfg: SessionConfig) -> Dict:
             "cycle": 0,
             "strategy_type": cfg.strategy_type,
             "symbols_total": len(cfg.symbols),
+            "llm_enabled": bool(cfg.llm_enabled),
+            "llm_active_this_cycle": bool(llm_active_this_cycle),
+            "llm_decision_interval_cycles": int(cfg.llm_decision_interval_cycles),
             "output_dir": str(cfg.output_dir),
             "note": "Session started, waiting for first data collection cycle",
             **_pnl_fields(
@@ -754,6 +847,13 @@ def run_realtime_paper(cfg: SessionConfig) -> Dict:
         else:
             symbols_this_cycle = list(cfg.symbols)
 
+        if cfg.strategy_type == "news_lstm":
+            llm_active_this_cycle = _llm_cycle_active(cycle=cycle, cfg=cfg)
+            if hasattr(strategy, "_llm_router") and getattr(strategy, "_llm_router", None):
+                strategy._llm_router.config.enabled = bool(llm_active_this_cycle)
+        else:
+            llm_active_this_cycle = False
+
         def _progress_update(
             completed: int, total: int, featured_count: int, last_symbol: str
         ) -> None:
@@ -768,6 +868,9 @@ def run_realtime_paper(cfg: SessionConfig) -> Dict:
                     "positions": len(account.positions),
                     "cycle": cycle,
                     "strategy_type": cfg.strategy_type,
+                    "llm_enabled": bool(cfg.llm_enabled),
+                    "llm_active_this_cycle": bool(llm_active_this_cycle),
+                    "llm_decision_interval_cycles": int(cfg.llm_decision_interval_cycles),
                     "symbols_total": total,
                     "symbols_completed": completed,
                     "featured_symbols": featured_count,
@@ -805,6 +908,9 @@ def run_realtime_paper(cfg: SessionConfig) -> Dict:
                     "trades": len(account.trades),
                     "positions": len(account.positions),
                     "strategy_type": cfg.strategy_type,
+                    "llm_enabled": bool(cfg.llm_enabled),
+                    "llm_active_this_cycle": bool(llm_active_this_cycle),
+                    "llm_decision_interval_cycles": int(cfg.llm_decision_interval_cycles),
                     "note": "No featured data this cycle",
                     **_pnl_fields(
                         equity=None,
@@ -878,6 +984,9 @@ def run_realtime_paper(cfg: SessionConfig) -> Dict:
                     "trades": len(account.trades),
                     "positions": len(account.positions),
                     "strategy_type": cfg.strategy_type,
+                    "llm_enabled": bool(cfg.llm_enabled),
+                    "llm_active_this_cycle": bool(llm_active_this_cycle),
+                    "llm_decision_interval_cycles": int(cfg.llm_decision_interval_cycles),
                     "symbols_total": len(cfg.symbols),
                     "full_scan_cycle": full_scan_cycle,
                     "symbols_trade": len(featured_trade),
@@ -940,6 +1049,7 @@ def run_realtime_paper(cfg: SessionConfig) -> Dict:
                 featured=featured_trade,
                 cfg=cfg,
                 news_cache=news_cache,
+                llm_active=llm_active_this_cycle,
             )
         else:
             target_weights, latest_decisions = _compute_target_weights_enhanced(
@@ -978,6 +1088,9 @@ def run_realtime_paper(cfg: SessionConfig) -> Dict:
                 "positions": len(account.positions),
                 "cycle": cycle,
                 "strategy_type": cfg.strategy_type,
+                "llm_enabled": bool(cfg.llm_enabled),
+                "llm_active_this_cycle": bool(llm_active_this_cycle),
+                "llm_decision_interval_cycles": int(cfg.llm_decision_interval_cycles),
                 "symbols_total": len(cfg.symbols),
                 "full_scan_cycle": full_scan_cycle,
                 "symbols_trade": len(featured_trade),
@@ -999,7 +1112,8 @@ def run_realtime_paper(cfg: SessionConfig) -> Dict:
         print(
             f"[{latest_ts}] cycle={cycle} equity=${current_equity:,.2f} "
             f"pnl=${(current_equity - cfg.capital):,.2f} cash=${account.cash:,.2f} "
-            f"positions={len(account.positions)} trades={len(account.trades)}",
+            f"positions={len(account.positions)} trades={len(account.trades)} "
+            f"llm_cycle={'on' if llm_active_this_cycle else 'off'}",
             flush=True,
         )
         time.sleep(cfg.poll_seconds)
@@ -1129,6 +1243,12 @@ def main() -> None:
         help="Max LLM calls per symbol pass",
     )
     parser.add_argument(
+        "--llm-decision-interval-cycles",
+        type=int,
+        default=3,
+        help="Run LLM gate every N cycles (1 = every cycle)",
+    )
+    parser.add_argument(
         "--llm-env-path",
         type=str,
         default=None,
@@ -1206,6 +1326,30 @@ def main() -> None:
         default=1000.0,
         help="Skip rebalance orders smaller than this dollar notional",
     )
+    parser.add_argument(
+        "--dashboard",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Auto-launch live graph dashboard for this session",
+    )
+    parser.add_argument(
+        "--dashboard-port",
+        type=int,
+        default=8501,
+        help="Dashboard port",
+    )
+    parser.add_argument(
+        "--dashboard-refresh-seconds",
+        type=float,
+        default=1.0,
+        help="Dashboard auto-refresh cadence in seconds",
+    )
+    parser.add_argument(
+        "--dashboard-open",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Open dashboard URL in browser when started",
+    )
     args = parser.parse_args()
 
     cfg = _build_config(args)
@@ -1230,10 +1374,35 @@ def main() -> None:
         f"duration={cfg.duration_minutes}m poll={cfg.poll_seconds}s "
         f"min_notional=${cfg.min_trade_notional:,.0f} comm={cfg.commission_rate} "
         f"min_comm=${cfg.min_commission:.2f} slip={cfg.slippage_bps:.1f}bps "
-        f"news_poll={cfg.news_poll_seconds}s llm={'on' if cfg.llm_enabled else 'off'}",
+        f"news_poll={cfg.news_poll_seconds}s llm={'on' if cfg.llm_enabled else 'off'} "
+        f"llm_every={cfg.llm_decision_interval_cycles}cy",
         flush=True,
     )
+    dashboard_meta: Dict[str, object] = {"started": False}
+    if args.dashboard:
+        dashboard_meta = _start_live_dashboard(
+            cfg=cfg,
+            port=int(args.dashboard_port),
+            refresh_seconds=float(args.dashboard_refresh_seconds),
+            open_browser=bool(args.dashboard_open),
+        )
+        if bool(dashboard_meta.get("started")):
+            print(
+                "Live graph dashboard started: "
+                f"{dashboard_meta.get('url')} "
+                f"(pid={dashboard_meta.get('pid')})",
+                flush=True,
+            )
+        else:
+            print(
+                "Dashboard not started: "
+                f"{dashboard_meta.get('reason', 'unknown_error')}",
+                flush=True,
+            )
     summary = run_realtime_paper(cfg)
+    if bool(dashboard_meta.get("started")):
+        summary["dashboard_url"] = str(dashboard_meta.get("url"))
+        summary["dashboard_pid"] = int(dashboard_meta.get("pid", 0))
     print(json.dumps(summary, indent=2), flush=True)
 
 

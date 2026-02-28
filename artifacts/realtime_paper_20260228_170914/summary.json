@@ -1,0 +1,21 @@
+{
+  "session_start_utc": "2026-02-28 17:09:14.049425+00:00",
+  "session_end_utc": "2026-02-28 17:09:14.049751+00:00",
+  "duration_minutes": 0,
+  "interval": "1m",
+  "symbols": [
+    "SPY"
+  ],
+  "strategy_type": "news_lstm",
+  "starting_capital": 10000.0,
+  "final_equity": 10000.0,
+  "profit_dollars": 0.0,
+  "return_pct": 0.0,
+  "trades": 0,
+  "open_positions": {},
+  "commission_rate": 0.001,
+  "slippage_bps": 5.0,
+  "min_commission": 1.0,
+  "min_trade_notional": 25.0,
+  "output_dir": "quantum_alpha/artifacts/realtime_paper_20260228_170914"
+}

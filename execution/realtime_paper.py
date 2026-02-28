@@ -2,6 +2,9 @@
 Real-time paper trading runner.
 
 Uses live market data polling with fake-money execution.
+Supports:
+- Enhanced composite cross-asset strategy
+- News-LSTM + Gemini LLM gate for intraday signal adjudication
 """
 
 from __future__ import annotations
@@ -18,17 +21,21 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import yaml
+from zoneinfo import ZoneInfo
 
 from quantum_alpha.data.collectors.market_data import DataCollector
+from quantum_alpha.data.collectors.news_collector import NewsCollector
 from quantum_alpha.data.preprocessing.cleaners import DataCleaner
 from quantum_alpha.data.preprocessing.imputers import MissingValueImputer
 from quantum_alpha.features.technical.indicators import TechnicalFeatureGenerator
+from quantum_alpha.strategy.news_lstm_strategy import NewsLSTMStrategy
 from quantum_alpha.strategy.signals import EnhancedCompositeStrategy
 
 
 @dataclass
 class SessionConfig:
     symbols: List[str]
+    full_universe_requested: bool
     interval: str
     duration_minutes: int
     poll_seconds: int
@@ -39,6 +46,24 @@ class SessionConfig:
     signal_threshold: float
     min_long_signal: float
     long_only: bool
+    strategy_type: str
+    checkpoint_name: Optional[str]
+    llm_enabled: bool
+    llm_mode: Optional[str]
+    llm_models: Optional[List[str]]
+    llm_min_alignment: float
+    llm_fail_mode: str
+    llm_scope: Optional[str]
+    llm_max_calls: int
+    llm_env_path: Optional[str]
+    news_poll_seconds: int
+    news_max_articles: int
+    news_symbol_limit: int
+    liquid_subset_size: int
+    liquid_adv_window: int
+    liquid_min_history: int
+    liquid_for_full_only: bool
+    universe_refresh_cycles: int
     commission_rate: float
     slippage_bps: float
     min_commission: float
@@ -117,7 +142,7 @@ class PaperAccount:
                 if qty <= 0:
                     continue
                 notional = qty * exec_price
-                commission = max(1.0, notional * self.commission_rate)
+                commission = max(self.min_commission, notional * self.commission_rate)
                 self.cash += max(notional - commission, 0.0)
                 new_qty = current_qty - qty
                 if abs(new_qty) < 1e-8:
@@ -148,7 +173,7 @@ def _load_settings(config_path: Optional[str]) -> Dict:
         return yaml.safe_load(f)
 
 
-def _resolve_symbols(input_symbols: List[str], settings: Dict) -> List[str]:
+def _resolve_symbols(input_symbols: List[str], settings: Dict) -> tuple[List[str], bool]:
     data_cfg = settings.get("data", {})
     universe_limit = int(data_cfg.get("universe_limit", 0))
 
@@ -157,24 +182,61 @@ def _resolve_symbols(input_symbols: List[str], settings: Dict) -> List[str]:
             return symbols[:universe_limit]
         return symbols
 
+    full_requested = False
     if len(input_symbols) == 1:
         token = str(input_symbols[0]).upper()
         if token == "AUTO":
             default = [str(s).upper() for s in data_cfg.get("default_universe", [])]
-            return _limit(default)
+            return _limit(default), False
         if token in {"FULL", "ALL", "UNIVERSE"}:
+            full_requested = True
             try:
                 from quantum_alpha import universe as _u
 
-                return _limit([str(s).upper() for s in _u.get_stocks_only()])
+                return _limit([str(s).upper() for s in _u.get_stocks_only()]), full_requested
             except Exception:
                 dc = DataCollector()
-                return _limit([str(s).upper() for s in dc.get_sp500_symbols()])
+                return _limit([str(s).upper() for s in dc.get_sp500_symbols()]), full_requested
         if token in {"SP500", "S&P500", "SPX"}:
             dc = DataCollector()
-            return _limit([str(s).upper() for s in dc.get_sp500_symbols()])
+            return _limit([str(s).upper() for s in dc.get_sp500_symbols()]), False
 
-    return [str(s).upper() for s in input_symbols]
+    return [str(s).upper() for s in input_symbols], full_requested
+
+
+def _minutes_until_close(now_utc: datetime) -> int:
+    et = now_utc.astimezone(ZoneInfo("America/New_York"))
+    close_et = et.replace(hour=16, minute=0, second=0, microsecond=0)
+    if et.weekday() >= 5 or et >= close_et:
+        return 1
+    remaining = (close_et - et).total_seconds() / 60.0
+    return max(1, int(remaining))
+
+
+def _interval_max_lookback_days(interval: str) -> int:
+    iv = str(interval).strip().lower()
+    if iv.endswith("m"):
+        try:
+            minutes = int(iv[:-1])
+        except ValueError:
+            minutes = 5
+        if minutes <= 1:
+            return 8
+        if minutes <= 5:
+            return 59
+        if minutes <= 15:
+            return 59
+        return 180
+    if iv.endswith("h"):
+        return 730
+    return 3650
+
+
+def _parse_csv_str(value: str | None) -> list[str] | None:
+    if not value:
+        return None
+    out = [x.strip() for x in value.split(",") if x.strip()]
+    return out or None
 
 
 def _build_config(args: argparse.Namespace) -> SessionConfig:
@@ -183,19 +245,25 @@ def _build_config(args: argparse.Namespace) -> SessionConfig:
     strategy_cfg = settings.get("strategy", {})
     backtest_cfg = settings.get("backtest", {})
 
-    symbols = _resolve_symbols(args.symbols, settings)
+    symbols, full_requested = _resolve_symbols(args.symbols, settings)
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     out_dir = Path(args.output_dir) / f"realtime_paper_{timestamp}"
     out_dir.mkdir(parents=True, exist_ok=True)
 
     lookback_days = int(args.lookback_days)
-    if args.interval.lower() != "1d" and lookback_days >= 60:
-        lookback_days = 59
+    lookback_days = min(lookback_days, _interval_max_lookback_days(args.interval))
+
+    duration_minutes = int(args.duration_minutes)
+    if bool(args.until_close):
+        duration_minutes = _minutes_until_close(datetime.now(timezone.utc))
+
+    llm_models = _parse_csv_str(args.llm_models)
 
     return SessionConfig(
         symbols=symbols,
+        full_universe_requested=full_requested,
         interval=args.interval,
-        duration_minutes=int(args.duration_minutes),
+        duration_minutes=duration_minutes,
         poll_seconds=int(args.poll_seconds),
         lookback_days=lookback_days,
         capital=float(args.capital if args.capital is not None else args.default_capital),
@@ -204,6 +272,40 @@ def _build_config(args: argparse.Namespace) -> SessionConfig:
         signal_threshold=float(strategy_cfg.get("signal_threshold", 0.3)),
         min_long_signal=float(strategy_cfg.get("min_long_signal", 0.0)),
         long_only=bool(strategy_cfg.get("long_only", True)),
+        strategy_type=str(args.strategy_type).strip().lower(),
+        checkpoint_name=args.checkpoint_name,
+        llm_enabled=bool(args.llm_enable),
+        llm_mode=args.llm_mode,
+        llm_models=llm_models,
+        llm_min_alignment=float(args.llm_min_alignment),
+        llm_fail_mode=str(args.llm_fail_mode).lower(),
+        llm_scope=args.llm_scope,
+        llm_max_calls=int(args.llm_max_calls),
+        llm_env_path=args.llm_env_path,
+        news_poll_seconds=max(30, int(args.news_poll_seconds)),
+        news_max_articles=max(1, int(args.news_max_articles)),
+        news_symbol_limit=max(1, int(args.news_symbol_limit)),
+        liquid_subset_size=int(
+            args.liquid_subset_size
+            if args.liquid_subset_size is not None
+            else strategy_cfg.get("liquid_subset_size", 0)
+        ),
+        liquid_adv_window=int(
+            args.liquid_adv_window
+            if args.liquid_adv_window is not None
+            else strategy_cfg.get("liquid_adv_window", 20)
+        ),
+        liquid_min_history=int(
+            args.liquid_min_history
+            if args.liquid_min_history is not None
+            else strategy_cfg.get("liquid_min_history", 120)
+        ),
+        liquid_for_full_only=bool(
+            args.liquid_for_full_only
+            if args.liquid_for_full_only is not None
+            else strategy_cfg.get("liquid_for_full_only", True)
+        ),
+        universe_refresh_cycles=max(1, int(args.universe_refresh_cycles)),
         commission_rate=float(
             args.commission_rate
             if args.commission_rate is not None
@@ -233,6 +335,7 @@ def _collect_featured_data(
     end_time: datetime,
     lookback_days: int,
     interval: str,
+    use_cache: bool,
     progress_callback: Optional[Callable[[int, int, int, str], None]] = None,
 ) -> Dict[str, pd.DataFrame]:
     start_time = end_time - timedelta(days=lookback_days)
@@ -245,7 +348,7 @@ def _collect_featured_data(
                 start=start_time,
                 end=end_time,
                 interval=interval,
-                use_cache=True,
+                use_cache=use_cache,
             )
             df = cleaner.clean(df)
             df = imputer.impute(df)
@@ -255,22 +358,106 @@ def _collect_featured_data(
         except Exception:
             pass
         finally:
-            if (
-                progress_callback is not None
-                and (idx == 1 or idx % 25 == 0 or idx == total)
-            ):
+            if progress_callback is not None and (idx == 1 or idx % 25 == 0 or idx == total):
                 progress_callback(idx, total, len(featured), symbol)
     return featured
 
 
-def _compute_target_weights(
+def _select_liquid_subset(
+    frames: Dict[str, pd.DataFrame],
+    subset_size: int,
+    adv_window: int = 20,
+    min_history: int = 120,
+) -> List[str]:
+    if subset_size <= 0 or not frames:
+        return list(frames.keys())
+
+    scores: list[tuple[str, float]] = []
+    for symbol, df in frames.items():
+        if df is None or len(df) < min_history:
+            continue
+        close = pd.to_numeric(df.get("close"), errors="coerce")
+        volume = pd.to_numeric(df.get("volume"), errors="coerce")
+        if close is None or volume is None:
+            continue
+        dollar_volume = (close * volume).replace([np.inf, -np.inf], np.nan).dropna()
+        if len(dollar_volume) < max(5, adv_window):
+            continue
+        adv = float(dollar_volume.tail(adv_window).mean())
+        if np.isfinite(adv) and adv > 0:
+            scores.append((symbol, adv))
+
+    if not scores:
+        return list(frames.keys())
+
+    scores.sort(key=lambda x: x[1], reverse=True)
+    return [sym for sym, _ in scores[:subset_size]]
+
+
+def _latest_prices(featured: Dict[str, pd.DataFrame]) -> Dict[str, float]:
+    prices: Dict[str, float] = {}
+    for symbol, df in featured.items():
+        if not df.empty and "close" in df.columns:
+            prices[symbol] = float(df["close"].iloc[-1])
+    return prices
+
+
+def _top_dollar_volume_symbols(featured: Dict[str, pd.DataFrame], n: int) -> List[str]:
+    scores: list[tuple[str, float]] = []
+    for symbol, df in featured.items():
+        if df is None or df.empty:
+            continue
+        close = pd.to_numeric(df.get("close"), errors="coerce")
+        volume = pd.to_numeric(df.get("volume"), errors="coerce")
+        if close is None or volume is None:
+            continue
+        dv = (close * volume).replace([np.inf, -np.inf], np.nan).dropna()
+        if dv.empty:
+            continue
+        scores.append((symbol, float(dv.tail(20).mean())))
+    scores.sort(key=lambda x: x[1], reverse=True)
+    return [sym for sym, _ in scores[: max(1, n)]]
+
+
+def _normalize_target_weights(
+    raw_scores: Dict[str, float],
+    universe_symbols: List[str],
+    cfg: SessionConfig,
+) -> Dict[str, float]:
+    if not raw_scores:
+        return {s: 0.0 for s in universe_symbols}
+
+    total_score = sum(abs(v) for v in raw_scores.values())
+    if total_score <= 0:
+        return {s: 0.0 for s in universe_symbols}
+
+    target_weights: Dict[str, float] = {}
+    for symbol, score in raw_scores.items():
+        w = abs(score) / total_score if cfg.long_only else score / total_score
+        w = min(w, cfg.max_position_size) if cfg.long_only else np.clip(
+            w, -cfg.max_position_size, cfg.max_position_size
+        )
+        target_weights[symbol] = float(w)
+
+    total_abs = sum(abs(v) for v in target_weights.values())
+    if total_abs > cfg.max_portfolio_leverage and total_abs > 0:
+        scale = cfg.max_portfolio_leverage / total_abs
+        target_weights = {s: float(w * scale) for s, w in target_weights.items()}
+
+    for symbol in universe_symbols:
+        target_weights.setdefault(symbol, 0.0)
+    return target_weights
+
+
+def _compute_target_weights_enhanced(
     strategy: EnhancedCompositeStrategy,
     featured: Dict[str, pd.DataFrame],
     cfg: SessionConfig,
-) -> Dict[str, float]:
+) -> tuple[Dict[str, float], List[Dict]]:
     strategy.fit_cross_asset(featured)
 
     raw_scores: Dict[str, float] = {}
+    decisions: List[Dict] = []
     for symbol, df in featured.items():
         sig = strategy.generate_signals(df, symbol=symbol)
         if sig.empty:
@@ -291,39 +478,82 @@ def _compute_target_weights(
         score = max(signal * max(conf, 0.1), 0.0) if cfg.long_only else signal * conf
         if cfg.long_only:
             score = max(score, 0.0)
-        raw_scores[symbol] = score
-
-    if not raw_scores:
-        return {s: 0.0 for s in featured.keys()}
-
-    total_score = sum(abs(v) for v in raw_scores.values())
-    if total_score <= 0:
-        return {s: 0.0 for s in featured.keys()}
-
-    target_weights: Dict[str, float] = {}
-    for symbol, score in raw_scores.items():
-        w = abs(score) / total_score if cfg.long_only else score / total_score
-        w = min(w, cfg.max_position_size) if cfg.long_only else np.clip(
-            w, -cfg.max_position_size, cfg.max_position_size
+        raw_scores[symbol] = float(score)
+        decisions.append(
+            {
+                "symbol": symbol,
+                "signal": float(signal),
+                "confidence": float(conf),
+                "mode": "enhanced",
+            }
         )
-        target_weights[symbol] = float(w)
 
-    total_abs = sum(abs(v) for v in target_weights.values())
-    if total_abs > cfg.max_portfolio_leverage and total_abs > 0:
-        scale = cfg.max_portfolio_leverage / total_abs
-        target_weights = {s: float(w * scale) for s, w in target_weights.items()}
-
-    for symbol in featured.keys():
-        target_weights.setdefault(symbol, 0.0)
-    return target_weights
+    decisions.sort(key=lambda x: abs(float(x.get("signal", 0.0))), reverse=True)
+    weights = _normalize_target_weights(raw_scores, list(featured.keys()), cfg)
+    return weights, decisions[:20]
 
 
-def _latest_prices(featured: Dict[str, pd.DataFrame]) -> Dict[str, float]:
-    prices: Dict[str, float] = {}
+def _compute_target_weights_news_lstm(
+    strategy: NewsLSTMStrategy,
+    featured: Dict[str, pd.DataFrame],
+    cfg: SessionConfig,
+    news_cache: Dict[str, List[str]],
+) -> tuple[Dict[str, float], List[Dict]]:
+    raw_scores: Dict[str, float] = {}
+    decisions: List[Dict] = []
+
     for symbol, df in featured.items():
-        if not df.empty and "close" in df.columns:
-            prices[symbol] = float(df["close"].iloc[-1])
-    return prices
+        headlines = news_cache.get(symbol, [])
+        live = strategy.generate_signals_live(df, symbol=symbol, headlines=headlines)
+
+        action = float(live.get("action", 0.0))
+        signal = float(live.get("signal", action))
+        confidence = float(live.get("confidence", 0.0))
+        llm_alignment = float(live.get("llm_alignment_score", 0.0))
+        llm_gate_pass = bool(live.get("llm_gate_pass", False))
+
+        if cfg.long_only and action < 0:
+            action = 0.0
+            signal = 0.0
+
+        if signal > 0 and cfg.min_long_signal > 0:
+            signal = max(signal, cfg.min_long_signal)
+
+        decisions.append(
+            {
+                "symbol": symbol,
+                "action": int(np.sign(action)) if action != 0 else 0,
+                "signal": float(signal),
+                "confidence": float(confidence),
+                "llm_decision": str(live.get("llm_decision", "HOLD")),
+                "llm_alignment_score": float(llm_alignment),
+                "llm_gate_pass": bool(llm_gate_pass),
+                "news_count": int(len(headlines)),
+            }
+        )
+
+        trade_allowed = abs(signal) >= cfg.signal_threshold and action != 0.0
+        if cfg.llm_enabled and not llm_gate_pass:
+            trade_allowed = False
+
+        if not trade_allowed:
+            continue
+
+        if cfg.long_only:
+            score = max(signal, 0.0) * max(confidence, 0.05)
+            if cfg.llm_enabled:
+                score *= max(llm_alignment, 0.1)
+        else:
+            score = signal * max(confidence, 0.05)
+        if cfg.long_only:
+            score = max(score, 0.0)
+
+        if abs(score) > 0:
+            raw_scores[symbol] = float(score)
+
+    decisions.sort(key=lambda x: abs(float(x.get("signal", 0.0))), reverse=True)
+    weights = _normalize_target_weights(raw_scores, list(featured.keys()), cfg)
+    return weights, decisions[:20]
 
 
 def _save_outputs(
@@ -406,12 +636,65 @@ def _pnl_fields(
     }
 
 
+def _positions_snapshot(account: PaperAccount, prices: Dict[str, float]) -> List[Dict]:
+    out: List[Dict] = []
+    for symbol, qty in account.positions.items():
+        price = prices.get(symbol)
+        if price is None:
+            continue
+        value = float(qty * price)
+        out.append(
+            {
+                "symbol": symbol,
+                "qty": float(qty),
+                "price": float(price),
+                "value": value,
+            }
+        )
+    out.sort(key=lambda x: float(x.get("value", 0.0)), reverse=True)
+    return out[:20]
+
+
+def _append_new_trades(cfg: SessionConfig, trades: List[Dict], from_idx: int) -> int:
+    if from_idx >= len(trades):
+        return from_idx
+
+    trade_path = cfg.output_dir / "live_trades.jsonl"
+    with trade_path.open("a", encoding="utf-8") as f:
+        for trade in trades[from_idx:]:
+            f.write(json.dumps(trade) + "\n")
+            print(
+                f"TRADE {trade['timestamp']} {trade['side']} {trade['symbol']} "
+                f"qty={trade['qty']:.4f} px={trade['exec_price']:.4f} "
+                f"notional=${trade['notional']:.2f} cash=${trade['cash_after']:.2f}",
+                flush=True,
+            )
+    return len(trades)
+
+
 def run_realtime_paper(cfg: SessionConfig) -> Dict:
     collector = DataCollector()
     cleaner = DataCleaner()
     imputer = MissingValueImputer()
     feature_gen = TechnicalFeatureGenerator()
-    strategy = EnhancedCompositeStrategy()
+    news_collector = NewsCollector()
+
+    if cfg.strategy_type == "news_lstm":
+        strategy = NewsLSTMStrategy(
+            checkpoint_name=cfg.checkpoint_name,
+            signal_threshold=cfg.signal_threshold,
+            llm_enabled=cfg.llm_enabled,
+            llm_mode=cfg.llm_mode,
+            llm_models=cfg.llm_models,
+            llm_min_alignment=cfg.llm_min_alignment,
+            llm_fail_mode=cfg.llm_fail_mode,
+            llm_scope=cfg.llm_scope,
+            llm_max_calls=cfg.llm_max_calls,
+            llm_env_path=cfg.llm_env_path,
+        )
+    else:
+        strategy = EnhancedCompositeStrategy()
+
     account = PaperAccount(
         initial_capital=cfg.capital,
         commission_rate=cfg.commission_rate,
@@ -425,6 +708,12 @@ def run_realtime_paper(cfg: SessionConfig) -> Dict:
     previous_equity: Optional[float] = float(cfg.capital)
     equity_curve: List[Dict] = []
     cycle = 0
+    trade_write_idx = 0
+    last_prices: Dict[str, float] = {}
+    news_cache: Dict[str, List[str]] = {}
+    news_last_refresh: Optional[datetime] = None
+    latest_decisions: List[Dict] = []
+    liquid_symbols_cache: Optional[List[str]] = None
 
     _write_live_status(
         cfg,
@@ -436,7 +725,9 @@ def run_realtime_paper(cfg: SessionConfig) -> Dict:
             "trades": 0,
             "positions": 0,
             "cycle": 0,
+            "strategy_type": cfg.strategy_type,
             "symbols_total": len(cfg.symbols),
+            "output_dir": str(cfg.output_dir),
             "note": "Session started, waiting for first data collection cycle",
             **_pnl_fields(
                 equity=account.cash,
@@ -449,6 +740,19 @@ def run_realtime_paper(cfg: SessionConfig) -> Dict:
     while datetime.now(timezone.utc) < session_end:
         cycle += 1
         now = datetime.now(timezone.utc)
+        full_scan_cycle = True
+        if (
+            cfg.full_universe_requested
+            and cfg.liquid_subset_size > 0
+            and liquid_symbols_cache
+            and (cycle % cfg.universe_refresh_cycles) != 1
+        ):
+            full_scan_cycle = False
+            symbols_this_cycle = sorted(
+                set(liquid_symbols_cache) | set(account.positions.keys())
+            )
+        else:
+            symbols_this_cycle = list(cfg.symbols)
 
         def _progress_update(
             completed: int, total: int, featured_count: int, last_symbol: str
@@ -463,11 +767,12 @@ def run_realtime_paper(cfg: SessionConfig) -> Dict:
                     "trades": len(account.trades),
                     "positions": len(account.positions),
                     "cycle": cycle,
+                    "strategy_type": cfg.strategy_type,
                     "symbols_total": total,
                     "symbols_completed": completed,
                     "featured_symbols": featured_count,
                     "last_symbol": last_symbol,
-                    "note": "Collecting full-universe data for current cycle",
+                    "note": "Collecting market data for current cycle",
                     **_pnl_fields(
                         equity=account.cash,
                         starting_capital=cfg.capital,
@@ -476,19 +781,20 @@ def run_realtime_paper(cfg: SessionConfig) -> Dict:
                 },
             )
 
-        featured = _collect_featured_data(
+        featured_all = _collect_featured_data(
             collector=collector,
             cleaner=cleaner,
             imputer=imputer,
             feature_gen=feature_gen,
-            symbols=cfg.symbols,
+            symbols=symbols_this_cycle,
             end_time=now,
             lookback_days=cfg.lookback_days,
             interval=cfg.interval,
+            use_cache=(cfg.interval.lower() == "1d"),
             progress_callback=_progress_update,
         )
 
-        if not featured:
+        if not featured_all:
             _write_live_status(
                 cfg,
                 {
@@ -498,6 +804,7 @@ def run_realtime_paper(cfg: SessionConfig) -> Dict:
                     "cash": account.cash,
                     "trades": len(account.trades),
                     "positions": len(account.positions),
+                    "strategy_type": cfg.strategy_type,
                     "note": "No featured data this cycle",
                     **_pnl_fields(
                         equity=None,
@@ -509,10 +816,51 @@ def run_realtime_paper(cfg: SessionConfig) -> Dict:
             time.sleep(cfg.poll_seconds)
             continue
 
-        latest_ts = max(df.index[-1] for df in featured.values() if not df.empty)
+        featured_trade = dict(featured_all)
+        liquid_filtered = False
+        if (
+            cfg.liquid_subset_size > 0
+            and len(featured_trade) > cfg.liquid_subset_size
+            and (cfg.full_universe_requested or not cfg.liquid_for_full_only)
+        ):
+            selected = _select_liquid_subset(
+                featured_trade,
+                subset_size=cfg.liquid_subset_size,
+                adv_window=cfg.liquid_adv_window,
+                min_history=cfg.liquid_min_history,
+            )
+            selected_set = set(selected)
+            featured_trade = {
+                sym: df for sym, df in featured_trade.items() if sym in selected_set
+            }
+            liquid_filtered = True
+            liquid_symbols_cache = selected
+        elif (
+            cfg.full_universe_requested
+            and cfg.liquid_subset_size > 0
+            and liquid_symbols_cache
+            and not full_scan_cycle
+        ):
+            selected_set = set(liquid_symbols_cache)
+            featured_trade = {
+                sym: df for sym, df in featured_trade.items() if sym in selected_set
+            }
+            liquid_filtered = True
+
+        for held_symbol in list(account.positions.keys()):
+            if held_symbol in featured_all and held_symbol not in featured_trade:
+                featured_trade[held_symbol] = featured_all[held_symbol]
+
+        if not featured_trade:
+            time.sleep(cfg.poll_seconds)
+            continue
+
+        latest_ts = max(df.index[-1] for df in featured_trade.values() if not df.empty)
+        prices = _latest_prices(featured_trade)
+        last_prices.update(prices)
+
         if last_bar_time is not None and latest_ts <= last_bar_time and cycle > 1:
-            prices = _latest_prices(featured)
-            current_equity = account.equity(prices)
+            current_equity = account.equity(last_prices)
             equity_curve.append(
                 {
                     "timestamp": str(pd.Timestamp.now(tz="UTC")),
@@ -529,7 +877,16 @@ def run_realtime_paper(cfg: SessionConfig) -> Dict:
                     "cash": account.cash,
                     "trades": len(account.trades),
                     "positions": len(account.positions),
+                    "strategy_type": cfg.strategy_type,
+                    "symbols_total": len(cfg.symbols),
+                    "full_scan_cycle": full_scan_cycle,
+                    "symbols_trade": len(featured_trade),
+                    "liquidity_filtered": liquid_filtered,
+                    "news_last_refresh_utc": str(news_last_refresh) if news_last_refresh else None,
                     "note": "No new bar yet",
+                    "positions_snapshot": _positions_snapshot(account, last_prices),
+                    "latest_decisions": latest_decisions[:10],
+                    "recent_trades": account.trades[-10:],
                     **_pnl_fields(
                         equity=current_equity,
                         starting_capital=cfg.capital,
@@ -538,29 +895,77 @@ def run_realtime_paper(cfg: SessionConfig) -> Dict:
                 },
             )
             previous_equity = current_equity
+            trade_write_idx = _append_new_trades(cfg, account.trades, trade_write_idx)
             time.sleep(cfg.poll_seconds)
             continue
 
         last_bar_time = latest_ts
-        target_weights = _compute_target_weights(strategy=strategy, featured=featured, cfg=cfg)
-        prices = _latest_prices(featured)
+
+        if cfg.strategy_type == "news_lstm":
+            should_refresh_news = (
+                news_last_refresh is None
+                or (now - news_last_refresh).total_seconds() >= cfg.news_poll_seconds
+            )
+            if should_refresh_news:
+                news_symbols = set(
+                    _top_dollar_volume_symbols(featured_trade, cfg.news_symbol_limit)
+                )
+                news_symbols.update(account.positions.keys())
+                refreshed = 0
+                for sym in sorted(news_symbols):
+                    try:
+                        articles = news_collector.fetch_live_news(
+                            sym,
+                            max_articles=cfg.news_max_articles,
+                        )
+                    except Exception:
+                        articles = []
+                    headlines: List[str] = []
+                    for article in articles:
+                        title = str(article.get("title", "")).strip()
+                        summary = str(article.get("summary", "")).strip()
+                        text = title if title else summary
+                        if text:
+                            headlines.append(text[:180])
+                    news_cache[sym] = headlines
+                    refreshed += 1
+                news_last_refresh = now
+                print(
+                    f"[{now}] refreshed news for {refreshed} symbols",
+                    flush=True,
+                )
+
+            target_weights, latest_decisions = _compute_target_weights_news_lstm(
+                strategy=strategy,
+                featured=featured_trade,
+                cfg=cfg,
+                news_cache=news_cache,
+            )
+        else:
+            target_weights, latest_decisions = _compute_target_weights_enhanced(
+                strategy=strategy,
+                featured=featured_trade,
+                cfg=cfg,
+            )
+
         account.rebalance(
             target_weights=target_weights,
-            prices=prices,
+            prices=last_prices,
             timestamp=latest_ts,
             min_notional=cfg.min_trade_notional,
         )
+        trade_write_idx = _append_new_trades(cfg, account.trades, trade_write_idx)
 
+        current_equity = account.equity(last_prices)
         equity_curve.append(
             {
                 "timestamp": str(latest_ts),
-                "equity": account.equity(prices),
+                "equity": current_equity,
                 "cash": account.cash,
                 "n_positions": len(account.positions),
             }
         )
 
-        current_equity = account.equity(prices)
         _write_live_status(
             cfg,
             {
@@ -571,6 +976,17 @@ def run_realtime_paper(cfg: SessionConfig) -> Dict:
                 "cash": account.cash,
                 "trades": len(account.trades),
                 "positions": len(account.positions),
+                "cycle": cycle,
+                "strategy_type": cfg.strategy_type,
+                "symbols_total": len(cfg.symbols),
+                "full_scan_cycle": full_scan_cycle,
+                "symbols_trade": len(featured_trade),
+                "liquidity_filtered": liquid_filtered,
+                "news_last_refresh_utc": str(news_last_refresh) if news_last_refresh else None,
+                "news_cache_symbols": len(news_cache),
+                "positions_snapshot": _positions_snapshot(account, last_prices),
+                "latest_decisions": latest_decisions[:10],
+                "recent_trades": account.trades[-10:],
                 **_pnl_fields(
                     equity=current_equity,
                     starting_capital=cfg.capital,
@@ -581,24 +997,14 @@ def run_realtime_paper(cfg: SessionConfig) -> Dict:
         previous_equity = current_equity
 
         print(
-            f"[{latest_ts}] cycle={cycle} equity=${account.equity(prices):,.2f} "
-            f"cash=${account.cash:,.2f} positions={len(account.positions)}"
-        , flush=True)
+            f"[{latest_ts}] cycle={cycle} equity=${current_equity:,.2f} "
+            f"pnl=${(current_equity - cfg.capital):,.2f} cash=${account.cash:,.2f} "
+            f"positions={len(account.positions)} trades={len(account.trades)}",
+            flush=True,
+        )
         time.sleep(cfg.poll_seconds)
 
-    prices = _latest_prices(
-        _collect_featured_data(
-            collector=collector,
-            cleaner=cleaner,
-            imputer=imputer,
-            feature_gen=feature_gen,
-            symbols=cfg.symbols,
-            end_time=datetime.now(timezone.utc),
-            lookback_days=cfg.lookback_days,
-            interval=cfg.interval,
-        )
-    )
-    final_equity = account.equity(prices)
+    final_equity = account.equity(last_prices)
     profit = final_equity - cfg.capital
     return_pct = (profit / cfg.capital) * 100 if cfg.capital > 0 else 0.0
 
@@ -608,6 +1014,7 @@ def run_realtime_paper(cfg: SessionConfig) -> Dict:
         "duration_minutes": cfg.duration_minutes,
         "interval": cfg.interval,
         "symbols": cfg.symbols,
+        "strategy_type": cfg.strategy_type,
         "starting_capital": cfg.capital,
         "final_equity": final_equity,
         "profit_dollars": profit,
@@ -641,10 +1048,15 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Real-time paper trader with live market data and fake money."
     )
-    parser.add_argument("--symbols", nargs="+", default=["AUTO"], help="Symbols or AUTO")
+    parser.add_argument("--symbols", nargs="+", default=["AUTO"], help="Symbols, AUTO, SP500, FULL")
     parser.add_argument("--interval", type=str, default="5m", help="Market data interval")
     parser.add_argument(
         "--duration-minutes", type=int, default=60, help="Session duration in minutes"
+    )
+    parser.add_argument(
+        "--until-close",
+        action="store_true",
+        help="Override duration and run until US market close (16:00 ET)",
     )
     parser.add_argument("--poll-seconds", type=int, default=60, help="Polling cadence")
     parser.add_argument("--lookback-days", type=int, default=60, help="Feature lookback window")
@@ -658,6 +1070,117 @@ def main() -> None:
     parser.add_argument("--config", type=str, default=None, help="Path to settings.yaml")
     parser.add_argument(
         "--output-dir", type=str, default="artifacts", help="Output directory for session files"
+    )
+    parser.add_argument(
+        "--strategy-type",
+        type=str,
+        default="enhanced",
+        choices=["enhanced", "news_lstm"],
+        help="Signal engine to use",
+    )
+    parser.add_argument(
+        "--checkpoint-name",
+        type=str,
+        default=None,
+        help="News-LSTM checkpoint name (auto-detect when omitted)",
+    )
+    parser.add_argument(
+        "--llm-enable",
+        action="store_true",
+        help="Enable Gemini LLM gate (news_lstm mode)",
+    )
+    parser.add_argument(
+        "--llm-mode",
+        type=str,
+        default=None,
+        choices=["off", "simulated", "api"],
+        help="Gemini mode",
+    )
+    parser.add_argument(
+        "--llm-models",
+        type=str,
+        default=None,
+        help="Comma-separated Gemini model names",
+    )
+    parser.add_argument(
+        "--llm-min-alignment",
+        type=float,
+        default=0.80,
+        help="Minimum LLM alignment required to approve trade",
+    )
+    parser.add_argument(
+        "--llm-fail-mode",
+        type=str,
+        default="hold",
+        choices=["hold", "pass"],
+        help="Fallback behavior if LLM fails",
+    )
+    parser.add_argument(
+        "--llm-scope",
+        type=str,
+        default="latest",
+        choices=["all", "latest"],
+        help="Apply LLM to all bars or latest only",
+    )
+    parser.add_argument(
+        "--llm-max-calls",
+        type=int,
+        default=100000,
+        help="Max LLM calls per symbol pass",
+    )
+    parser.add_argument(
+        "--llm-env-path",
+        type=str,
+        default=None,
+        help="Optional .env path for Gemini keys",
+    )
+    parser.add_argument(
+        "--news-poll-seconds",
+        type=int,
+        default=300,
+        help="Headline refresh cadence in seconds",
+    )
+    parser.add_argument(
+        "--news-max-articles",
+        type=int,
+        default=6,
+        help="Max headlines fetched per symbol at each refresh",
+    )
+    parser.add_argument(
+        "--news-symbol-limit",
+        type=int,
+        default=60,
+        help="Refresh news for top-N liquid symbols each news cycle",
+    )
+    parser.add_argument(
+        "--liquid-subset-size",
+        type=int,
+        default=None,
+        help="If set, trade only top-N liquid names from selected universe",
+    )
+    parser.add_argument(
+        "--liquid-adv-window",
+        type=int,
+        default=None,
+        help="ADV lookback for liquidity subset",
+    )
+    parser.add_argument(
+        "--liquid-min-history",
+        type=int,
+        default=None,
+        help="Minimum bars required for liquidity ranking",
+    )
+    parser.add_argument(
+        "--liquid-for-full-only",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Apply liquidity subset only when FULL universe token is used",
+    )
+    parser.add_argument(
+        "--universe-refresh-cycles",
+        type=int,
+        default=30,
+        help="When using FULL+liquid subset, rerun full-universe scan every N cycles",
     )
     parser.add_argument(
         "--commission-rate",
@@ -686,12 +1209,30 @@ def main() -> None:
     args = parser.parse_args()
 
     cfg = _build_config(args)
+    max_lb = _interval_max_lookback_days(cfg.interval)
+    if int(args.lookback_days) > int(cfg.lookback_days):
+        print(
+            f"Lookback capped for interval {cfg.interval}: "
+            f"requested={int(args.lookback_days)}d effective={int(cfg.lookback_days)}d "
+            f"(max={max_lb}d)",
+            flush=True,
+        )
+    now_et = datetime.now(timezone.utc).astimezone(ZoneInfo("America/New_York"))
+    if args.until_close and cfg.duration_minutes <= 1:
+        print(
+            f"Market appears closed now ({now_et.strftime('%Y-%m-%d %H:%M:%S %Z')}); "
+            "until-close session duration resolved to 1 minute.",
+            flush=True,
+        )
     print(
-        f"Starting realtime paper session: symbols={cfg.symbols} interval={cfg.interval} "
+        f"Starting realtime paper session: strategy={cfg.strategy_type} "
+        f"symbols={len(cfg.symbols)} interval={cfg.interval} "
         f"duration={cfg.duration_minutes}m poll={cfg.poll_seconds}s "
         f"min_notional=${cfg.min_trade_notional:,.0f} comm={cfg.commission_rate} "
-        f"min_comm=${cfg.min_commission:.2f} slip={cfg.slippage_bps:.1f}bps"
-    , flush=True)
+        f"min_comm=${cfg.min_commission:.2f} slip={cfg.slippage_bps:.1f}bps "
+        f"news_poll={cfg.news_poll_seconds}s llm={'on' if cfg.llm_enabled else 'off'}",
+        flush=True,
+    )
     summary = run_realtime_paper(cfg)
     print(json.dumps(summary, indent=2), flush=True)
 

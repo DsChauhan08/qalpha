@@ -12,6 +12,8 @@ from functools import wraps
 import time
 import pickle
 from pathlib import Path
+import io
+from contextlib import redirect_stdout, redirect_stderr
 
 from quantum_alpha.data.storage.sqlite_cache import SQLiteCache
 from quantum_alpha.data.storage.data_quality import DataQualityChecker
@@ -103,6 +105,11 @@ class DataCollector:
             self._yf = yfinance
         return self._yf
 
+    def _quiet_yf_call(self, fn, *args, **kwargs):
+        sink = io.StringIO()
+        with redirect_stdout(sink), redirect_stderr(sink):
+            return fn(*args, **kwargs)
+
     def _cache_path(
         self, symbol: str, start: datetime, end: datetime, interval: str
     ) -> Path:
@@ -152,9 +159,20 @@ class DataCollector:
             bars_per_day = 1
         return int(days * bars_per_day)
 
-    def _intraday_period(self, start: datetime, end: datetime) -> str:
+    def _intraday_period(self, start: datetime, end: datetime, interval: str) -> str:
         days = max((end - start).days, 1)
-        days = min(days, 60)
+        iv = str(interval).strip().lower()
+        if iv.endswith("m"):
+            try:
+                minutes = int(iv[:-1])
+            except ValueError:
+                minutes = 5
+            if minutes <= 1:
+                days = min(days, 8)
+            else:
+                days = min(days, 60)
+        else:
+            days = min(days, 730)
         return f"{days}d"
 
     def _use_parquet(self, start: datetime, end: datetime, interval: str) -> bool:
@@ -230,10 +248,17 @@ class DataCollector:
 
         ticker = self.yf.Ticker(symbol)
         try:
-            df = ticker.history(start=start, end=end, interval=interval)
+            df = self._quiet_yf_call(
+                ticker.history, start=start, end=end, interval=interval
+            )
         except Exception:
-            df = self.yf.download(
-                symbol, start=start, end=end, interval=interval, progress=False
+            df = self._quiet_yf_call(
+                self.yf.download,
+                symbol,
+                start=start,
+                end=end,
+                interval=interval,
+                progress=False,
             )
 
         if isinstance(df.columns, pd.MultiIndex):
@@ -243,10 +268,14 @@ class DataCollector:
                 df.columns = df.columns.droplevel(0)
 
         if df.empty and interval != "1d":
-            period = self._intraday_period(start, end)
+            period = self._intraday_period(start, end, interval)
             try:
-                df = self.yf.download(
-                    symbol, period=period, interval=interval, progress=False
+                df = self._quiet_yf_call(
+                    self.yf.download,
+                    symbol,
+                    period=period,
+                    interval=interval,
+                    progress=False,
                 )
             except Exception:
                 df = pd.DataFrame()

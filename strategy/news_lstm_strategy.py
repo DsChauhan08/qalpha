@@ -242,7 +242,12 @@ class NewsLSTMStrategy:
             self._model = None
             self._loaded = True
 
-    def generate_signals(self, df: pd.DataFrame, symbol: str = "SPY") -> pd.DataFrame:
+    def generate_signals(
+        self,
+        df: pd.DataFrame,
+        symbol: str = "SPY",
+        headlines: list[str] | None = None,
+    ) -> pd.DataFrame:
         """
         Generate trading signals from price data.
 
@@ -278,12 +283,17 @@ class NewsLSTMStrategy:
             return df
 
         try:
-            return self._generate_signals_impl(df, symbol)
+            return self._generate_signals_impl(df, symbol, headlines=headlines)
         except Exception as e:
             logger.error("Signal generation failed: %s", e)
             return df
 
-    def _generate_signals_impl(self, df: pd.DataFrame, symbol: str) -> pd.DataFrame:
+    def _generate_signals_impl(
+        self,
+        df: pd.DataFrame,
+        symbol: str,
+        headlines: list[str] | None = None,
+    ) -> pd.DataFrame:
         """Internal signal generation with the loaded model."""
         cfg = self._config
         seq_len = cfg.sequence_length
@@ -412,6 +422,7 @@ class NewsLSTMStrategy:
                     feature_row=features_df.loc[idx] if idx in features_df.index else None,
                     window=X_windows[i],
                     n_classes=signal_probs.shape[1],
+                    headlines=headlines,
                 )
                 decision, gate_pass = self._run_llm_gate(
                     context=context,
@@ -520,6 +531,7 @@ class NewsLSTMStrategy:
         feature_row: pd.Series | None,
         window: np.ndarray,
         n_classes: int,
+        headlines: list[str] | None = None,
     ) -> Dict[str, Any]:
         class_probs: Dict[str, float]
         if n_classes == 2:
@@ -557,6 +569,14 @@ class NewsLSTMStrategy:
                     except Exception:
                         continue
 
+        trimmed_headlines: list[str] = []
+        for h in headlines or []:
+            text = str(h).strip()
+            if text:
+                trimmed_headlines.append(text[:180])
+            if len(trimmed_headlines) >= 8:
+                break
+
         return {
             "symbol": str(symbol),
             "timestamp": str(timestamp),
@@ -568,6 +588,7 @@ class NewsLSTMStrategy:
             "volatility_score": vol_score,
             "noise_score": noise_score,
             "feature_slice": feature_slice,
+            "headlines": trimmed_headlines,
         }
 
     def _run_llm_gate(self, context: Dict[str, Any], action: int) -> tuple[LLMDecision, bool]:
@@ -709,7 +730,7 @@ class NewsLSTMStrategy:
             return {"action": 0, "confidence": 0.0, "reason": "no_model"}
 
         # Generate signals on the full DataFrame
-        df_with_signals = self.generate_signals(price_df, symbol)
+        df_with_signals = self.generate_signals(price_df, symbol, headlines=headlines)
 
         if df_with_signals.empty:
             return {"action": 0, "confidence": 0.0, "reason": "no_data"}

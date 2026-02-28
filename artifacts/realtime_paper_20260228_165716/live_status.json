@@ -1,0 +1,128 @@
+{
+  "status": "running",
+  "timestamp_utc": "2026-02-28 17:05:03.549763+00:00",
+  "latest_bar": "2026-02-27 15:55:00-05:00",
+  "equity": 10000.0,
+  "cash": 10000.0,
+  "trades": 0,
+  "positions": 0,
+  "cycle": 1,
+  "strategy_type": "news_lstm",
+  "symbols_total": 902,
+  "full_scan_cycle": true,
+  "symbols_trade": 250,
+  "liquidity_filtered": true,
+  "news_last_refresh_utc": "2026-02-28 16:57:16.384686+00:00",
+  "news_cache_symbols": 80,
+  "positions_snapshot": [],
+  "latest_decisions": [
+    {
+      "symbol": "AAL",
+      "action": 0,
+      "signal": 0.0,
+      "confidence": 0.0,
+      "llm_decision": "HOLD",
+      "llm_alignment_score": 0.0,
+      "llm_gate_pass": false,
+      "news_count": 0
+    },
+    {
+      "symbol": "AAPL",
+      "action": 0,
+      "signal": 0.0,
+      "confidence": 0.0,
+      "llm_decision": "HOLD",
+      "llm_alignment_score": 0.0,
+      "llm_gate_pass": false,
+      "news_count": 0
+    },
+    {
+      "symbol": "ABBV",
+      "action": 0,
+      "signal": 0.0,
+      "confidence": 0.0,
+      "llm_decision": "HOLD",
+      "llm_alignment_score": 0.0,
+      "llm_gate_pass": false,
+      "news_count": 0
+    },
+    {
+      "symbol": "ABNB",
+      "action": 0,
+      "signal": 0.0,
+      "confidence": 0.0,
+      "llm_decision": "HOLD",
+      "llm_alignment_score": 0.0,
+      "llm_gate_pass": false,
+      "news_count": 0
+    },
+    {
+      "symbol": "ABT",
+      "action": 0,
+      "signal": 0.0,
+      "confidence": 0.0,
+      "llm_decision": "HOLD",
+      "llm_alignment_score": 0.0,
+      "llm_gate_pass": false,
+      "news_count": 0
+    },
+    {
+      "symbol": "ACN",
+      "action": 0,
+      "signal": 0.0,
+      "confidence": 0.0,
+      "llm_decision": "HOLD",
+      "llm_alignment_score": 0.0,
+      "llm_gate_pass": false,
+      "news_count": 0
+    },
+    {
+      "symbol": "ADBE",
+      "action": 0,
+      "signal": 0.0,
+      "confidence": 0.0,
+      "llm_decision": "HOLD",
+      "llm_alignment_score": 0.0,
+      "llm_gate_pass": false,
+      "news_count": 0
+    },
+    {
+      "symbol": "ADI",
+      "action": 0,
+      "signal": 0.0,
+      "confidence": 0.0,
+      "llm_decision": "HOLD",
+      "llm_alignment_score": 0.0,
+      "llm_gate_pass": false,
+      "news_count": 0
+    },
+    {
+      "symbol": "ADP",
+      "action": 0,
+      "signal": 0.0,
+      "confidence": 0.0,
+      "llm_decision": "HOLD",
+      "llm_alignment_score": 0.0,
+      "llm_gate_pass": false,
+      "news_count": 0
+    },
+    {
+      "symbol": "ADSK",
+      "action": 0,
+      "signal": 0.0,
+      "confidence": 0.0,
+      "llm_decision": "HOLD",
+      "llm_alignment_score": 0.0,
+      "llm_gate_pass": false,
+      "news_count": 0
+    }
+  ],
+  "recent_trades": [],
+  "starting_capital": 10000.0,
+  "profit_dollars": 0.0,
+  "return_pct": 0.0,
+  "pnl_direction": "flat",
+  "equity_change_dollars": 0.0,
+  "equity_change_pct": 0.0,
+  "equity_change_direction": "flat"
+}

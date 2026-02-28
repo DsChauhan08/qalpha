@@ -1,0 +1,22 @@
+{
+  "status": "running",
+  "timestamp_utc": "2026-02-28 17:06:36.440867+00:00",
+  "equity": 10000.0,
+  "cash": 10000.0,
+  "trades": 0,
+  "positions": 0,
+  "cycle": 1,
+  "strategy_type": "news_lstm",
+  "symbols_total": 902,
+  "symbols_completed": 1,
+  "featured_symbols": 0,
+  "last_symbol": "A",
+  "note": "Collecting market data for current cycle",
+  "starting_capital": 10000.0,
+  "profit_dollars": 0.0,
+  "return_pct": 0.0,
+  "pnl_direction": "flat",
+  "equity_change_dollars": 0.0,
+  "equity_change_pct": 0.0,
+  "equity_change_direction": "flat"
+}

@@ -34,6 +34,8 @@ risk:
   max_position_size: 0.05
   max_portfolio_leverage: 1.0
   max_drawdown: 0.15
+  max_daily_loss: 0.03
+  max_weekly_loss: 0.07
   var_confidence: 0.95
   kelly_fraction: 0.5
   target_volatility: 0.10
@@ -47,12 +49,15 @@ risk:
   dd_leverage_cap_warning: 0.65
   dd_leverage_cap_critical: 0.45
   market_off_leverage_cap: 0.50
+  faster_derisk_warning_mult: 0.70
+  faster_derisk_critical_mult: 0.50
 
 # Strategy — tuned for meta-ensemble
 strategy:
   lookback_window: 60
   signal_threshold: 0.01
   rebalance_frequency: "daily"
+  min_rebalance_notional_frac: 0.015
   use_relative_strength: false
   liquid_subset_size: 200
   liquid_adv_window: 20
@@ -63,6 +68,22 @@ strategy:
   signal_scale: 1.0
   min_long_signal: 0.0
   market_off_scale: 1.0
+  sleeves:
+    enabled: true
+    core_budget: 0.92
+    alpha_budget: 0.07
+    lottery_budget: 0.01
+    core_loss_scale: 0.45
+    alpha_min_confidence: 0.05
+    lottery_top_n: 3
+    lottery_min_signal: 0.35
+    lottery_min_confidence: 0.25
+    lottery_stop_loss: 0.08
+    lottery_max_per_symbol: 0.0075
+    core_mix:
+      SPY: 0.50
+      QQQ: 0.30
+      IWM: 0.20
 
 # Technical Indicators
 indicators:

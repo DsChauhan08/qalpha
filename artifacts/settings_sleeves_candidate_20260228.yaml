@@ -1,61 +1,51 @@
-# Quantum Alpha V1 Configuration
-version: "1.0.0"
-
-# Data Sources
+version: 1.0.0
 data:
-  primary_source: "yfinance"
+  primary_source: yfinance
   cache_enabled: true
   cache_ttl_hours: 24
-  universe_limit: 0  # 0 = no limit. Use --symbols SP500/FULL/LIQUID tokens in CLI
+  universe_limit: 0
   default_universe:
-    # Quick-test preset (10 tickers). For full universe, use: --symbols FULL
-    - "SPY"
-    - "QQQ"
-    - "IWM"
-    - "AAPL"
-    - "MSFT"
-    - "GOOGL"
-    - "AMZN"
-    - "NVDA"
-    - "META"
-    - "TSLA"
-
-# Backtesting
+  - SPY
+  - QQQ
+  - IWM
+  - AAPL
+  - MSFT
+  - GOOGL
+  - AMZN
+  - NVDA
+  - META
+  - TSLA
 backtest:
   initial_capital: 100000
-  commission_rate: 0.001  # 0.1% per trade
-  slippage_bps: 5  # 5 basis points
+  commission_rate: 0.001
+  slippage_bps: 5
   min_commission: 1.0
-
-# Risk Management
 risk:
-  max_position_size: 0.05  # Max 5% per position
-  max_portfolio_leverage: 1.10
-  max_drawdown: 0.10  # 10% max drawdown
+  max_position_size: 0.05
+  max_portfolio_leverage: 1.1
+  max_drawdown: 0.1
   max_daily_loss: 0.03
   max_weekly_loss: 0.07
   var_confidence: 0.95
-  kelly_fraction: 0.6  # modest boost to sizing
+  kelly_fraction: 0.6
   target_volatility: 0.11
   vol_of_vol_threshold: 0.03
   vol_of_vol_scale: 0.6
   dd_warning: 0.12
   dd_critical: 0.18
   dd_circuit_breaker: 0.25
-  dd_max_limit: 0.30
-  dd_min_exposure: 0.10
-  dd_leverage_cap_warning: 0.80
-  dd_leverage_cap_critical: 0.60
-  market_off_leverage_cap: 0.70
-  faster_derisk_warning_mult: 0.70
-  faster_derisk_critical_mult: 0.50
-
-# Strategy
+  dd_max_limit: 0.3
+  dd_min_exposure: 0.1
+  dd_leverage_cap_warning: 0.8
+  dd_leverage_cap_critical: 0.6
+  market_off_leverage_cap: 0.7
+  faster_derisk_warning_mult: 0.85
+  faster_derisk_critical_mult: 0.7
 strategy:
   lookback_window: 60
-  signal_threshold: 0.28  # Min signal strength to trade
-  rebalance_frequency: "weekly"
-  paper_rebalance_frequency: "weekly"
+  signal_threshold: 0.28
+  rebalance_frequency: weekly
+  paper_rebalance_frequency: weekly
   min_rebalance_notional_frac: 0.015
   momentum_top_pct: 80
   momentum_bottom_pct: 35
@@ -70,13 +60,13 @@ strategy:
   risk_off_cash: false
   signal_scale: 1.9
   min_long_signal: 0.25
-  market_off_scale: 0.60
+  market_off_scale: 0.6
   sleeves:
     enabled: true
-    core_budget: 0.92
-    alpha_budget: 0.07
-    lottery_budget: 0.01
-    core_loss_scale: 0.45
+    core_budget: 0.9
+    alpha_budget: 0.08
+    lottery_budget: 0.02
+    core_loss_scale: 0.5
     alpha_min_confidence: 0.05
     lottery_top_n: 3
     lottery_min_signal: 0.35
@@ -84,11 +74,9 @@ strategy:
     lottery_stop_loss: 0.08
     lottery_max_per_symbol: 0.0075
     core_mix:
-      SPY: 0.50
-      QQQ: 0.30
-      IWM: 0.20
-
-# Technical Indicators
+      SPY: 0.5
+      QQQ: 0.3
+      IWM: 0.2
 indicators:
   rsi_period: 14
   macd_fast: 12
@@ -97,32 +85,26 @@ indicators:
   bb_period: 20
   bb_std: 2
   atr_period: 14
-
-# Logging
 logging:
-  level: "INFO"
-  file: "quantum_alpha.log"
-
-# Benchmarks
+  level: INFO
+  file: quantum_alpha.log
 benchmarks:
-  market: "SPY"
+  market: SPY
   quant_composite:
-    - "QQQ"
-    - "IWM"
+  - QQQ
+  - IWM
   quant_firm_proxies:
     enabled: true
     profiles:
-      - "aqr_style_factors"
-      - "citadel_style_multistrat"
-      - "two_sigma_style_data"
-      - "de_shaw_style_macro"
-      - "man_ahl_style_trend"
+    - aqr_style_factors
+    - citadel_style_multistrat
+    - two_sigma_style_data
+    - de_shaw_style_macro
+    - man_ahl_style_trend
     min_assets: 2
-    interval: "1d"
-
-# Validation protocol
+    interval: 1d
 validation:
-  mcpt_threshold_stage1: 0.10
+  mcpt_threshold_stage1: 0.1
   mcpt_threshold_stage2: 0.05
   rolling_oos_window_days: 126
   rolling_oos_min_windows: 3

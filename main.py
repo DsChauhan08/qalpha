@@ -9,7 +9,7 @@ import numpy as np
 import pandas as pd
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple
 
 # Add project root to path
 PROJECT_ROOT = Path(__file__).parent.parent
@@ -405,6 +405,161 @@ def _should_rebalance(
     return True
 
 
+def _clamp(x: float, lo: float, hi: float) -> float:
+    return float(np.clip(float(x), float(lo), float(hi)))
+
+
+def _normalize_weights(
+    weights: Dict[str, float],
+    budget: float,
+    long_only: bool,
+    max_abs_per_symbol: float = 0.0,
+) -> Dict[str, float]:
+    b = float(max(budget, 0.0))
+    if b <= 0:
+        return {}
+
+    clean = {}
+    for sym, w in weights.items():
+        wv = float(w)
+        if not np.isfinite(wv):
+            continue
+        if long_only:
+            wv = max(wv, 0.0)
+        if abs(wv) > 0:
+            clean[sym] = wv
+    if not clean:
+        return {}
+
+    total_abs = sum(abs(v) for v in clean.values())
+    if total_abs <= 0:
+        return {}
+    scaled = {s: float(v / total_abs * b) for s, v in clean.items()}
+
+    cap = float(max_abs_per_symbol)
+    if cap <= 0:
+        return scaled
+
+    clipped: Dict[str, float] = {}
+    residual = b
+    overflow = {}
+    for sym, w in scaled.items():
+        aw = abs(w)
+        if aw > cap:
+            clipped[sym] = float(np.sign(w) * cap)
+            residual -= cap
+        else:
+            overflow[sym] = w
+
+    residual = max(residual, 0.0)
+    if overflow:
+        rem_total = sum(abs(v) for v in overflow.values())
+        if rem_total > 0 and residual > 0:
+            for sym, w in overflow.items():
+                clipped[sym] = float(w / rem_total * residual)
+    return {s: w for s, w in clipped.items() if abs(w) > 1e-12}
+
+
+def _core_targets_from_mix(
+    bars: Dict[str, Dict[str, float]],
+    core_mix: Dict[str, float],
+    core_budget: float,
+) -> Dict[str, float]:
+    if core_budget <= 0:
+        return {}
+    available = {}
+    for sym, w in core_mix.items():
+        if sym not in bars:
+            continue
+        price = float(bars[sym].get("open", bars[sym].get("close", 0.0)) or 0.0)
+        if price <= 0:
+            continue
+        available[sym] = float(max(w, 0.0))
+    if not available:
+        return {}
+    return _normalize_weights(available, budget=core_budget, long_only=True)
+
+
+def _combine_targets(*targets: Dict[str, float]) -> Dict[str, float]:
+    out: Dict[str, float] = {}
+    for t in targets:
+        for sym, w in t.items():
+            out[sym] = float(out.get(sym, 0.0) + float(w))
+    return {s: float(w) for s, w in out.items() if abs(w) > 1e-12}
+
+
+def _current_weights(bt, bars: Dict[str, Dict[str, float]], equity: float) -> Dict[str, float]:
+    if equity <= 0:
+        return {}
+    out = {}
+    for sym, pos in bt.positions.items():
+        bar = bars.get(sym)
+        if bar is None:
+            continue
+        price = float(bar.get("open", bar.get("close", 0.0)) or 0.0)
+        if price <= 0:
+            continue
+        out[sym] = float(pos.quantity * price / equity)
+    return out
+
+
+def _update_loss_limit_state(
+    state: Dict,
+    timestamp: datetime,
+    equity: float,
+    max_daily_loss: float,
+    max_weekly_loss: float,
+) -> Dict[str, float | bool]:
+    day_key = timestamp.date().isoformat()
+    iso = timestamp.isocalendar()
+    week_key = f"{iso.year:04d}-W{iso.week:02d}"
+
+    if state.get("loss_day_key") != day_key:
+        state["loss_day_key"] = day_key
+        state["day_start_equity"] = float(equity)
+        state["daily_stop_active"] = False
+
+    if state.get("loss_week_key") != week_key:
+        state["loss_week_key"] = week_key
+        state["week_start_equity"] = float(equity)
+        state["weekly_stop_active"] = False
+
+    day_start = float(max(state.get("day_start_equity", equity), 1e-9))
+    week_start = float(max(state.get("week_start_equity", equity), 1e-9))
+    day_ret = float(equity / day_start - 1.0)
+    week_ret = float(equity / week_start - 1.0)
+
+    if max_daily_loss > 0 and day_ret <= -float(max_daily_loss):
+        state["daily_stop_active"] = True
+    if max_weekly_loss > 0 and week_ret <= -float(max_weekly_loss):
+        state["weekly_stop_active"] = True
+
+    stop_active = bool(state.get("daily_stop_active", False) or state.get("weekly_stop_active", False))
+    state["loss_stop_active"] = stop_active
+
+    return {
+        "day_return": day_ret,
+        "week_return": week_ret,
+        "daily_stop_active": bool(state.get("daily_stop_active", False)),
+        "weekly_stop_active": bool(state.get("weekly_stop_active", False)),
+        "stop_active": stop_active,
+    }
+
+
+def _strict_promotion_ready(
+    metrics: Dict[str, float | bool], required_windows: int, required_beats: int
+) -> Tuple[bool, int, int]:
+    req_windows = max(int(required_windows), 4)
+    req_beats = max(int(required_beats), 3)
+    ready = bool(
+        metrics.get("mcpt_pass_stage2_0_05", False)
+        and metrics.get("benchmark_constraints_passed", False)
+        and int(metrics.get("rolling_oos_n_windows", 0)) >= req_windows
+        and int(metrics.get("rolling_oos_beats", 0)) >= req_beats
+    )
+    return ready, req_windows, req_beats
+
+
 def run_backtest(
     symbols: list,
     start_date: datetime,
@@ -457,6 +612,8 @@ def run_backtest(
     max_position = float(risk_cfg.get("max_position_size", 0.25))
     max_leverage = float(risk_cfg.get("max_portfolio_leverage", 1.0))
     max_drawdown = float(risk_cfg.get("max_drawdown", 0.10))
+    max_daily_loss = float(risk_cfg.get("max_daily_loss", 0.03))
+    max_weekly_loss = float(risk_cfg.get("max_weekly_loss", 0.07))
     kelly_fraction = float(risk_cfg.get("kelly_fraction", 0.5))
     rebalance_frequency = str(strategy_cfg.get("rebalance_frequency", "daily"))
     paper_rebalance = strategy_cfg.get("paper_rebalance_frequency")
@@ -479,6 +636,40 @@ def run_backtest(
     liquid_for_full_only = bool(strategy_cfg.get("liquid_for_full_only", True))
     long_only = bool(strategy_cfg.get("long_only", False))
     risk_off_cash = bool(strategy_cfg.get("risk_off_cash", False))
+    min_rebalance_notional_frac = float(
+        strategy_cfg.get("min_rebalance_notional_frac", 0.015)
+    )
+    sleeves_cfg = strategy_cfg.get("sleeves", {}) if isinstance(strategy_cfg, dict) else {}
+    sleeves_enabled = bool(sleeves_cfg.get("enabled", True))
+    core_budget = _clamp(float(sleeves_cfg.get("core_budget", 0.90)), 0.88, 0.94)
+    alpha_budget = _clamp(float(sleeves_cfg.get("alpha_budget", 0.08)), 0.05, 0.10)
+    lottery_budget = _clamp(float(sleeves_cfg.get("lottery_budget", 0.02)), 0.00, 0.02)
+    core_loss_scale = _clamp(float(sleeves_cfg.get("core_loss_scale", 0.50)), 0.10, 1.00)
+    lottery_top_n = int(max(1, sleeves_cfg.get("lottery_top_n", 3)))
+    lottery_min_signal = float(sleeves_cfg.get("lottery_min_signal", 0.35))
+    lottery_min_confidence = float(sleeves_cfg.get("lottery_min_confidence", 0.25))
+    lottery_stop_loss = _clamp(float(sleeves_cfg.get("lottery_stop_loss", 0.08)), 0.01, 0.25)
+    lottery_max_per_symbol = _clamp(
+        float(sleeves_cfg.get("lottery_max_per_symbol", 0.0075)), 0.001, 0.02
+    )
+    alpha_min_confidence = float(sleeves_cfg.get("alpha_min_confidence", 0.05))
+    core_mix_cfg = sleeves_cfg.get("core_mix", {"SPY": 0.5, "QQQ": 0.3, "IWM": 0.2})
+    core_mix = {
+        str(k).upper(): float(v)
+        for k, v in core_mix_cfg.items()
+        if float(v) > 0
+    }
+    if not core_mix:
+        core_mix = {"SPY": 0.5, "QQQ": 0.3, "IWM": 0.2}
+
+    if max_leverage > 0:
+        sleeve_total = core_budget + alpha_budget + lottery_budget
+        if sleeve_total > max_leverage and sleeve_total > 0:
+            scale = max_leverage / sleeve_total
+            core_budget *= scale
+            alpha_budget *= scale
+            lottery_budget *= scale
+
     if max_leverage <= 0:
         max_leverage = 1.0
     # Volatility target for scaling (annualized) - nudged up to restore exposure
@@ -486,6 +677,12 @@ def run_backtest(
     dd_leverage_cap_warning = float(risk_cfg.get("dd_leverage_cap_warning", 1.0))
     dd_leverage_cap_critical = float(risk_cfg.get("dd_leverage_cap_critical", 1.0))
     market_off_leverage_cap = float(risk_cfg.get("market_off_leverage_cap", 1.0))
+    faster_derisk_warning_mult = _clamp(
+        float(risk_cfg.get("faster_derisk_warning_mult", 0.85)), 0.10, 1.00
+    )
+    faster_derisk_critical_mult = _clamp(
+        float(risk_cfg.get("faster_derisk_critical_mult", 0.70)), 0.10, 1.00
+    )
 
     # Initialize components
     collector = DataCollector()
@@ -753,6 +950,15 @@ def run_backtest(
         "current_drawdown": 0,
         "peak_equity": initial_capital,
         "last_rebalance": None,
+        "loss_day_key": None,
+        "loss_week_key": None,
+        "day_start_equity": float(initial_capital),
+        "week_start_equity": float(initial_capital),
+        "daily_stop_active": False,
+        "weekly_stop_active": False,
+        "loss_stop_active": False,
+        "lottery_entry_price": {},
+        "lottery_blocked_day": {},
     }
 
     # Dynamic drawdown control — soft scaling only, no circuit breaker.
@@ -777,6 +983,13 @@ def run_backtest(
     def trading_strategy(timestamp, bars, bt):
         """Strategy execution function."""
         equity = bt._total_equity()
+        loss_status = _update_loss_limit_state(
+            state=state,
+            timestamp=timestamp,
+            equity=equity,
+            max_daily_loss=max_daily_loss,
+            max_weekly_loss=max_weekly_loss,
+        )
 
         # Update drawdown controller every bar
         dd_metrics = dd_controller.update(equity, timestamp)
@@ -787,8 +1000,10 @@ def run_backtest(
         # all-or-nothing slam that destroys multi-decade backtests.
         exposure_mult = dd_metrics.exposure_multiplier
 
-        if not _should_rebalance(
-            timestamp, state["last_rebalance"], rebalance_frequency
+        force_rebalance = bool(loss_status["stop_active"])
+        if (
+            not _should_rebalance(timestamp, state["last_rebalance"], rebalance_frequency)
+            and not force_rebalance
         ):
             state["peak_equity"] = max(state["peak_equity"], equity)
             state["current_drawdown"] = (equity - state["peak_equity"]) / state[
@@ -798,6 +1013,8 @@ def run_backtest(
 
         state["last_rebalance"] = timestamp
         target_positions = {}
+        signal_strengths = {}
+        signal_confidences = {}
         volatilities = {}
         trade_history = (
             np.array([t["pnl"] for t in bt.trades]) if bt.trades else np.array([0])
@@ -889,6 +1106,8 @@ def run_backtest(
                 signal = float(np.clip(signal * signal_scale, -1.0, 1.0))
             if long_only and signal > 0 and min_long_signal > 0:
                 signal = max(signal, min_long_signal)
+            signal_strengths[symbol] = float(signal)
+            signal_confidences[symbol] = float(confidence)
             volatility = row.get("atr_pct", 0.02)
             if pd.isna(volatility) or volatility <= 0:
                 volatility = 0.02
@@ -953,30 +1172,126 @@ def run_backtest(
                     for s in target_positions
                 }
 
-        total_abs = sum(abs(w) for w in target_positions.values())
+        alpha_targets = dict(target_positions)
+
+        # Apply drawdown-based exposure scaling to alpha sleeve.
+        if exposure_mult < 1.0:
+            alpha_targets = {s: w * exposure_mult for s, w in alpha_targets.items()}
+
+        # Volatility targeting overlay on alpha sleeve.
+        if vol_scale != 1.0:
+            alpha_targets = {s: w * vol_scale for s, w in alpha_targets.items()}
+
         cap = max_leverage
         if dd_metrics.state == DrawdownState.WARNING:
-            cap = min(cap, dd_leverage_cap_warning)
+            cap = min(cap, dd_leverage_cap_warning * faster_derisk_warning_mult)
         elif dd_metrics.state in {DrawdownState.CRITICAL, DrawdownState.RECOVERY}:
-            cap = min(cap, dd_leverage_cap_critical)
+            cap = min(cap, dd_leverage_cap_critical * faster_derisk_critical_mult)
         if not market_risk_on:
-            cap = min(cap, market_off_leverage_cap)
+            cap = min(cap, market_off_leverage_cap * faster_derisk_warning_mult)
+
+        if sleeves_enabled:
+            today_key = timestamp.date().isoformat()
+            blocked = state.setdefault("lottery_blocked_day", {})
+            entries = state.setdefault("lottery_entry_price", {})
+
+            for sym in list(blocked.keys()):
+                if blocked.get(sym) != today_key:
+                    blocked.pop(sym, None)
+
+            for sym, entry in list(entries.items()):
+                bar = bars.get(sym)
+                if bar is None:
+                    entries.pop(sym, None)
+                    continue
+                px = float(bar.get("open", bar.get("close", 0.0)) or 0.0)
+                if px > 0 and px <= float(entry) * (1.0 - lottery_stop_loss):
+                    blocked[sym] = today_key
+                    entries.pop(sym, None)
+
+            core_budget_eff = core_budget * (core_loss_scale if loss_status["stop_active"] else 1.0)
+            alpha_budget_eff = 0.0 if loss_status["stop_active"] else alpha_budget
+            lottery_budget_eff = 0.0 if loss_status["stop_active"] else lottery_budget
+
+            core_targets = _core_targets_from_mix(
+                bars=bars,
+                core_mix=core_mix,
+                core_budget=core_budget_eff,
+            )
+            alpha_candidates = {
+                s: w
+                for s, w in alpha_targets.items()
+                if s not in core_mix
+                and float(signal_confidences.get(s, 0.0)) >= alpha_min_confidence
+            }
+            alpha_targets = _normalize_weights(
+                alpha_candidates,
+                budget=alpha_budget_eff,
+                long_only=long_only,
+                max_abs_per_symbol=max_position,
+            )
+
+            lottery_targets = {}
+            if lottery_budget_eff > 0:
+                lottery_scores = {}
+                for sym, sig in signal_strengths.items():
+                    if sym in core_mix or sym in alpha_targets:
+                        continue
+                    if blocked.get(sym) == today_key:
+                        continue
+                    conf = float(signal_confidences.get(sym, 0.0))
+                    if conf < lottery_min_confidence:
+                        continue
+                    if long_only and sig < lottery_min_signal:
+                        continue
+                    if (not long_only) and abs(sig) < lottery_min_signal:
+                        continue
+                    vol = float(volatilities.get(sym, 0.0))
+                    if vol <= 0:
+                        continue
+                    lottery_scores[sym] = abs(float(sig)) * max(conf, 0.05) * vol
+
+                ranked = sorted(lottery_scores.items(), key=lambda x: x[1], reverse=True)
+                raw_lottery = {sym: 1.0 for sym, _ in ranked[:lottery_top_n]}
+                lottery_targets = _normalize_weights(
+                    raw_lottery,
+                    budget=lottery_budget_eff,
+                    long_only=True,
+                    max_abs_per_symbol=lottery_max_per_symbol,
+                )
+
+            target_positions = _combine_targets(core_targets, alpha_targets, lottery_targets)
+
+            for sym, w in lottery_targets.items():
+                if w <= 0:
+                    continue
+                bar = bars.get(sym)
+                if bar is None:
+                    continue
+                px = float(bar.get("open", bar.get("close", 0.0)) or 0.0)
+                if px > 0 and sym not in entries:
+                    entries[sym] = px
+            for sym in list(entries.keys()):
+                if sym not in lottery_targets:
+                    entries.pop(sym, None)
+
+            if loss_status["stop_active"]:
+                cap = min(cap, max(core_budget_eff, 0.05))
+        else:
+            target_positions = alpha_targets
+            if loss_status["stop_active"]:
+                target_positions = {}
+                cap = min(cap, 0.05)
+
+        total_abs = sum(abs(w) for w in target_positions.values())
         if total_abs > cap and total_abs > 0:
             scale = cap / total_abs
-            target_positions = {s: w * scale for s, w in target_positions.items()}
-
-        # Apply drawdown-based exposure scaling
-        if exposure_mult < 1.0:
-            target_positions = {
-                s: w * exposure_mult for s, w in target_positions.items()
-            }
-
-        # Volatility targeting overlay
-        if vol_scale != 1.0:
-            target_positions = {s: w * vol_scale for s, w in target_positions.items()}
+            target_positions = {s: float(w * scale) for s, w in target_positions.items()}
 
         equity = bt._total_equity()
-        for symbol, target_position in target_positions.items():
+        all_symbols = set(target_positions.keys()) | set(bt.positions.keys())
+        for symbol in sorted(all_symbols):
+            target_position = float(target_positions.get(symbol, 0.0))
             bar = bars.get(symbol)
             if bar is None:
                 continue
@@ -988,7 +1303,7 @@ def run_backtest(
 
             qty_diff = target_qty - current_qty
 
-            if price > 0 and abs(qty_diff) > 0.01 * equity / price:
+            if price > 0 and abs(qty_diff) > min_rebalance_notional_frac * equity / price:
                 if qty_diff > 0:
                     bt.submit_order(
                         symbol, OrderSide.BUY, abs(qty_diff), OrderType.MARKET
@@ -1050,6 +1365,12 @@ def run_backtest(
         except Exception:
             continue
     metrics.update(aggregate_fundamentals(fundamentals))
+    metrics["sleeves_enabled"] = bool(sleeves_enabled)
+    metrics["sleeve_core_budget"] = float(core_budget)
+    metrics["sleeve_alpha_budget"] = float(alpha_budget)
+    metrics["sleeve_lottery_budget"] = float(lottery_budget)
+    metrics["max_daily_loss_limit"] = float(max_daily_loss)
+    metrics["max_weekly_loss_limit"] = float(max_weekly_loss)
 
     market_metrics = (
         compute_metrics_from_returns(market_returns, benchmark_returns=market_returns)
@@ -1295,15 +1616,14 @@ def run_backtest(
             metrics["rolling_oos_min_beat_ratio"] = float(
                 rolling_oos.get("min_beat_ratio", oos_min_beat_ratio)
             )
-            metrics["promotion_oos_required_windows"] = int(promo_req_windows)
-            metrics["promotion_oos_required_beats"] = int(promo_req_beats)
-
-            metrics["promotion_ready"] = bool(
-                metrics.get("mcpt_pass_stage2_0_05", False)
-                and metrics.get("benchmark_constraints_passed", False)
-                and metrics["rolling_oos_n_windows"] >= promo_req_windows
-                and metrics["rolling_oos_beats"] >= promo_req_beats
+            strict_ready, strict_windows, strict_beats = _strict_promotion_ready(
+                metrics=metrics,
+                required_windows=promo_req_windows,
+                required_beats=promo_req_beats,
             )
+            metrics["promotion_oos_required_windows"] = int(strict_windows)
+            metrics["promotion_oos_required_beats"] = int(strict_beats)
+            metrics["promotion_ready"] = bool(strict_ready)
         else:
             metrics["promotion_ready"] = False
 
@@ -1371,6 +1691,8 @@ def run_paper(
     max_position = float(risk_cfg.get("max_position_size", 0.25))
     max_leverage = float(risk_cfg.get("max_portfolio_leverage", 1.0))
     max_drawdown = float(risk_cfg.get("max_drawdown", 0.10))
+    max_daily_loss = float(risk_cfg.get("max_daily_loss", 0.03))
+    max_weekly_loss = float(risk_cfg.get("max_weekly_loss", 0.07))
     kelly_fraction = float(risk_cfg.get("kelly_fraction", 0.5))
     rebalance_frequency = str(strategy_cfg.get("rebalance_frequency", "daily"))
     momentum_top_pct = float(strategy_cfg.get("momentum_top_pct", 80))
@@ -1388,6 +1710,40 @@ def run_paper(
     liquid_for_full_only = bool(strategy_cfg.get("liquid_for_full_only", True))
     long_only = bool(strategy_cfg.get("long_only", False))
     risk_off_cash = bool(strategy_cfg.get("risk_off_cash", False))
+    min_rebalance_notional_frac = float(
+        strategy_cfg.get("min_rebalance_notional_frac", 0.015)
+    )
+    sleeves_cfg = strategy_cfg.get("sleeves", {}) if isinstance(strategy_cfg, dict) else {}
+    sleeves_enabled = bool(sleeves_cfg.get("enabled", True))
+    core_budget = _clamp(float(sleeves_cfg.get("core_budget", 0.90)), 0.88, 0.94)
+    alpha_budget = _clamp(float(sleeves_cfg.get("alpha_budget", 0.08)), 0.05, 0.10)
+    lottery_budget = _clamp(float(sleeves_cfg.get("lottery_budget", 0.02)), 0.00, 0.02)
+    core_loss_scale = _clamp(float(sleeves_cfg.get("core_loss_scale", 0.50)), 0.10, 1.00)
+    lottery_top_n = int(max(1, sleeves_cfg.get("lottery_top_n", 3)))
+    lottery_min_signal = float(sleeves_cfg.get("lottery_min_signal", 0.35))
+    lottery_min_confidence = float(sleeves_cfg.get("lottery_min_confidence", 0.25))
+    lottery_stop_loss = _clamp(float(sleeves_cfg.get("lottery_stop_loss", 0.08)), 0.01, 0.25)
+    lottery_max_per_symbol = _clamp(
+        float(sleeves_cfg.get("lottery_max_per_symbol", 0.0075)), 0.001, 0.02
+    )
+    alpha_min_confidence = float(sleeves_cfg.get("alpha_min_confidence", 0.05))
+    core_mix_cfg = sleeves_cfg.get("core_mix", {"SPY": 0.5, "QQQ": 0.3, "IWM": 0.2})
+    core_mix = {
+        str(k).upper(): float(v)
+        for k, v in core_mix_cfg.items()
+        if float(v) > 0
+    }
+    if not core_mix:
+        core_mix = {"SPY": 0.5, "QQQ": 0.3, "IWM": 0.2}
+
+    if max_leverage > 0:
+        sleeve_total = core_budget + alpha_budget + lottery_budget
+        if sleeve_total > max_leverage and sleeve_total > 0:
+            scale = max_leverage / sleeve_total
+            core_budget *= scale
+            alpha_budget *= scale
+            lottery_budget *= scale
+
     target_vol = float(risk_cfg.get("target_volatility", 0.15))
     dd_warning = float(risk_cfg.get("dd_warning", 0.15))
     dd_critical = float(risk_cfg.get("dd_critical", 0.25))
@@ -1397,6 +1753,12 @@ def run_paper(
     dd_leverage_cap_warning = float(risk_cfg.get("dd_leverage_cap_warning", 0.85))
     dd_leverage_cap_critical = float(risk_cfg.get("dd_leverage_cap_critical", 0.8))
     market_off_leverage_cap = float(risk_cfg.get("market_off_leverage_cap", 0.85))
+    faster_derisk_warning_mult = _clamp(
+        float(risk_cfg.get("faster_derisk_warning_mult", 0.85)), 0.10, 1.00
+    )
+    faster_derisk_critical_mult = _clamp(
+        float(risk_cfg.get("faster_derisk_critical_mult", 0.70)), 0.10, 1.00
+    )
     if max_leverage <= 0:
         max_leverage = 1.0
     min_paper_bars = int(validation_cfg.get("paper_min_bars", 120))
@@ -1615,6 +1977,15 @@ def run_paper(
         "current_drawdown": 0,
         "peak_equity": initial_capital,
         "last_rebalance": None,
+        "loss_day_key": None,
+        "loss_week_key": None,
+        "day_start_equity": float(initial_capital),
+        "week_start_equity": float(initial_capital),
+        "daily_stop_active": False,
+        "weekly_stop_active": False,
+        "loss_stop_active": False,
+        "lottery_entry_price": {},
+        "lottery_blocked_day": {},
     }
     dd_controller = DrawdownController(
         warning_threshold=dd_warning,
@@ -1629,11 +2000,20 @@ def run_paper(
 
     def trading_strategy(timestamp, bars, bt):
         equity = bt._total_equity()
+        loss_status = _update_loss_limit_state(
+            state=state,
+            timestamp=timestamp,
+            equity=equity,
+            max_daily_loss=max_daily_loss,
+            max_weekly_loss=max_weekly_loss,
+        )
         dd_metrics = dd_controller.update(equity, timestamp)
         exposure_mult = dd_metrics.exposure_multiplier
 
-        if not _should_rebalance(
-            timestamp, state["last_rebalance"], rebalance_frequency
+        force_rebalance = bool(loss_status["stop_active"])
+        if (
+            not _should_rebalance(timestamp, state["last_rebalance"], rebalance_frequency)
+            and not force_rebalance
         ):
             state["peak_equity"] = max(state["peak_equity"], equity)
             state["current_drawdown"] = (equity - state["peak_equity"]) / state[
@@ -1643,6 +2023,8 @@ def run_paper(
 
         state["last_rebalance"] = timestamp
         target_positions = {}
+        signal_strengths = {}
+        signal_confidences = {}
         volatilities = {}
         trade_history = (
             np.array([t["pnl"] for t in bt.trades]) if bt.trades else np.array([0])
@@ -1707,6 +2089,8 @@ def run_paper(
                 signal = float(np.clip(signal * signal_scale, -1.0, 1.0))
             if long_only and signal > 0 and min_long_signal > 0:
                 signal = max(signal, min_long_signal)
+            signal_strengths[symbol] = float(signal)
+            signal_confidences[symbol] = float(confidence)
             volatility = row.get("atr_pct", 0.02)
             if pd.isna(volatility) or volatility <= 0:
                 volatility = 0.02
@@ -1769,28 +2153,125 @@ def run_paper(
                     for s in target_positions
                 }
 
+        alpha_targets = dict(target_positions)
         if vol_scale != 1.0:
-            target_positions = {s: w * vol_scale for s, w in target_positions.items()}
+            alpha_targets = {s: w * vol_scale for s, w in alpha_targets.items()}
 
         if exposure_mult < 1.0:
-            target_positions = {
-                s: w * exposure_mult for s, w in target_positions.items()
+            alpha_targets = {
+                s: w * exposure_mult for s, w in alpha_targets.items()
             }
 
-        total_abs = sum(abs(w) for w in target_positions.values())
         cap = max_leverage
         if dd_metrics.state == DrawdownState.WARNING:
-            cap = min(cap, dd_leverage_cap_warning)
+            cap = min(cap, dd_leverage_cap_warning * faster_derisk_warning_mult)
         elif dd_metrics.state in {DrawdownState.CRITICAL, DrawdownState.RECOVERY}:
-            cap = min(cap, dd_leverage_cap_critical)
+            cap = min(cap, dd_leverage_cap_critical * faster_derisk_critical_mult)
         if not market_risk_on:
-            cap = min(cap, market_off_leverage_cap)
+            cap = min(cap, market_off_leverage_cap * faster_derisk_warning_mult)
+
+        if sleeves_enabled:
+            today_key = timestamp.date().isoformat()
+            blocked = state.setdefault("lottery_blocked_day", {})
+            entries = state.setdefault("lottery_entry_price", {})
+
+            for sym in list(blocked.keys()):
+                if blocked.get(sym) != today_key:
+                    blocked.pop(sym, None)
+
+            for sym, entry in list(entries.items()):
+                bar = bars.get(sym)
+                if bar is None:
+                    entries.pop(sym, None)
+                    continue
+                px = float(bar.get("open", bar.get("close", 0.0)) or 0.0)
+                if px > 0 and px <= float(entry) * (1.0 - lottery_stop_loss):
+                    blocked[sym] = today_key
+                    entries.pop(sym, None)
+
+            core_budget_eff = core_budget * (core_loss_scale if loss_status["stop_active"] else 1.0)
+            alpha_budget_eff = 0.0 if loss_status["stop_active"] else alpha_budget
+            lottery_budget_eff = 0.0 if loss_status["stop_active"] else lottery_budget
+
+            core_targets = _core_targets_from_mix(
+                bars=bars,
+                core_mix=core_mix,
+                core_budget=core_budget_eff,
+            )
+            alpha_candidates = {
+                s: w
+                for s, w in alpha_targets.items()
+                if s not in core_mix
+                and float(signal_confidences.get(s, 0.0)) >= alpha_min_confidence
+            }
+            alpha_targets = _normalize_weights(
+                alpha_candidates,
+                budget=alpha_budget_eff,
+                long_only=long_only,
+                max_abs_per_symbol=max_position,
+            )
+
+            lottery_targets = {}
+            if lottery_budget_eff > 0:
+                lottery_scores = {}
+                for sym, sig in signal_strengths.items():
+                    if sym in core_mix or sym in alpha_targets:
+                        continue
+                    if blocked.get(sym) == today_key:
+                        continue
+                    conf = float(signal_confidences.get(sym, 0.0))
+                    if conf < lottery_min_confidence:
+                        continue
+                    if long_only and sig < lottery_min_signal:
+                        continue
+                    if (not long_only) and abs(sig) < lottery_min_signal:
+                        continue
+                    vol = float(volatilities.get(sym, 0.0))
+                    if vol <= 0:
+                        continue
+                    lottery_scores[sym] = abs(float(sig)) * max(conf, 0.05) * vol
+
+                ranked = sorted(lottery_scores.items(), key=lambda x: x[1], reverse=True)
+                raw_lottery = {sym: 1.0 for sym, _ in ranked[:lottery_top_n]}
+                lottery_targets = _normalize_weights(
+                    raw_lottery,
+                    budget=lottery_budget_eff,
+                    long_only=True,
+                    max_abs_per_symbol=lottery_max_per_symbol,
+                )
+
+            target_positions = _combine_targets(core_targets, alpha_targets, lottery_targets)
+
+            for sym, w in lottery_targets.items():
+                if w <= 0:
+                    continue
+                bar = bars.get(sym)
+                if bar is None:
+                    continue
+                px = float(bar.get("open", bar.get("close", 0.0)) or 0.0)
+                if px > 0 and sym not in entries:
+                    entries[sym] = px
+            for sym in list(entries.keys()):
+                if sym not in lottery_targets:
+                    entries.pop(sym, None)
+
+            if loss_status["stop_active"]:
+                cap = min(cap, max(core_budget_eff, 0.05))
+        else:
+            target_positions = alpha_targets
+            if loss_status["stop_active"]:
+                target_positions = {}
+                cap = min(cap, 0.05)
+
+        total_abs = sum(abs(w) for w in target_positions.values())
         if total_abs > cap and total_abs > 0:
             scale = cap / total_abs
-            target_positions = {s: w * scale for s, w in target_positions.items()}
+            target_positions = {s: float(w * scale) for s, w in target_positions.items()}
 
         equity = bt._total_equity()
-        for symbol, target_position in target_positions.items():
+        all_symbols = set(target_positions.keys()) | set(bt.positions.keys())
+        for symbol in sorted(all_symbols):
+            target_position = float(target_positions.get(symbol, 0.0))
             bar = bars.get(symbol)
             if bar is None:
                 continue
@@ -1802,7 +2283,7 @@ def run_paper(
 
             qty_diff = target_qty - current_qty
 
-            if price > 0 and abs(qty_diff) > 0.01 * equity / price:
+            if price > 0 and abs(qty_diff) > min_rebalance_notional_frac * equity / price:
                 if qty_diff > 0:
                     bt.submit_order(
                         symbol, OrderSide.BUY, abs(qty_diff), OrderType.MARKET
@@ -1819,6 +2300,13 @@ def run_paper(
         ]
 
     metrics, paper_start = paper_trader.run(data, trading_strategy)
+    if isinstance(metrics, dict) and "error" not in metrics:
+        metrics["sleeves_enabled"] = bool(sleeves_enabled)
+        metrics["sleeve_core_budget"] = float(core_budget)
+        metrics["sleeve_alpha_budget"] = float(alpha_budget)
+        metrics["sleeve_lottery_budget"] = float(lottery_budget)
+        metrics["max_daily_loss_limit"] = float(max_daily_loss)
+        metrics["max_weekly_loss_limit"] = float(max_weekly_loss)
 
     if verbose and "error" not in metrics:
         print(f"\n{'=' * 60}")

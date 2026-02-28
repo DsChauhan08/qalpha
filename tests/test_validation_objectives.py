@@ -4,7 +4,13 @@ from quantum_alpha.backtesting.robustness_suite import (
     _benchmark_relative_metrics,
     _score_candidate,
 )
-from quantum_alpha.main import _rolling_oos_vs_benchmark, _select_liquid_subset
+from quantum_alpha.main import (
+    _rolling_oos_vs_benchmark,
+    _select_liquid_subset,
+    _normalize_weights,
+    _strict_promotion_ready,
+    _update_loss_limit_state,
+)
 
 
 def _price_df(close_vals, vol_vals):
@@ -169,3 +175,82 @@ def test_score_candidate_rewards_excess_vs_quant():
     }
     score = _score_candidate(seg, rel_full={"information_ratio": 0.2})
     assert score > 0
+
+
+def test_normalize_weights_respects_budget_and_cap():
+    out = _normalize_weights(
+        {"A": 3.0, "B": 1.0, "C": 1.0},
+        budget=0.10,
+        long_only=True,
+        max_abs_per_symbol=0.05,
+    )
+    assert abs(sum(abs(v) for v in out.values()) - 0.10) < 1e-8
+    assert max(abs(v) for v in out.values()) <= 0.05 + 1e-12
+
+
+def test_strict_promotion_ready_enforces_minimum_3_of_4():
+    metrics = {
+        "mcpt_pass_stage2_0_05": True,
+        "benchmark_constraints_passed": True,
+        "rolling_oos_n_windows": 4,
+        "rolling_oos_beats": 3,
+    }
+    ready, req_w, req_b = _strict_promotion_ready(
+        metrics=metrics,
+        required_windows=2,
+        required_beats=2,
+    )
+    assert ready is True
+    assert req_w == 4
+    assert req_b == 3
+
+
+def test_strict_promotion_ready_fails_if_under_3_of_4():
+    metrics = {
+        "mcpt_pass_stage2_0_05": True,
+        "benchmark_constraints_passed": True,
+        "rolling_oos_n_windows": 4,
+        "rolling_oos_beats": 2,
+    }
+    ready, req_w, req_b = _strict_promotion_ready(
+        metrics=metrics,
+        required_windows=4,
+        required_beats=3,
+    )
+    assert ready is False
+    assert req_w == 4
+    assert req_b == 3
+
+
+def test_update_loss_limit_state_triggers_daily_and_weekly_stops():
+    state = {}
+    ts0 = pd.Timestamp("2026-01-05")  # Monday
+    ts1 = pd.Timestamp("2026-01-05 15:00")
+    ts2 = pd.Timestamp("2026-01-06")
+
+    _update_loss_limit_state(
+        state=state,
+        timestamp=ts0,
+        equity=100000.0,
+        max_daily_loss=0.03,
+        max_weekly_loss=0.07,
+    )
+    r1 = _update_loss_limit_state(
+        state=state,
+        timestamp=ts1,
+        equity=96000.0,  # -4% day
+        max_daily_loss=0.03,
+        max_weekly_loss=0.07,
+    )
+    assert r1["daily_stop_active"] is True
+    assert r1["stop_active"] is True
+
+    r2 = _update_loss_limit_state(
+        state=state,
+        timestamp=ts2,
+        equity=92000.0,  # -8% week
+        max_daily_loss=0.03,
+        max_weekly_loss=0.07,
+    )
+    assert r2["weekly_stop_active"] is True
+    assert r2["stop_active"] is True

@@ -18,6 +18,16 @@ class DrawdownStats:
     recovery_time: int
 
 
+def _alignable_series(series: pd.Series) -> pd.Series:
+    """Return series with tz-naive DatetimeIndex for robust alignment."""
+    s = pd.Series(series).astype(float).replace([np.inf, -np.inf], np.nan).dropna()
+    idx = pd.to_datetime(s.index, errors="coerce")
+    if isinstance(idx, pd.DatetimeIndex) and idx.tz is not None:
+        idx = idx.tz_localize(None)
+    s.index = idx
+    return s[~s.index.isna()].sort_index()
+
+
 def _annualize_return(
     total_return: float, n_periods: int, periods_per_year: int = 252
 ) -> float:
@@ -86,6 +96,8 @@ def _omega_ratio(returns: pd.Series, threshold: float = 0.0) -> float:
 def _capture_ratio(
     returns: pd.Series, benchmark: pd.Series
 ) -> Tuple[float, float, float]:
+    returns = _alignable_series(returns)
+    benchmark = _alignable_series(benchmark)
     aligned = returns.align(benchmark, join="inner")
     if aligned[0].empty:
         return 0.0, 0.0, 0.0
@@ -192,7 +204,9 @@ def compute_metrics(
             )
 
     if benchmark_returns is not None and not benchmark_returns.empty:
-        aligned = returns.align(benchmark_returns, join="inner")
+        strat = _alignable_series(returns)
+        bench = _alignable_series(benchmark_returns)
+        aligned = strat.align(bench, join="inner")
         if not aligned[0].empty:
             strat, bench = aligned
             cov = np.cov(strat.values, bench.values)[0, 1]

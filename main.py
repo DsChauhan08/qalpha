@@ -254,6 +254,99 @@ def _format_symbols(symbols: list) -> str:
     return f"{len(symbols)} symbols (e.g., {head}, ...)"
 
 
+def _augment_symbols_with_benchmarks(
+    symbols: list,
+    core_mix: Dict[str, float],
+    market_benchmark: Optional[str],
+    quant_benchmark: Optional[list],
+) -> list:
+    """Ensure benchmark/core symbols are always present in the fetch universe."""
+    out = []
+    seen = set()
+
+    def _add(sym) -> None:
+        s = str(sym).upper().strip()
+        if not s or s in seen:
+            return
+        seen.add(s)
+        out.append(s)
+
+    for sym in symbols:
+        _add(sym)
+    for sym in core_mix.keys():
+        _add(sym)
+    if isinstance(quant_benchmark, list):
+        for sym in quant_benchmark:
+            _add(sym)
+    elif quant_benchmark:
+        _add(quant_benchmark)
+    if market_benchmark:
+        _add(market_benchmark)
+
+    return out
+
+
+def _composite_returns_from_frames(
+    frames: Dict[str, pd.DataFrame],
+    symbols: list,
+) -> Optional[pd.Series]:
+    """Build equal-weight returns from already-loaded OHLCV frames."""
+    parts = []
+    for sym in symbols:
+        s = str(sym).upper()
+        df = frames.get(s) or frames.get(str(sym))
+        if df is None or df.empty or "close" not in df.columns:
+            continue
+        close = pd.to_numeric(df["close"], errors="coerce")
+        ret = close.pct_change(fill_method=None)
+        series = _normalize_return_index(
+            pd.Series(ret.values, index=pd.to_datetime(df.index, errors="coerce"))
+        )
+        series = series.replace([np.inf, -np.inf], np.nan).dropna().sort_index()
+        if not series.empty:
+            parts.append(series)
+
+    if not parts:
+        return None
+    composite = pd.concat(parts, axis=1).mean(axis=1).dropna().sort_index()
+    composite.name = "composite"
+    return composite if not composite.empty else None
+
+
+def _fallback_core_targets_from_bars(
+    bars: Dict[str, Dict[str, float]],
+    core_budget: float,
+    max_abs_per_symbol: float,
+    top_n: int = 12,
+) -> Dict[str, float]:
+    """Last-resort core basket from most liquid currently tradable symbols."""
+    if core_budget <= 0 or not bars:
+        return {}
+
+    scores = {}
+    for sym, bar in bars.items():
+        px = float(bar.get("open", bar.get("close", 0.0)) or 0.0)
+        vol = float(bar.get("volume", 0.0) or 0.0)
+        if px <= 0 or vol <= 0 or not np.isfinite(px) or not np.isfinite(vol):
+            continue
+        adv = px * vol
+        if np.isfinite(adv) and adv > 0:
+            scores[sym] = float(adv)
+
+    if not scores:
+        return {}
+
+    n_keep = max(1, int(top_n))
+    ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)[:n_keep]
+    raw = {sym: val for sym, val in ranked}
+    return _normalize_weights(
+        raw,
+        budget=core_budget,
+        long_only=True,
+        max_abs_per_symbol=max_abs_per_symbol,
+    )
+
+
 def _select_liquid_subset(
     frames: Dict[str, pd.DataFrame],
     subset_size: int,
@@ -560,6 +653,165 @@ def _strict_promotion_ready(
     return ready, req_windows, req_beats
 
 
+def _normalize_return_index(series: pd.Series) -> pd.Series:
+    """Normalize return series index to tz-naive daily dates."""
+    s = pd.Series(series).astype(float).replace([np.inf, -np.inf], np.nan)
+    idx = pd.to_datetime(s.index, errors="coerce")
+    if isinstance(idx, pd.DatetimeIndex) and idx.tz is not None:
+        idx = idx.tz_localize(None)
+    s.index = idx
+    s = s[~s.index.isna()]
+    s.index = s.index.normalize()
+    return s.groupby(level=0).mean().sort_index()
+
+
+def _fetch_symbol_returns(
+    collector: DataCollector,
+    symbol: str,
+    start_date: datetime,
+    end_date: datetime,
+) -> Optional[pd.Series]:
+    """Fetch daily close-to-close returns for a symbol."""
+    try:
+        df = collector.fetch_ohlcv(symbol, start_date, end_date)
+    except Exception:
+        return None
+    if df is None or df.empty or "close" not in df.columns:
+        return None
+    close = pd.to_numeric(df["close"], errors="coerce")
+    ret = close.pct_change(fill_method=None)
+    series = _normalize_return_index(
+        pd.Series(ret.values, index=pd.to_datetime(df.index, errors="coerce"))
+    ).replace([np.inf, -np.inf], np.nan)
+    series = series.dropna().sort_index()
+    return series if not series.empty else None
+
+
+def _fetch_composite_returns(
+    collector: DataCollector,
+    symbols: list,
+    start_date: datetime,
+    end_date: datetime,
+) -> Optional[pd.Series]:
+    """Fetch equal-weighted return composite for a symbol basket."""
+    parts = []
+    for sym in symbols:
+        s = _fetch_symbol_returns(collector, str(sym), start_date, end_date)
+        if s is not None and not s.empty:
+            parts.append(s)
+    if not parts:
+        return None
+    composite = pd.concat(parts, axis=1).mean(axis=1).dropna().sort_index()
+    composite.name = "composite"
+    return composite if not composite.empty else None
+
+
+def _rolling_relative_edge(
+    equity_curve: list,
+    benchmark_returns: Optional[pd.Series],
+    asof: datetime,
+    lookback_days: int = 63,
+) -> Dict[str, float | bool]:
+    """
+    Compute rolling relative edge vs benchmark.
+
+    Returns a dict with:
+    - available
+    - n_obs
+    - excess_total_return
+    - information_ratio
+    - tracking_error
+    """
+    if benchmark_returns is None or benchmark_returns.empty or len(equity_curve) < 8:
+        return {
+            "available": False,
+            "n_obs": 0,
+            "excess_total_return": 0.0,
+            "information_ratio": 0.0,
+            "tracking_error": 0.0,
+        }
+
+    rows = []
+    for row in equity_curve:
+        ts = row.get("timestamp")
+        eq = row.get("equity")
+        if ts is None or eq is None:
+            continue
+        rows.append((pd.to_datetime(ts, errors="coerce"), float(eq)))
+    if not rows:
+        return {
+            "available": False,
+            "n_obs": 0,
+            "excess_total_return": 0.0,
+            "information_ratio": 0.0,
+            "tracking_error": 0.0,
+        }
+
+    eq_idx = pd.DatetimeIndex([r[0] for r in rows])
+    if eq_idx.tz is not None:
+        eq_idx = eq_idx.tz_localize(None)
+    eq_series = pd.Series([r[1] for r in rows], index=eq_idx)
+    eq_series = eq_series.replace([np.inf, -np.inf], np.nan).dropna()
+    if eq_series.empty:
+        return {
+            "available": False,
+            "n_obs": 0,
+            "excess_total_return": 0.0,
+            "information_ratio": 0.0,
+            "tracking_error": 0.0,
+        }
+
+    strat_ret = eq_series.pct_change(fill_method=None).replace([np.inf, -np.inf], np.nan)
+    strat_ret = strat_ret.dropna()
+    if strat_ret.empty:
+        return {
+            "available": False,
+            "n_obs": 0,
+            "excess_total_return": 0.0,
+            "information_ratio": 0.0,
+            "tracking_error": 0.0,
+        }
+
+    strat_ret = strat_ret.groupby(strat_ret.index.normalize()).mean().sort_index()
+    bench = benchmark_returns.groupby(benchmark_returns.index.normalize()).mean().sort_index()
+
+    asof_ts = pd.Timestamp(asof)
+    if asof_ts.tzinfo is not None:
+        asof_ts = asof_ts.tz_convert(None)
+    asof_ts = asof_ts.normalize()
+
+    strat_ret = strat_ret[strat_ret.index <= asof_ts].tail(max(lookback_days, 20))
+    bench = bench[bench.index <= asof_ts]
+    strat_ret, bench = strat_ret.align(bench, join="inner")
+    min_obs = max(20, int(lookback_days * 0.4))
+    if len(strat_ret) < min_obs:
+        return {
+            "available": False,
+            "n_obs": int(len(strat_ret)),
+            "excess_total_return": 0.0,
+            "information_ratio": 0.0,
+            "tracking_error": 0.0,
+        }
+
+    excess_total = float(
+        _total_return_from_returns(strat_ret) - _total_return_from_returns(bench)
+    )
+    diff = (strat_ret - bench).replace([np.inf, -np.inf], np.nan).dropna()
+    tracking_error = (
+        float(diff.std(ddof=0) * np.sqrt(252.0)) if len(diff) > 1 else 0.0
+    )
+    ann_excess = float((strat_ret.mean() - bench.mean()) * 252.0)
+    info_ratio = float(ann_excess / tracking_error) if tracking_error > 1e-10 else 0.0
+
+    return {
+        "available": True,
+        "n_obs": int(len(strat_ret)),
+        "excess_total_return": excess_total,
+        "information_ratio": info_ratio,
+        "tracking_error": tracking_error,
+    }
+
+
 def run_backtest(
     symbols: list,
     start_date: datetime,
@@ -625,6 +877,18 @@ def run_backtest(
     signal_scale = float(strategy_cfg.get("signal_scale", 1.0))
     min_long_signal = float(strategy_cfg.get("min_long_signal", 0.0))
     market_off_scale = float(strategy_cfg.get("market_off_scale", 1.0))
+    anchor_core_to_quant = bool(
+        strategy_cfg.get("anchor_core_to_quant_composite", True)
+    )
+    alpha_deploy_requires_relative_edge = bool(
+        strategy_cfg.get("alpha_deploy_requires_relative_edge", True)
+    )
+    alpha_edge_lookback_days = int(strategy_cfg.get("alpha_edge_lookback_days", 63))
+    alpha_min_scale = _clamp(float(strategy_cfg.get("alpha_min_scale", 0.05)), 0.0, 1.0)
+    alpha_info_floor = float(strategy_cfg.get("alpha_info_floor", 0.0))
+    alpha_excess_floor = float(strategy_cfg.get("alpha_excess_floor", 0.0))
+    alpha_recovery_info = float(strategy_cfg.get("alpha_recovery_info", 0.25))
+    alpha_recovery_excess = float(strategy_cfg.get("alpha_recovery_excess", 0.03))
     vol_of_vol_threshold = float(risk_cfg.get("vol_of_vol_threshold", 0.03))
     vol_of_vol_scale = float(risk_cfg.get("vol_of_vol_scale", 0.7))
     rs_top_n = int(strategy_cfg.get("relative_strength_top_n", 0))
@@ -641,9 +905,9 @@ def run_backtest(
     )
     sleeves_cfg = strategy_cfg.get("sleeves", {}) if isinstance(strategy_cfg, dict) else {}
     sleeves_enabled = bool(sleeves_cfg.get("enabled", True))
-    core_budget = _clamp(float(sleeves_cfg.get("core_budget", 0.90)), 0.88, 0.94)
-    alpha_budget = _clamp(float(sleeves_cfg.get("alpha_budget", 0.08)), 0.05, 0.10)
-    lottery_budget = _clamp(float(sleeves_cfg.get("lottery_budget", 0.02)), 0.00, 0.02)
+    core_budget = _clamp(float(sleeves_cfg.get("core_budget", 0.96)), 0.70, 1.00)
+    alpha_budget = _clamp(float(sleeves_cfg.get("alpha_budget", 0.04)), 0.00, 0.30)
+    lottery_budget = _clamp(float(sleeves_cfg.get("lottery_budget", 0.00)), 0.00, 0.10)
     core_loss_scale = _clamp(float(sleeves_cfg.get("core_loss_scale", 0.50)), 0.10, 1.00)
     lottery_top_n = int(max(1, sleeves_cfg.get("lottery_top_n", 3)))
     lottery_min_signal = float(sleeves_cfg.get("lottery_min_signal", 0.35))
@@ -788,10 +1052,33 @@ def run_backtest(
     backtester = Backtester(initial_capital=initial_capital)
 
     bench_cfg = settings.get("benchmarks", {})
-    market_benchmark = bench_cfg.get("market", "SPY")
-    quant_benchmark = bench_cfg.get("quant_composite", ["QQQ", "IWM"])
+    market_benchmark = str(bench_cfg.get("market", "SPY")).upper()
+    quant_raw = bench_cfg.get("quant_composite", ["QQQ", "IWM"])
+    if isinstance(quant_raw, list):
+        quant_benchmark = [str(s).upper() for s in quant_raw if str(s).strip()]
+    elif quant_raw:
+        quant_benchmark = [str(quant_raw).upper()]
+    else:
+        quant_benchmark = []
+
+    if anchor_core_to_quant and quant_benchmark:
+        eq_w = 1.0 / len(quant_benchmark)
+        core_mix = {sym: eq_w for sym in quant_benchmark}
+        if verbose:
+            print(f"Core sleeve anchored to quant composite: {core_mix}")
+
+    symbols = _augment_symbols_with_benchmarks(
+        symbols=symbols,
+        core_mix=core_mix,
+        market_benchmark=market_benchmark,
+        quant_benchmark=quant_benchmark,
+    )
+    reserved_benchmark_symbols = set(core_mix.keys()) | set(quant_benchmark) | {
+        market_benchmark
+    }
     market_df = None
     market_trend = None
+    quant_returns_control = None
     try:
         market_df = collector.fetch_ohlcv(market_benchmark, start_date, end_date)
         m_close = market_df["close"]
@@ -800,6 +1087,13 @@ def run_backtest(
     except Exception:
         market_df = None
         market_trend = None
+    if quant_benchmark:
+        quant_returns_control = _fetch_composite_returns(
+            collector=collector,
+            symbols=quant_benchmark,
+            start_date=start_date,
+            end_date=end_date,
+        )
 
     # Collect data
     if verbose:
@@ -916,7 +1210,9 @@ def run_backtest(
             adv_window=liquid_adv_window,
             min_history=liquid_min_history,
         )
-        selected_set = set(selected)
+        selected_set = set(selected) | {
+            sym for sym in reserved_benchmark_symbols if sym in raw_featured
+        }
         raw_featured = {
             sym: df for sym, df in raw_featured.items() if sym in selected_set
         }
@@ -940,6 +1236,21 @@ def run_backtest(
     if not data:
         return {"error": "No data collected"}
 
+    if (market_df is None or market_df.empty) and market_benchmark in data:
+        market_df = data[market_benchmark]
+        try:
+            m_close = pd.to_numeric(market_df["close"], errors="coerce")
+            m_ma = m_close.rolling(200).mean()
+            market_trend = m_close.shift(1) > m_ma.shift(1)
+        except Exception:
+            market_trend = None
+
+    if quant_returns_control is None or quant_returns_control.empty:
+        quant_returns_control = _composite_returns_from_frames(
+            frames=data,
+            symbols=quant_benchmark,
+        )
+
     if verbose:
         print(f"\nRunning backtest...")
 
@@ -959,6 +1270,8 @@ def run_backtest(
         "loss_stop_active": False,
         "lottery_entry_price": {},
         "lottery_blocked_day": {},
+        "alpha_scale_last": 1.0,
+        "alpha_scale_history": [],
     }
 
     # Dynamic drawdown control — soft scaling only, no circuit breaker.
@@ -1189,6 +1502,10 @@ def run_backtest(
             cap = min(cap, dd_leverage_cap_critical * faster_derisk_critical_mult)
         if not market_risk_on:
             cap = min(cap, market_off_leverage_cap * faster_derisk_warning_mult)
+        if anchor_core_to_quant and not loss_status["stop_active"]:
+            cap = max(cap, min(max_leverage, core_budget))
+        if anchor_core_to_quant and not loss_status["stop_active"]:
+            cap = max(cap, min(max_leverage, core_budget))
 
         if sleeves_enabled:
             today_key = timestamp.date().isoformat()
@@ -1213,6 +1530,44 @@ def run_backtest(
             alpha_budget_eff = 0.0 if loss_status["stop_active"] else alpha_budget
             lottery_budget_eff = 0.0 if loss_status["stop_active"] else lottery_budget
 
+            alpha_scale = 1.0
+            if (
+                alpha_budget_eff > 0
+                and alpha_deploy_requires_relative_edge
+                and quant_returns_control is not None
+                and not quant_returns_control.empty
+            ):
+                edge = _rolling_relative_edge(
+                    equity_curve=bt.equity_curve[-(max(alpha_edge_lookback_days, 20) + 10) :],
+                    benchmark_returns=quant_returns_control,
+                    asof=timestamp,
+                    lookback_days=alpha_edge_lookback_days,
+                )
+                if bool(edge.get("available", False)):
+                    info_ratio = float(edge.get("information_ratio", 0.0))
+                    excess_total = float(edge.get("excess_total_return", 0.0))
+                    info_den = max(alpha_recovery_info - alpha_info_floor, 1e-6)
+                    excess_den = max(alpha_recovery_excess - alpha_excess_floor, 1e-6)
+                    info_score = float(
+                        np.clip((info_ratio - alpha_info_floor) / info_den, 0.0, 1.0)
+                    )
+                    excess_score = float(
+                        np.clip(
+                            (excess_total - alpha_excess_floor) / excess_den, 0.0, 1.0
+                        )
+                    )
+                    alpha_scale = float(
+                        alpha_min_scale
+                        + (1.0 - alpha_min_scale) * (0.5 * info_score + 0.5 * excess_score)
+                    )
+                else:
+                    alpha_scale = float(alpha_min_scale)
+
+            alpha_budget_eff *= alpha_scale
+            lottery_budget_eff *= alpha_scale
+            state["alpha_scale_last"] = float(alpha_scale)
+            state.setdefault("alpha_scale_history", []).append(float(alpha_scale))
+
             core_targets = _core_targets_from_mix(
                 bars=bars,
                 core_mix=core_mix,
@@ -1224,6 +1579,51 @@ def run_backtest(
                 if s not in core_mix
                 and float(signal_confidences.get(s, 0.0)) >= alpha_min_confidence
             }
+
+            if core_budget_eff > 0 and not core_targets:
+                fallback_anchors = {}
+                for sym in list(quant_benchmark) + [market_benchmark]:
+                    bar = bars.get(sym)
+                    if bar is None:
+                        continue
+                    px = float(bar.get("open", bar.get("close", 0.0)) or 0.0)
+                    if px > 0:
+                        fallback_anchors[sym] = 1.0
+                if fallback_anchors:
+                    core_targets = _normalize_weights(
+                        fallback_anchors,
+                        budget=core_budget_eff,
+                        long_only=True,
+                        max_abs_per_symbol=max_position,
+                    )
+
+            if core_budget_eff > 0 and not core_targets:
+                fallback_from_alpha = {
+                    s: max(float(w), 0.0)
+                    for s, w in alpha_candidates.items()
+                    if float(w) > 0
+                }
+                if fallback_from_alpha:
+                    core_targets = _normalize_weights(
+                        fallback_from_alpha,
+                        budget=core_budget_eff,
+                        long_only=True,
+                        max_abs_per_symbol=max_position,
+                    )
+
+            if core_budget_eff > 0 and not core_targets:
+                core_targets = _fallback_core_targets_from_bars(
+                    bars=bars,
+                    core_budget=core_budget_eff,
+                    max_abs_per_symbol=max_position,
+                    top_n=12,
+                )
+
+            if core_targets:
+                alpha_candidates = {
+                    s: w for s, w in alpha_candidates.items() if s not in core_targets
+                }
+
             alpha_targets = _normalize_weights(
                 alpha_candidates,
                 budget=alpha_budget_eff,
@@ -1285,8 +1685,30 @@ def run_backtest(
 
         total_abs = sum(abs(w) for w in target_positions.values())
         if total_abs > cap and total_abs > 0:
-            scale = cap / total_abs
-            target_positions = {s: float(w * scale) for s, w in target_positions.items()}
+            if sleeves_enabled:
+                core_symbols = set(core_mix.keys())
+                core_part = {
+                    s: float(w) for s, w in target_positions.items() if s in core_symbols
+                }
+                sat_part = {
+                    s: float(w) for s, w in target_positions.items() if s not in core_symbols
+                }
+                core_abs = sum(abs(w) for w in core_part.values())
+                sat_abs = sum(abs(w) for w in sat_part.values())
+                if core_abs >= cap and core_abs > 0:
+                    c_scale = cap / core_abs
+                    target_positions = {s: float(w * c_scale) for s, w in core_part.items()}
+                else:
+                    sat_budget = max(cap - core_abs, 0.0)
+                    if sat_abs > 0:
+                        s_scale = sat_budget / sat_abs
+                        sat_part = {s: float(w * s_scale) for s, w in sat_part.items()}
+                    else:
+                        sat_part = {}
+                    target_positions = _combine_targets(core_part, sat_part)
+            else:
+                scale = cap / total_abs
+                target_positions = {s: float(w * scale) for s, w in target_positions.items()}
 
         equity = bt._total_equity()
         all_symbols = set(target_positions.keys()) | set(bt.positions.keys())
@@ -1328,19 +1750,23 @@ def run_backtest(
 
     # Extended metrics and gating
     def _returns(df: pd.DataFrame) -> pd.Series:
-        return df["close"].pct_change().dropna()
+        out = df["close"].pct_change(fill_method=None).dropna()
+        return _normalize_return_index(out)
 
     market_returns = None
-    quant_returns = None
+    quant_returns = quant_returns_control
 
     try:
         if market_df is None:
             market_df = collector.fetch_ohlcv(market_benchmark, start_date, end_date)
         market_returns = _returns(market_df)
     except Exception:
-        market_returns = None
+        market_returns = _composite_returns_from_frames(
+            frames=data,
+            symbols=[market_benchmark],
+        )
 
-    if isinstance(quant_benchmark, list) and quant_benchmark:
+    if quant_returns is None and quant_benchmark:
         returns_list = []
         for sym in quant_benchmark:
             try:
@@ -1350,6 +1776,11 @@ def run_backtest(
                 continue
         if returns_list:
             quant_returns = pd.concat(returns_list, axis=1).mean(axis=1).dropna()
+        if quant_returns is None or quant_returns.empty:
+            quant_returns = _composite_returns_from_frames(
+                frames=data,
+                symbols=quant_benchmark,
+            )
 
     extended_metrics = compute_metrics(
         backtester.equity_curve,
@@ -1369,6 +1800,13 @@ def run_backtest(
     metrics["sleeve_core_budget"] = float(core_budget)
     metrics["sleeve_alpha_budget"] = float(alpha_budget)
     metrics["sleeve_lottery_budget"] = float(lottery_budget)
+    alpha_hist = state.get("alpha_scale_history", [])
+    if alpha_hist:
+        metrics["alpha_scale_last"] = float(alpha_hist[-1])
+        metrics["alpha_scale_avg"] = float(np.mean(alpha_hist))
+    else:
+        metrics["alpha_scale_last"] = 1.0
+        metrics["alpha_scale_avg"] = 1.0
     metrics["max_daily_loss_limit"] = float(max_daily_loss)
     metrics["max_weekly_loss_limit"] = float(max_weekly_loss)
 
@@ -1384,7 +1822,8 @@ def run_backtest(
     )
 
     if quant_returns is not None and not quant_returns.empty:
-        strategy_returns = backtester.get_equity_series().pct_change().dropna()
+        strategy_returns = backtester.get_equity_series().pct_change(fill_method=None).dropna()
+        strategy_returns = _normalize_return_index(strategy_returns)
         strat_aligned, quant_aligned = strategy_returns.align(quant_returns, join="inner")
         if not strat_aligned.empty:
             rel_metrics = compute_metrics_from_returns(
@@ -1414,7 +1853,7 @@ def run_backtest(
     except Exception:
         pass
 
-    if isinstance(quant_benchmark, list) and quant_benchmark:
+    if quant_benchmark:
         quant_funds = []
         for sym in quant_benchmark:
             try:
@@ -1598,7 +2037,8 @@ def run_backtest(
         metrics["mcpt_pass_stage2_0_05"] = bool(mcpt_results["passes_stage2_0_05"])
 
         if quant_returns is not None and not quant_returns.empty:
-            strategy_returns = equity_series.pct_change().dropna()
+            strategy_returns = equity_series.pct_change(fill_method=None).dropna()
+            strategy_returns = _normalize_return_index(strategy_returns)
             rolling_oos = _rolling_oos_vs_benchmark(
                 strategy_returns=strategy_returns,
                 benchmark_returns=quant_returns,
@@ -1701,6 +2141,18 @@ def run_paper(
     signal_scale = float(strategy_cfg.get("signal_scale", 1.0))
     min_long_signal = float(strategy_cfg.get("min_long_signal", 0.0))
     market_off_scale = float(strategy_cfg.get("market_off_scale", 1.0))
+    anchor_core_to_quant = bool(
+        strategy_cfg.get("anchor_core_to_quant_composite", True)
+    )
+    alpha_deploy_requires_relative_edge = bool(
+        strategy_cfg.get("alpha_deploy_requires_relative_edge", True)
+    )
+    alpha_edge_lookback_days = int(strategy_cfg.get("alpha_edge_lookback_days", 63))
+    alpha_min_scale = _clamp(float(strategy_cfg.get("alpha_min_scale", 0.05)), 0.0, 1.0)
+    alpha_info_floor = float(strategy_cfg.get("alpha_info_floor", 0.0))
+    alpha_excess_floor = float(strategy_cfg.get("alpha_excess_floor", 0.0))
+    alpha_recovery_info = float(strategy_cfg.get("alpha_recovery_info", 0.25))
+    alpha_recovery_excess = float(strategy_cfg.get("alpha_recovery_excess", 0.03))
     rs_top_n = int(strategy_cfg.get("relative_strength_top_n", 0))
     rs_min_mom = float(strategy_cfg.get("relative_strength_min_mom", 0.0))
     use_relative_strength = bool(strategy_cfg.get("use_relative_strength", False))
@@ -1715,9 +2167,9 @@ def run_paper(
     )
     sleeves_cfg = strategy_cfg.get("sleeves", {}) if isinstance(strategy_cfg, dict) else {}
     sleeves_enabled = bool(sleeves_cfg.get("enabled", True))
-    core_budget = _clamp(float(sleeves_cfg.get("core_budget", 0.90)), 0.88, 0.94)
-    alpha_budget = _clamp(float(sleeves_cfg.get("alpha_budget", 0.08)), 0.05, 0.10)
-    lottery_budget = _clamp(float(sleeves_cfg.get("lottery_budget", 0.02)), 0.00, 0.02)
+    core_budget = _clamp(float(sleeves_cfg.get("core_budget", 0.96)), 0.70, 1.00)
+    alpha_budget = _clamp(float(sleeves_cfg.get("alpha_budget", 0.04)), 0.00, 0.30)
+    lottery_budget = _clamp(float(sleeves_cfg.get("lottery_budget", 0.00)), 0.00, 0.10)
     core_loss_scale = _clamp(float(sleeves_cfg.get("core_loss_scale", 0.50)), 0.10, 1.00)
     lottery_top_n = int(max(1, sleeves_cfg.get("lottery_top_n", 3)))
     lottery_min_signal = float(sleeves_cfg.get("lottery_min_signal", 0.35))
@@ -1844,9 +2296,33 @@ def run_paper(
     paper_trader = PaperTrader(initial_capital=initial_capital, paper_bars=paper_bars)
 
     bench_cfg = settings.get("benchmarks", {})
-    market_benchmark = bench_cfg.get("market", "SPY")
+    market_benchmark = str(bench_cfg.get("market", "SPY")).upper()
+    quant_raw = bench_cfg.get("quant_composite", ["QQQ", "IWM"])
+    if isinstance(quant_raw, list):
+        quant_benchmark = [str(s).upper() for s in quant_raw if str(s).strip()]
+    elif quant_raw:
+        quant_benchmark = [str(quant_raw).upper()]
+    else:
+        quant_benchmark = []
+
+    if anchor_core_to_quant and quant_benchmark:
+        eq_w = 1.0 / len(quant_benchmark)
+        core_mix = {sym: eq_w for sym in quant_benchmark}
+        if verbose:
+            print(f"Core sleeve anchored to quant composite: {core_mix}")
+
+    symbols = _augment_symbols_with_benchmarks(
+        symbols=symbols,
+        core_mix=core_mix,
+        market_benchmark=market_benchmark,
+        quant_benchmark=quant_benchmark,
+    )
+    reserved_benchmark_symbols = set(core_mix.keys()) | set(quant_benchmark) | {
+        market_benchmark
+    }
     market_df = None
     market_trend = None
+    quant_returns_control = None
     try:
         market_df = collector.fetch_ohlcv(market_benchmark, start_date, end_date)
         m_close = market_df["close"]
@@ -1855,6 +2331,13 @@ def run_paper(
     except Exception:
         market_df = None
         market_trend = None
+    if quant_benchmark:
+        quant_returns_control = _fetch_composite_returns(
+            collector=collector,
+            symbols=quant_benchmark,
+            start_date=start_date,
+            end_date=end_date,
+        )
 
     if verbose:
         print("Collecting price data...")
@@ -1957,7 +2440,9 @@ def run_paper(
                 adv_window=liquid_adv_window,
                 min_history=liquid_min_history,
             )
-            selected_set = set(selected)
+            selected_set = set(selected) | {
+                sym for sym in reserved_benchmark_symbols if sym in data
+            }
             data = {sym: df for sym, df in data.items() if sym in selected_set}
             if verbose:
                 print(
@@ -1967,6 +2452,21 @@ def run_paper(
 
     if not data:
         return {"error": "No data collected"}
+
+    if (market_df is None or market_df.empty) and market_benchmark in data:
+        market_df = data[market_benchmark]
+        try:
+            m_close = pd.to_numeric(market_df["close"], errors="coerce")
+            m_ma = m_close.rolling(200).mean()
+            market_trend = m_close.shift(1) > m_ma.shift(1)
+        except Exception:
+            market_trend = None
+
+    if quant_returns_control is None or quant_returns_control.empty:
+        quant_returns_control = _composite_returns_from_frames(
+            frames=data,
+            symbols=quant_benchmark,
+        )
 
     if verbose:
         print(f"\nRunning paper trading simulation...")
@@ -1986,6 +2486,8 @@ def run_paper(
         "loss_stop_active": False,
         "lottery_entry_price": {},
         "lottery_blocked_day": {},
+        "alpha_scale_last": 1.0,
+        "alpha_scale_history": [],
     }
     dd_controller = DrawdownController(
         warning_threshold=dd_warning,
@@ -2193,6 +2695,44 @@ def run_paper(
             alpha_budget_eff = 0.0 if loss_status["stop_active"] else alpha_budget
             lottery_budget_eff = 0.0 if loss_status["stop_active"] else lottery_budget
 
+            alpha_scale = 1.0
+            if (
+                alpha_budget_eff > 0
+                and alpha_deploy_requires_relative_edge
+                and quant_returns_control is not None
+                and not quant_returns_control.empty
+            ):
+                edge = _rolling_relative_edge(
+                    equity_curve=bt.equity_curve[-(max(alpha_edge_lookback_days, 20) + 10) :],
+                    benchmark_returns=quant_returns_control,
+                    asof=timestamp,
+                    lookback_days=alpha_edge_lookback_days,
+                )
+                if bool(edge.get("available", False)):
+                    info_ratio = float(edge.get("information_ratio", 0.0))
+                    excess_total = float(edge.get("excess_total_return", 0.0))
+                    info_den = max(alpha_recovery_info - alpha_info_floor, 1e-6)
+                    excess_den = max(alpha_recovery_excess - alpha_excess_floor, 1e-6)
+                    info_score = float(
+                        np.clip((info_ratio - alpha_info_floor) / info_den, 0.0, 1.0)
+                    )
+                    excess_score = float(
+                        np.clip(
+                            (excess_total - alpha_excess_floor) / excess_den, 0.0, 1.0
+                        )
+                    )
+                    alpha_scale = float(
+                        alpha_min_scale
+                        + (1.0 - alpha_min_scale) * (0.5 * info_score + 0.5 * excess_score)
+                    )
+                else:
+                    alpha_scale = float(alpha_min_scale)
+
+            alpha_budget_eff *= alpha_scale
+            lottery_budget_eff *= alpha_scale
+            state["alpha_scale_last"] = float(alpha_scale)
+            state.setdefault("alpha_scale_history", []).append(float(alpha_scale))
+
             core_targets = _core_targets_from_mix(
                 bars=bars,
                 core_mix=core_mix,
@@ -2204,6 +2744,51 @@ def run_paper(
                 if s not in core_mix
                 and float(signal_confidences.get(s, 0.0)) >= alpha_min_confidence
             }
+
+            if core_budget_eff > 0 and not core_targets:
+                fallback_anchors = {}
+                for sym in list(quant_benchmark) + [market_benchmark]:
+                    bar = bars.get(sym)
+                    if bar is None:
+                        continue
+                    px = float(bar.get("open", bar.get("close", 0.0)) or 0.0)
+                    if px > 0:
+                        fallback_anchors[sym] = 1.0
+                if fallback_anchors:
+                    core_targets = _normalize_weights(
+                        fallback_anchors,
+                        budget=core_budget_eff,
+                        long_only=True,
+                        max_abs_per_symbol=max_position,
+                    )
+
+            if core_budget_eff > 0 and not core_targets:
+                fallback_from_alpha = {
+                    s: max(float(w), 0.0)
+                    for s, w in alpha_candidates.items()
+                    if float(w) > 0
+                }
+                if fallback_from_alpha:
+                    core_targets = _normalize_weights(
+                        fallback_from_alpha,
+                        budget=core_budget_eff,
+                        long_only=True,
+                        max_abs_per_symbol=max_position,
+                    )
+
+            if core_budget_eff > 0 and not core_targets:
+                core_targets = _fallback_core_targets_from_bars(
+                    bars=bars,
+                    core_budget=core_budget_eff,
+                    max_abs_per_symbol=max_position,
+                    top_n=12,
+                )
+
+            if core_targets:
+                alpha_candidates = {
+                    s: w for s, w in alpha_candidates.items() if s not in core_targets
+                }
+
             alpha_targets = _normalize_weights(
                 alpha_candidates,
                 budget=alpha_budget_eff,
@@ -2265,8 +2850,30 @@ def run_paper(
 
         total_abs = sum(abs(w) for w in target_positions.values())
         if total_abs > cap and total_abs > 0:
-            scale = cap / total_abs
-            target_positions = {s: float(w * scale) for s, w in target_positions.items()}
+            if sleeves_enabled:
+                core_symbols = set(core_mix.keys())
+                core_part = {
+                    s: float(w) for s, w in target_positions.items() if s in core_symbols
+                }
+                sat_part = {
+                    s: float(w) for s, w in target_positions.items() if s not in core_symbols
+                }
+                core_abs = sum(abs(w) for w in core_part.values())
+                sat_abs = sum(abs(w) for w in sat_part.values())
+                if core_abs >= cap and core_abs > 0:
+                    c_scale = cap / core_abs
+                    target_positions = {s: float(w * c_scale) for s, w in core_part.items()}
+                else:
+                    sat_budget = max(cap - core_abs, 0.0)
+                    if sat_abs > 0:
+                        s_scale = sat_budget / sat_abs
+                        sat_part = {s: float(w * s_scale) for s, w in sat_part.items()}
+                    else:
+                        sat_part = {}
+                    target_positions = _combine_targets(core_part, sat_part)
+            else:
+                scale = cap / total_abs
+                target_positions = {s: float(w * scale) for s, w in target_positions.items()}
 
         equity = bt._total_equity()
         all_symbols = set(target_positions.keys()) | set(bt.positions.keys())
@@ -2305,6 +2912,13 @@ def run_paper(
         metrics["sleeve_core_budget"] = float(core_budget)
         metrics["sleeve_alpha_budget"] = float(alpha_budget)
         metrics["sleeve_lottery_budget"] = float(lottery_budget)
+        alpha_hist = state.get("alpha_scale_history", [])
+        if alpha_hist:
+            metrics["alpha_scale_last"] = float(alpha_hist[-1])
+            metrics["alpha_scale_avg"] = float(np.mean(alpha_hist))
+        else:
+            metrics["alpha_scale_last"] = 1.0
+            metrics["alpha_scale_avg"] = 1.0
         metrics["max_daily_loss_limit"] = float(max_daily_loss)
         metrics["max_weekly_loss_limit"] = float(max_weekly_loss)
 

@@ -140,19 +140,19 @@ risk:
   max_weekly_loss: 0.07
   var_confidence: 0.95
   kelly_fraction: 0.6  # modest boost to sizing
-  target_volatility: 0.11
+  target_volatility: 0.15
   vol_of_vol_threshold: 0.03
   vol_of_vol_scale: 0.6
-  dd_warning: 0.12
-  dd_critical: 0.18
-  dd_circuit_breaker: 0.25
-  dd_max_limit: 0.30
-  dd_min_exposure: 0.10
-  dd_leverage_cap_warning: 0.80
-  dd_leverage_cap_critical: 0.60
-  market_off_leverage_cap: 0.70
-  faster_derisk_warning_mult: 0.70
-  faster_derisk_critical_mult: 0.50
+  dd_warning: 0.15
+  dd_critical: 0.25
+  dd_circuit_breaker: 0.35
+  dd_max_limit: 0.45
+  dd_min_exposure: 0.20
+  dd_leverage_cap_warning: 1.00
+  dd_leverage_cap_critical: 0.90
+  market_off_leverage_cap: 1.00
+  faster_derisk_warning_mult: 0.90
+  faster_derisk_critical_mult: 0.80
 
 # Strategy
 strategy:
@@ -165,32 +165,39 @@ strategy:
   momentum_bottom_pct: 35
   relative_strength_top_n: 60
   relative_strength_min_mom: -0.02
-  use_relative_strength: true
+  use_relative_strength: false
   liquid_subset_size: 200
   liquid_adv_window: 20
   liquid_min_history: 120
   liquid_for_full_only: true
   long_only: true
   risk_off_cash: false
-  signal_scale: 1.9
-  min_long_signal: 0.25
-  market_off_scale: 0.60
+  signal_scale: 1.2
+  min_long_signal: 0.10
+  market_off_scale: 0.80
+  anchor_core_to_quant_composite: true
+  alpha_deploy_requires_relative_edge: true
+  alpha_edge_lookback_days: 63
+  alpha_min_scale: 0.0
+  alpha_info_floor: 0.0
+  alpha_excess_floor: 0.0
+  alpha_recovery_info: 0.25
+  alpha_recovery_excess: 0.03
   sleeves:
     enabled: true
-    core_budget: 0.92
-    alpha_budget: 0.07
-    lottery_budget: 0.01
-    core_loss_scale: 0.45
-    alpha_min_confidence: 0.05
+    core_budget: 0.98
+    alpha_budget: 0.02
+    lottery_budget: 0.00
+    core_loss_scale: 1.00
+    alpha_min_confidence: 0.08
     lottery_top_n: 3
     lottery_min_signal: 0.35
     lottery_min_confidence: 0.25
     lottery_stop_loss: 0.08
     lottery_max_per_symbol: 0.0075
     core_mix:
-      SPY: 0.50
-      QQQ: 0.30
-      IWM: 0.20
+      QQQ: 0.50
+      IWM: 0.50
 
 # Technical Indicators
 indicators:

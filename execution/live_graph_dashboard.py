@@ -250,9 +250,9 @@ def _render_risk_panel(status: dict) -> None:
     c1.metric("VaR", _fmt_pct(risk.get("var", 0.0) * 100.0))
     c2.metric("CVaR", _fmt_pct(risk.get("cvar", 0.0) * 100.0))
     c3.metric("Drawdown", _fmt_pct(risk.get("drawdown", 0.0) * 100.0))
-    c4.metric("Ulcer", f\"{float(risk.get('ulcer_index', 0.0)):.4f}\")
-    c5.metric("Net Exp", f\"{float(risk.get('net_exposure', 0.0)):.3f}\")
-    c6.metric("Gross Exp", f\"{float(risk.get('gross_exposure', 0.0)):.3f}\")
+    c4.metric("Ulcer", f"{float(risk.get('ulcer_index', 0.0)):.4f}")
+    c5.metric("Net Exp", f"{float(risk.get('net_exposure', 0.0)):.3f}")
+    c6.metric("Gross Exp", f"{float(risk.get('gross_exposure', 0.0)):.3f}")
 
 
 def _render_allocator_panel(status: dict) -> None:
@@ -261,8 +261,8 @@ def _render_allocator_panel(status: dict) -> None:
     scores = status.get("allocator_stack_scores") or {}
     c1, c2, c3 = st.columns(3)
     c1.metric("Chosen Stack", str(chosen))
-    c2.metric("Static Score", f\"{float(scores.get('static', 0.0)):.4f}\" if isinstance(scores, dict) else "n/a")
-    c3.metric("Regime Score", f\"{float(scores.get('regime', 0.0)):.4f}\" if isinstance(scores, dict) else "n/a")
+    c2.metric("Static Score", f"{float(scores.get('static', 0.0)):.4f}" if isinstance(scores, dict) else "n/a")
+    c3.metric("Regime Score", f"{float(scores.get('regime', 0.0)):.4f}" if isinstance(scores, dict) else "n/a")
 
 
 def _render_provider_panel(status: dict) -> None:

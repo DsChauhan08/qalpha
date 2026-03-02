@@ -685,7 +685,7 @@ def run_backtest(
     )
 
     # Initialize components
-    collector = DataCollector()
+    collector = DataCollector(runtime_mode="backtest", config_path=config_path)
     feature_gen = TechnicalFeatureGenerator()
     cleaner = DataCleaner()
     imputer = MissingValueImputer()
@@ -1770,7 +1770,7 @@ def run_paper(
             )
         paper_bars = min_paper_bars
 
-    collector = DataCollector()
+    collector = DataCollector(runtime_mode="paper", config_path=None)
     feature_gen = TechnicalFeatureGenerator()
     cleaner = DataCleaner()
     imputer = MissingValueImputer()

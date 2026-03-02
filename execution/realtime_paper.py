@@ -32,7 +32,9 @@ from quantum_alpha.data.collectors.market_data import DataCollector
 from quantum_alpha.data.collectors.news_collector import NewsCollector
 from quantum_alpha.data.preprocessing.cleaners import DataCleaner
 from quantum_alpha.data.preprocessing.imputers import MissingValueImputer
+from quantum_alpha.execution.openbb_api_manager import OpenBBAPIManager
 from quantum_alpha.features.technical.indicators import TechnicalFeatureGenerator
+from quantum_alpha.portfolio import PortfolioAllocatorEngine
 from quantum_alpha.strategy.news_lstm_strategy import NewsLSTMStrategy
 from quantum_alpha.strategy.signals import EnhancedCompositeStrategy
 
@@ -75,6 +77,13 @@ class SessionConfig:
     min_commission: float
     min_trade_notional: float
     output_dir: Path
+    config_path: Optional[str] = None
+    openbb_enabled: bool = False
+    openbb_manage_api_process: bool = True
+    openbb_api_base_url: str = "http://127.0.0.1:6900"
+    openbb_api_start_cmd: Optional[str] = None
+    openbb_api_startup_timeout_s: float = 20.0
+    portfolio_allocator_cfg: Optional[Dict] = None
 
 
 class PaperAccount:
@@ -327,9 +336,13 @@ def _start_live_dashboard(
 
 def _build_config(args: argparse.Namespace) -> SessionConfig:
     settings = _load_settings(args.config)
+    data_cfg = settings.get("data", {})
     risk_cfg = settings.get("risk", {})
     strategy_cfg = settings.get("strategy", {})
     backtest_cfg = settings.get("backtest", {})
+    openbb_cfg = data_cfg.get("openbb", {}) if isinstance(data_cfg, dict) else {}
+    openbb_api_cfg = openbb_cfg.get("api", {}) if isinstance(openbb_cfg, dict) else {}
+    portfolio_allocator_cfg = settings.get("portfolio_allocator", {})
 
     symbols, full_requested = _resolve_symbols(args.symbols, settings)
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
@@ -410,6 +423,13 @@ def _build_config(args: argparse.Namespace) -> SessionConfig:
         ),
         min_trade_notional=float(args.min_trade_notional),
         output_dir=out_dir,
+        config_path=args.config,
+        openbb_enabled=bool(openbb_cfg.get("enabled", False)),
+        openbb_manage_api_process=bool(openbb_api_cfg.get("manage_process", True)),
+        openbb_api_base_url=str(openbb_api_cfg.get("base_url", "http://127.0.0.1:6900")),
+        openbb_api_start_cmd=os.getenv("OPENBB_API_START_CMD"),
+        openbb_api_startup_timeout_s=float(openbb_api_cfg.get("startup_timeout_s", 20.0)),
+        portfolio_allocator_cfg=portfolio_allocator_cfg if isinstance(portfolio_allocator_cfg, dict) else {},
     )
 
 
@@ -536,11 +556,62 @@ def _normalize_target_weights(
     return target_weights
 
 
+def _portfolio_allocate(
+    allocator: Optional[PortfolioAllocatorEngine],
+    raw_scores: Dict[str, float],
+    featured: Dict[str, pd.DataFrame],
+    cfg: SessionConfig,
+    timestamp: Optional[datetime] = None,
+) -> tuple[Dict[str, float], Dict[str, object]]:
+    if allocator is None:
+        return _normalize_target_weights(raw_scores, list(featured.keys()), cfg), {}
+
+    constraint_overrides: Dict[str, object] = {
+        "long_short_enabled": not cfg.long_only,
+        "max_position_abs": float(cfg.max_position_size),
+        "gross_max": float(cfg.max_portfolio_leverage),
+    }
+    if cfg.long_only:
+        constraint_overrides["net_min"] = 0.0
+        constraint_overrides["net_max"] = float(cfg.max_portfolio_leverage)
+
+    try:
+        output = allocator.allocate(
+            signal_scores=raw_scores,
+            featured=featured,
+            timestamp=timestamp,
+            constraint_overrides=constraint_overrides,
+        )
+        weights = {str(k): float(v) for k, v in output.weights.items()}
+        for sym in featured.keys():
+            weights.setdefault(sym, 0.0)
+        diagnostics = {
+            "chosen_stack": output.chosen_stack,
+            "risk_snapshot": {
+                "var": float(output.risk_snapshot.var),
+                "cvar": float(output.risk_snapshot.cvar),
+                "drawdown": float(output.risk_snapshot.drawdown),
+                "ulcer_index": float(output.risk_snapshot.ulcer_index),
+                "vol_estimates": output.risk_snapshot.vol_estimates,
+                "net_exposure": float(output.risk_snapshot.net_exposure),
+                "gross_exposure": float(output.risk_snapshot.gross_exposure),
+            },
+            "diagnostics": output.diagnostics,
+        }
+        return weights, diagnostics
+    except Exception as exc:
+        # Keep trading continuity if allocator stack fails.
+        fallback = _normalize_target_weights(raw_scores, list(featured.keys()), cfg)
+        return fallback, {"allocator_error": str(exc)}
+
+
 def _compute_target_weights_enhanced(
     strategy: EnhancedCompositeStrategy,
     featured: Dict[str, pd.DataFrame],
     cfg: SessionConfig,
-) -> tuple[Dict[str, float], List[Dict]]:
+    allocator: Optional[PortfolioAllocatorEngine] = None,
+    timestamp: Optional[datetime] = None,
+) -> tuple[Dict[str, float], List[Dict], Dict[str, object]]:
     strategy.fit_cross_asset(featured)
 
     raw_scores: Dict[str, float] = {}
@@ -576,8 +647,14 @@ def _compute_target_weights_enhanced(
         )
 
     decisions.sort(key=lambda x: abs(float(x.get("signal", 0.0))), reverse=True)
-    weights = _normalize_target_weights(raw_scores, list(featured.keys()), cfg)
-    return weights, decisions[:20]
+    weights, alloc_diag = _portfolio_allocate(
+        allocator=allocator,
+        raw_scores=raw_scores,
+        featured=featured,
+        cfg=cfg,
+        timestamp=timestamp,
+    )
+    return weights, decisions[:20], alloc_diag
 
 
 def _compute_target_weights_news_lstm(
@@ -586,7 +663,9 @@ def _compute_target_weights_news_lstm(
     cfg: SessionConfig,
     news_cache: Dict[str, List[str]],
     llm_active: bool,
-) -> tuple[Dict[str, float], List[Dict]]:
+    allocator: Optional[PortfolioAllocatorEngine] = None,
+    timestamp: Optional[datetime] = None,
+) -> tuple[Dict[str, float], List[Dict], Dict[str, object]]:
     raw_scores: Dict[str, float] = {}
     decisions: List[Dict] = []
 
@@ -641,8 +720,14 @@ def _compute_target_weights_news_lstm(
             raw_scores[symbol] = float(score)
 
     decisions.sort(key=lambda x: abs(float(x.get("signal", 0.0))), reverse=True)
-    weights = _normalize_target_weights(raw_scores, list(featured.keys()), cfg)
-    return weights, decisions[:20]
+    weights, alloc_diag = _portfolio_allocate(
+        allocator=allocator,
+        raw_scores=raw_scores,
+        featured=featured,
+        cfg=cfg,
+        timestamp=timestamp,
+    )
+    return weights, decisions[:20], alloc_diag
 
 
 def _save_outputs(
@@ -762,11 +847,32 @@ def _append_new_trades(cfg: SessionConfig, trades: List[Dict], from_idx: int) ->
 
 
 def run_realtime_paper(cfg: SessionConfig) -> Dict:
-    collector = DataCollector()
+    collector = DataCollector(
+        runtime_mode="realtime",
+        config_path=cfg.config_path,
+        enable_openbb=cfg.openbb_enabled,
+    )
     cleaner = DataCleaner()
     imputer = MissingValueImputer()
     feature_gen = TechnicalFeatureGenerator()
     news_collector = NewsCollector()
+    allocator = PortfolioAllocatorEngine.from_config(cfg.portfolio_allocator_cfg or {})
+
+    openbb_manager = OpenBBAPIManager(
+        enabled=bool(cfg.openbb_enabled and cfg.openbb_manage_api_process),
+        base_url=str(cfg.openbb_api_base_url),
+        startup_timeout_s=float(cfg.openbb_api_startup_timeout_s),
+        start_cmd=cfg.openbb_api_start_cmd,
+    )
+    if cfg.openbb_enabled and cfg.openbb_manage_api_process:
+        openbb_boot = openbb_manager.start()
+    else:
+        openbb_boot = {
+            "enabled": bool(cfg.openbb_enabled),
+            "started": False,
+            "healthy": bool(openbb_manager.health()) if cfg.openbb_enabled else False,
+            "reason": "manage_process_disabled",
+        }
 
     if cfg.strategy_type == "news_lstm":
         strategy = NewsLSTMStrategy(
@@ -804,6 +910,7 @@ def run_realtime_paper(cfg: SessionConfig) -> Dict:
     latest_decisions: List[Dict] = []
     liquid_symbols_cache: Optional[List[str]] = None
     llm_active_this_cycle = False
+    allocator_diag: Dict[str, object] = {}
 
     _write_live_status(
         cfg,
@@ -820,6 +927,11 @@ def run_realtime_paper(cfg: SessionConfig) -> Dict:
             "llm_enabled": bool(cfg.llm_enabled),
             "llm_active_this_cycle": bool(llm_active_this_cycle),
             "llm_decision_interval_cycles": int(cfg.llm_decision_interval_cycles),
+            "allocator_chosen_stack": None,
+            "risk_snapshot": {},
+            "provider_status": collector.get_provider_diagnostics().get("last_selection", {}),
+            "provider_degraded": False,
+            "openbb_api": openbb_boot,
             "output_dir": str(cfg.output_dir),
             "note": "Session started, waiting for first data collection cycle",
             **_pnl_fields(
@@ -830,149 +942,292 @@ def run_realtime_paper(cfg: SessionConfig) -> Dict:
         },
     )
 
-    while datetime.now(timezone.utc) < session_end:
-        cycle += 1
-        now = datetime.now(timezone.utc)
-        full_scan_cycle = True
-        if (
-            cfg.full_universe_requested
-            and cfg.liquid_subset_size > 0
-            and liquid_symbols_cache
-            and (cycle % cfg.universe_refresh_cycles) != 1
-        ):
-            full_scan_cycle = False
-            symbols_this_cycle = sorted(
-                set(liquid_symbols_cache) | set(account.positions.keys())
+    try:
+        while datetime.now(timezone.utc) < session_end:
+            cycle += 1
+            now = datetime.now(timezone.utc)
+            openbb_health = bool(openbb_manager.health()) if cfg.openbb_enabled else False
+
+            full_scan_cycle = True
+            if (
+                cfg.full_universe_requested
+                and cfg.liquid_subset_size > 0
+                and liquid_symbols_cache
+                and (cycle % cfg.universe_refresh_cycles) != 1
+            ):
+                full_scan_cycle = False
+                symbols_this_cycle = sorted(
+                    set(liquid_symbols_cache) | set(account.positions.keys())
+                )
+            else:
+                symbols_this_cycle = list(cfg.symbols)
+
+            if cfg.strategy_type == "news_lstm":
+                llm_active_this_cycle = _llm_cycle_active(cycle=cycle, cfg=cfg)
+                if hasattr(strategy, "_llm_router") and getattr(strategy, "_llm_router", None):
+                    strategy._llm_router.config.enabled = bool(llm_active_this_cycle)
+            else:
+                llm_active_this_cycle = False
+
+            def _progress_update(
+                completed: int, total: int, featured_count: int, last_symbol: str
+            ) -> None:
+                _write_live_status(
+                    cfg,
+                    {
+                        "status": "running",
+                        "timestamp_utc": str(datetime.now(timezone.utc)),
+                        "equity": account.cash,
+                        "cash": account.cash,
+                        "trades": len(account.trades),
+                        "positions": len(account.positions),
+                        "cycle": cycle,
+                        "strategy_type": cfg.strategy_type,
+                        "llm_enabled": bool(cfg.llm_enabled),
+                        "llm_active_this_cycle": bool(llm_active_this_cycle),
+                        "llm_decision_interval_cycles": int(cfg.llm_decision_interval_cycles),
+                        "symbols_total": total,
+                        "symbols_completed": completed,
+                        "featured_symbols": featured_count,
+                        "last_symbol": last_symbol,
+                        "allocator_chosen_stack": allocator_diag.get("chosen_stack"),
+                        "risk_snapshot": allocator_diag.get("risk_snapshot", {}),
+                        "provider_status": collector.get_provider_diagnostics().get("last_selection", {}),
+                        "openbb_api": {
+                            "enabled": bool(cfg.openbb_enabled),
+                            "healthy": bool(openbb_health),
+                        },
+                        "note": "Collecting market data for current cycle",
+                        **_pnl_fields(
+                            equity=account.cash,
+                            starting_capital=cfg.capital,
+                            previous_equity=previous_equity,
+                        ),
+                    },
+                )
+
+            featured_all = _collect_featured_data(
+                collector=collector,
+                cleaner=cleaner,
+                imputer=imputer,
+                feature_gen=feature_gen,
+                symbols=symbols_this_cycle,
+                end_time=now,
+                lookback_days=cfg.lookback_days,
+                interval=cfg.interval,
+                use_cache=(cfg.interval.lower() == "1d"),
+                progress_callback=_progress_update,
             )
-        else:
-            symbols_this_cycle = list(cfg.symbols)
 
-        if cfg.strategy_type == "news_lstm":
-            llm_active_this_cycle = _llm_cycle_active(cycle=cycle, cfg=cfg)
-            if hasattr(strategy, "_llm_router") and getattr(strategy, "_llm_router", None):
-                strategy._llm_router.config.enabled = bool(llm_active_this_cycle)
-        else:
-            llm_active_this_cycle = False
-
-        def _progress_update(
-            completed: int, total: int, featured_count: int, last_symbol: str
-        ) -> None:
-            _write_live_status(
-                cfg,
-                {
-                    "status": "running",
-                    "timestamp_utc": str(datetime.now(timezone.utc)),
-                    "equity": account.cash,
-                    "cash": account.cash,
-                    "trades": len(account.trades),
-                    "positions": len(account.positions),
-                    "cycle": cycle,
-                    "strategy_type": cfg.strategy_type,
-                    "llm_enabled": bool(cfg.llm_enabled),
-                    "llm_active_this_cycle": bool(llm_active_this_cycle),
-                    "llm_decision_interval_cycles": int(cfg.llm_decision_interval_cycles),
-                    "symbols_total": total,
-                    "symbols_completed": completed,
-                    "featured_symbols": featured_count,
-                    "last_symbol": last_symbol,
-                    "note": "Collecting market data for current cycle",
-                    **_pnl_fields(
-                        equity=account.cash,
-                        starting_capital=cfg.capital,
-                        previous_equity=previous_equity,
-                    ),
-                },
+            provider_status = collector.get_provider_diagnostics().get("last_selection", {})
+            provider_degraded = any(
+                bool(v.get("degraded"))
+                for v in provider_status.values()
+                if isinstance(v, dict)
             )
 
-        featured_all = _collect_featured_data(
-            collector=collector,
-            cleaner=cleaner,
-            imputer=imputer,
-            feature_gen=feature_gen,
-            symbols=symbols_this_cycle,
-            end_time=now,
-            lookback_days=cfg.lookback_days,
-            interval=cfg.interval,
-            use_cache=(cfg.interval.lower() == "1d"),
-            progress_callback=_progress_update,
-        )
+            if not featured_all:
+                _write_live_status(
+                    cfg,
+                    {
+                        "status": "running",
+                        "timestamp_utc": str(datetime.now(timezone.utc)),
+                        "equity": None,
+                        "cash": account.cash,
+                        "trades": len(account.trades),
+                        "positions": len(account.positions),
+                        "strategy_type": cfg.strategy_type,
+                        "llm_enabled": bool(cfg.llm_enabled),
+                        "llm_active_this_cycle": bool(llm_active_this_cycle),
+                        "llm_decision_interval_cycles": int(cfg.llm_decision_interval_cycles),
+                        "provider_status": provider_status,
+                        "provider_degraded": bool(provider_degraded),
+                        "openbb_api": {
+                            "enabled": bool(cfg.openbb_enabled),
+                            "healthy": bool(openbb_health),
+                        },
+                        "note": "No featured data this cycle",
+                        **_pnl_fields(
+                            equity=None,
+                            starting_capital=cfg.capital,
+                            previous_equity=previous_equity,
+                        ),
+                    },
+                )
+                time.sleep(cfg.poll_seconds)
+                continue
 
-        if not featured_all:
-            _write_live_status(
-                cfg,
-                {
-                    "status": "running",
-                    "timestamp_utc": str(datetime.now(timezone.utc)),
-                    "equity": None,
-                    "cash": account.cash,
-                    "trades": len(account.trades),
-                    "positions": len(account.positions),
-                    "strategy_type": cfg.strategy_type,
-                    "llm_enabled": bool(cfg.llm_enabled),
-                    "llm_active_this_cycle": bool(llm_active_this_cycle),
-                    "llm_decision_interval_cycles": int(cfg.llm_decision_interval_cycles),
-                    "note": "No featured data this cycle",
-                    **_pnl_fields(
-                        equity=None,
-                        starting_capital=cfg.capital,
-                        previous_equity=previous_equity,
-                    ),
-                },
+            featured_trade = dict(featured_all)
+            liquid_filtered = False
+            if (
+                cfg.liquid_subset_size > 0
+                and len(featured_trade) > cfg.liquid_subset_size
+                and (cfg.full_universe_requested or not cfg.liquid_for_full_only)
+            ):
+                selected = _select_liquid_subset(
+                    featured_trade,
+                    subset_size=cfg.liquid_subset_size,
+                    adv_window=cfg.liquid_adv_window,
+                    min_history=cfg.liquid_min_history,
+                )
+                selected_set = set(selected)
+                featured_trade = {
+                    sym: df for sym, df in featured_trade.items() if sym in selected_set
+                }
+                liquid_filtered = True
+                liquid_symbols_cache = selected
+            elif (
+                cfg.full_universe_requested
+                and cfg.liquid_subset_size > 0
+                and liquid_symbols_cache
+                and not full_scan_cycle
+            ):
+                selected_set = set(liquid_symbols_cache)
+                featured_trade = {
+                    sym: df for sym, df in featured_trade.items() if sym in selected_set
+                }
+                liquid_filtered = True
+
+            for held_symbol in list(account.positions.keys()):
+                if held_symbol in featured_all and held_symbol not in featured_trade:
+                    featured_trade[held_symbol] = featured_all[held_symbol]
+
+            if not featured_trade:
+                time.sleep(cfg.poll_seconds)
+                continue
+
+            latest_ts = max(df.index[-1] for df in featured_trade.values() if not df.empty)
+            prices = _latest_prices(featured_trade)
+            last_prices.update(prices)
+
+            if last_bar_time is not None and latest_ts <= last_bar_time and cycle > 1:
+                current_equity = account.equity(last_prices)
+                equity_curve.append(
+                    {
+                        "timestamp": str(pd.Timestamp.now(tz="UTC")),
+                        "equity": current_equity,
+                    }
+                )
+                _write_live_status(
+                    cfg,
+                    {
+                        "status": "running",
+                        "timestamp_utc": str(datetime.now(timezone.utc)),
+                        "latest_bar": str(latest_ts),
+                        "equity": current_equity,
+                        "cash": account.cash,
+                        "trades": len(account.trades),
+                        "positions": len(account.positions),
+                        "strategy_type": cfg.strategy_type,
+                        "llm_enabled": bool(cfg.llm_enabled),
+                        "llm_active_this_cycle": bool(llm_active_this_cycle),
+                        "llm_decision_interval_cycles": int(cfg.llm_decision_interval_cycles),
+                        "symbols_total": len(cfg.symbols),
+                        "full_scan_cycle": full_scan_cycle,
+                        "symbols_trade": len(featured_trade),
+                        "liquidity_filtered": liquid_filtered,
+                        "news_last_refresh_utc": str(news_last_refresh) if news_last_refresh else None,
+                        "allocator_chosen_stack": allocator_diag.get("chosen_stack"),
+                        "allocator_stack_scores": (
+                            allocator_diag.get("diagnostics", {}).get("stack_scores", {})
+                            if isinstance(allocator_diag.get("diagnostics"), dict)
+                            else {}
+                        ),
+                        "risk_snapshot": allocator_diag.get("risk_snapshot", {}),
+                        "provider_status": provider_status,
+                        "provider_degraded": bool(provider_degraded),
+                        "openbb_api": {
+                            "enabled": bool(cfg.openbb_enabled),
+                            "healthy": bool(openbb_health),
+                        },
+                        "note": "No new bar yet",
+                        "positions_snapshot": _positions_snapshot(account, last_prices),
+                        "latest_decisions": latest_decisions[:10],
+                        "recent_trades": account.trades[-10:],
+                        **_pnl_fields(
+                            equity=current_equity,
+                            starting_capital=cfg.capital,
+                            previous_equity=previous_equity,
+                        ),
+                    },
+                )
+                previous_equity = current_equity
+                trade_write_idx = _append_new_trades(cfg, account.trades, trade_write_idx)
+                time.sleep(cfg.poll_seconds)
+                continue
+
+            last_bar_time = latest_ts
+
+            if cfg.strategy_type == "news_lstm":
+                should_refresh_news = (
+                    news_last_refresh is None
+                    or (now - news_last_refresh).total_seconds() >= cfg.news_poll_seconds
+                )
+                if should_refresh_news:
+                    news_symbols = set(
+                        _top_dollar_volume_symbols(featured_trade, cfg.news_symbol_limit)
+                    )
+                    news_symbols.update(account.positions.keys())
+                    refreshed = 0
+                    for sym in sorted(news_symbols):
+                        try:
+                            articles = news_collector.fetch_live_news(
+                                sym,
+                                max_articles=cfg.news_max_articles,
+                            )
+                        except Exception:
+                            articles = []
+                        headlines: List[str] = []
+                        for article in articles:
+                            title = str(article.get("title", "")).strip()
+                            summary = str(article.get("summary", "")).strip()
+                            text = title if title else summary
+                            if text:
+                                headlines.append(text[:180])
+                        news_cache[sym] = headlines
+                        refreshed += 1
+                    news_last_refresh = now
+                    print(
+                        f"[{now}] refreshed news for {refreshed} symbols",
+                        flush=True,
+                    )
+
+                target_weights, latest_decisions, allocator_diag = _compute_target_weights_news_lstm(
+                    strategy=strategy,
+                    featured=featured_trade,
+                    cfg=cfg,
+                    news_cache=news_cache,
+                    llm_active=llm_active_this_cycle,
+                    allocator=allocator,
+                    timestamp=latest_ts.to_pydatetime() if hasattr(latest_ts, "to_pydatetime") else datetime.now(),
+                )
+            else:
+                target_weights, latest_decisions, allocator_diag = _compute_target_weights_enhanced(
+                    strategy=strategy,
+                    featured=featured_trade,
+                    cfg=cfg,
+                    allocator=allocator,
+                    timestamp=latest_ts.to_pydatetime() if hasattr(latest_ts, "to_pydatetime") else datetime.now(),
+                )
+
+            account.rebalance(
+                target_weights=target_weights,
+                prices=last_prices,
+                timestamp=latest_ts,
+                min_notional=cfg.min_trade_notional,
             )
-            time.sleep(cfg.poll_seconds)
-            continue
+            trade_write_idx = _append_new_trades(cfg, account.trades, trade_write_idx)
 
-        featured_trade = dict(featured_all)
-        liquid_filtered = False
-        if (
-            cfg.liquid_subset_size > 0
-            and len(featured_trade) > cfg.liquid_subset_size
-            and (cfg.full_universe_requested or not cfg.liquid_for_full_only)
-        ):
-            selected = _select_liquid_subset(
-                featured_trade,
-                subset_size=cfg.liquid_subset_size,
-                adv_window=cfg.liquid_adv_window,
-                min_history=cfg.liquid_min_history,
-            )
-            selected_set = set(selected)
-            featured_trade = {
-                sym: df for sym, df in featured_trade.items() if sym in selected_set
-            }
-            liquid_filtered = True
-            liquid_symbols_cache = selected
-        elif (
-            cfg.full_universe_requested
-            and cfg.liquid_subset_size > 0
-            and liquid_symbols_cache
-            and not full_scan_cycle
-        ):
-            selected_set = set(liquid_symbols_cache)
-            featured_trade = {
-                sym: df for sym, df in featured_trade.items() if sym in selected_set
-            }
-            liquid_filtered = True
-
-        for held_symbol in list(account.positions.keys()):
-            if held_symbol in featured_all and held_symbol not in featured_trade:
-                featured_trade[held_symbol] = featured_all[held_symbol]
-
-        if not featured_trade:
-            time.sleep(cfg.poll_seconds)
-            continue
-
-        latest_ts = max(df.index[-1] for df in featured_trade.values() if not df.empty)
-        prices = _latest_prices(featured_trade)
-        last_prices.update(prices)
-
-        if last_bar_time is not None and latest_ts <= last_bar_time and cycle > 1:
             current_equity = account.equity(last_prices)
             equity_curve.append(
                 {
-                    "timestamp": str(pd.Timestamp.now(tz="UTC")),
+                    "timestamp": str(latest_ts),
                     "equity": current_equity,
+                    "cash": account.cash,
+                    "n_positions": len(account.positions),
                 }
             )
+
             _write_live_status(
                 cfg,
                 {
@@ -983,6 +1238,7 @@ def run_realtime_paper(cfg: SessionConfig) -> Dict:
                     "cash": account.cash,
                     "trades": len(account.trades),
                     "positions": len(account.positions),
+                    "cycle": cycle,
                     "strategy_type": cfg.strategy_type,
                     "llm_enabled": bool(cfg.llm_enabled),
                     "llm_active_this_cycle": bool(llm_active_this_cycle),
@@ -992,7 +1248,20 @@ def run_realtime_paper(cfg: SessionConfig) -> Dict:
                     "symbols_trade": len(featured_trade),
                     "liquidity_filtered": liquid_filtered,
                     "news_last_refresh_utc": str(news_last_refresh) if news_last_refresh else None,
-                    "note": "No new bar yet",
+                    "news_cache_symbols": len(news_cache),
+                    "allocator_chosen_stack": allocator_diag.get("chosen_stack"),
+                    "allocator_stack_scores": (
+                        allocator_diag.get("diagnostics", {}).get("stack_scores", {})
+                        if isinstance(allocator_diag.get("diagnostics"), dict)
+                        else {}
+                    ),
+                    "risk_snapshot": allocator_diag.get("risk_snapshot", {}),
+                    "provider_status": provider_status,
+                    "provider_degraded": bool(provider_degraded),
+                    "openbb_api": {
+                        "enabled": bool(cfg.openbb_enabled),
+                        "healthy": bool(openbb_health),
+                    },
                     "positions_snapshot": _positions_snapshot(account, last_prices),
                     "latest_decisions": latest_decisions[:10],
                     "recent_trades": account.trades[-10:],
@@ -1004,119 +1273,21 @@ def run_realtime_paper(cfg: SessionConfig) -> Dict:
                 },
             )
             previous_equity = current_equity
-            trade_write_idx = _append_new_trades(cfg, account.trades, trade_write_idx)
+
+            print(
+                f"[{latest_ts}] cycle={cycle} equity=${current_equity:,.2f} "
+                f"pnl=${(current_equity - cfg.capital):,.2f} cash=${account.cash:,.2f} "
+                f"positions={len(account.positions)} trades={len(account.trades)} "
+                f"llm_cycle={'on' if llm_active_this_cycle else 'off'}",
+                flush=True,
+            )
             time.sleep(cfg.poll_seconds)
-            continue
-
-        last_bar_time = latest_ts
-
-        if cfg.strategy_type == "news_lstm":
-            should_refresh_news = (
-                news_last_refresh is None
-                or (now - news_last_refresh).total_seconds() >= cfg.news_poll_seconds
-            )
-            if should_refresh_news:
-                news_symbols = set(
-                    _top_dollar_volume_symbols(featured_trade, cfg.news_symbol_limit)
-                )
-                news_symbols.update(account.positions.keys())
-                refreshed = 0
-                for sym in sorted(news_symbols):
-                    try:
-                        articles = news_collector.fetch_live_news(
-                            sym,
-                            max_articles=cfg.news_max_articles,
-                        )
-                    except Exception:
-                        articles = []
-                    headlines: List[str] = []
-                    for article in articles:
-                        title = str(article.get("title", "")).strip()
-                        summary = str(article.get("summary", "")).strip()
-                        text = title if title else summary
-                        if text:
-                            headlines.append(text[:180])
-                    news_cache[sym] = headlines
-                    refreshed += 1
-                news_last_refresh = now
-                print(
-                    f"[{now}] refreshed news for {refreshed} symbols",
-                    flush=True,
-                )
-
-            target_weights, latest_decisions = _compute_target_weights_news_lstm(
-                strategy=strategy,
-                featured=featured_trade,
-                cfg=cfg,
-                news_cache=news_cache,
-                llm_active=llm_active_this_cycle,
-            )
-        else:
-            target_weights, latest_decisions = _compute_target_weights_enhanced(
-                strategy=strategy,
-                featured=featured_trade,
-                cfg=cfg,
-            )
-
-        account.rebalance(
-            target_weights=target_weights,
-            prices=last_prices,
-            timestamp=latest_ts,
-            min_notional=cfg.min_trade_notional,
+    finally:
+        openbb_stop = (
+            openbb_manager.stop()
+            if cfg.openbb_enabled and cfg.openbb_manage_api_process
+            else {"stopped": False, "reason": "not_managed"}
         )
-        trade_write_idx = _append_new_trades(cfg, account.trades, trade_write_idx)
-
-        current_equity = account.equity(last_prices)
-        equity_curve.append(
-            {
-                "timestamp": str(latest_ts),
-                "equity": current_equity,
-                "cash": account.cash,
-                "n_positions": len(account.positions),
-            }
-        )
-
-        _write_live_status(
-            cfg,
-            {
-                "status": "running",
-                "timestamp_utc": str(datetime.now(timezone.utc)),
-                "latest_bar": str(latest_ts),
-                "equity": current_equity,
-                "cash": account.cash,
-                "trades": len(account.trades),
-                "positions": len(account.positions),
-                "cycle": cycle,
-                "strategy_type": cfg.strategy_type,
-                "llm_enabled": bool(cfg.llm_enabled),
-                "llm_active_this_cycle": bool(llm_active_this_cycle),
-                "llm_decision_interval_cycles": int(cfg.llm_decision_interval_cycles),
-                "symbols_total": len(cfg.symbols),
-                "full_scan_cycle": full_scan_cycle,
-                "symbols_trade": len(featured_trade),
-                "liquidity_filtered": liquid_filtered,
-                "news_last_refresh_utc": str(news_last_refresh) if news_last_refresh else None,
-                "news_cache_symbols": len(news_cache),
-                "positions_snapshot": _positions_snapshot(account, last_prices),
-                "latest_decisions": latest_decisions[:10],
-                "recent_trades": account.trades[-10:],
-                **_pnl_fields(
-                    equity=current_equity,
-                    starting_capital=cfg.capital,
-                    previous_equity=previous_equity,
-                ),
-            },
-        )
-        previous_equity = current_equity
-
-        print(
-            f"[{latest_ts}] cycle={cycle} equity=${current_equity:,.2f} "
-            f"pnl=${(current_equity - cfg.capital):,.2f} cash=${account.cash:,.2f} "
-            f"positions={len(account.positions)} trades={len(account.trades)} "
-            f"llm_cycle={'on' if llm_active_this_cycle else 'off'}",
-            flush=True,
-        )
-        time.sleep(cfg.poll_seconds)
 
     final_equity = account.equity(last_prices)
     profit = final_equity - cfg.capital
@@ -1139,6 +1310,11 @@ def run_realtime_paper(cfg: SessionConfig) -> Dict:
         "slippage_bps": cfg.slippage_bps,
         "min_commission": cfg.min_commission,
         "min_trade_notional": cfg.min_trade_notional,
+        "allocator_chosen_stack": allocator_diag.get("chosen_stack"),
+        "risk_snapshot": allocator_diag.get("risk_snapshot", {}),
+        "provider_status": collector.get_provider_diagnostics().get("last_selection", {}),
+        "openbb_api_start": openbb_boot,
+        "openbb_api_stop": openbb_stop,
         "output_dir": str(cfg.output_dir),
     }
 
@@ -1152,6 +1328,10 @@ def run_realtime_paper(cfg: SessionConfig) -> Dict:
             "profit_dollars": profit,
             "return_pct": return_pct,
             "trades": len(account.trades),
+            "allocator_chosen_stack": allocator_diag.get("chosen_stack"),
+            "risk_snapshot": allocator_diag.get("risk_snapshot", {}),
+            "provider_status": collector.get_provider_diagnostics().get("last_selection", {}),
+            "openbb_api_stop": openbb_stop,
             "output_dir": str(cfg.output_dir),
         },
     )

@@ -240,6 +240,45 @@ def _render_header(status: dict, session_dir: Path) -> None:
     )
 
 
+def _render_risk_panel(status: dict) -> None:
+    risk = status.get("risk_snapshot") or {}
+    if not isinstance(risk, dict):
+        st.info("Risk snapshot unavailable")
+        return
+    st.subheader("Live Risk Panel")
+    c1, c2, c3, c4, c5, c6 = st.columns(6)
+    c1.metric("VaR", _fmt_pct(risk.get("var", 0.0) * 100.0))
+    c2.metric("CVaR", _fmt_pct(risk.get("cvar", 0.0) * 100.0))
+    c3.metric("Drawdown", _fmt_pct(risk.get("drawdown", 0.0) * 100.0))
+    c4.metric("Ulcer", f\"{float(risk.get('ulcer_index', 0.0)):.4f}\")
+    c5.metric("Net Exp", f\"{float(risk.get('net_exposure', 0.0)):.3f}\")
+    c6.metric("Gross Exp", f\"{float(risk.get('gross_exposure', 0.0)):.3f}\")
+
+
+def _render_allocator_panel(status: dict) -> None:
+    st.subheader("Allocator Decision Panel")
+    chosen = status.get("allocator_chosen_stack", "n/a")
+    scores = status.get("allocator_stack_scores") or {}
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Chosen Stack", str(chosen))
+    c2.metric("Static Score", f\"{float(scores.get('static', 0.0)):.4f}\" if isinstance(scores, dict) else "n/a")
+    c3.metric("Regime Score", f\"{float(scores.get('regime', 0.0)):.4f}\" if isinstance(scores, dict) else "n/a")
+
+
+def _render_provider_panel(status: dict) -> None:
+    st.subheader("Provider Health / Fallback Panel")
+    provider_status = status.get("provider_status") or {}
+    openbb_api = status.get("openbb_api") or {}
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Provider Degraded", str(bool(status.get("provider_degraded", False))))
+    c2.metric("OpenBB Enabled", str(bool(openbb_api.get("enabled", False))))
+    c3.metric("OpenBB Healthy", str(bool(openbb_api.get("healthy", False))))
+    if provider_status:
+        st.dataframe(pd.DataFrame(provider_status).T, use_container_width=True, height=220)
+    else:
+        st.info("No provider status yet")
+
+
 def _auto_refresh(refresh_seconds: float) -> None:
     sec = max(1, int(round(float(refresh_seconds))))
     st.markdown(
@@ -273,6 +312,9 @@ def main() -> None:
     flow = build_trade_flow_by_second(trades)
 
     _render_header(status, session_dir)
+    _render_risk_panel(status)
+    _render_allocator_panel(status)
+    _render_provider_panel(status)
 
     col1, col2 = st.columns(2)
     with col1:

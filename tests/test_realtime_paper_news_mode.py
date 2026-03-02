@@ -142,7 +142,7 @@ def test_news_weights_respect_llm_gate_and_long_only():
     )
 
     featured = _frames()
-    weights, decisions = _compute_target_weights_news_lstm(
+    weights, decisions, alloc_diag = _compute_target_weights_news_lstm(
         strategy=strategy,
         featured=featured,
         cfg=cfg,
@@ -154,3 +154,4 @@ def test_news_weights_respect_llm_gate_and_long_only():
     assert weights["BBB"] == 0.0  # blocked by llm gate
     assert weights["CCC"] == 0.0  # suppressed by long-only
     assert any(d["symbol"] == "AAA" for d in decisions)
+    assert isinstance(alloc_diag, dict)

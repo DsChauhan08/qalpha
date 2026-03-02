@@ -21,6 +21,110 @@ data:
     - "GOOGL"
     - "AMZN"
     - "META"
+  openbb:
+    enabled: false
+    free_only: true
+    provider: "yfinance"
+    sdk_modes: ["backtest", "paper", "train"]
+    api_modes: ["realtime", "live"]
+    api:
+      base_url: "http://127.0.0.1:6900"
+      timeout_ms: 1500
+      manage_process: true
+      startup_timeout_s: 20
+  routing:
+    market_data:
+      weights:
+        freshness: 0.20
+        completeness: 0.40
+        latency: 0.20
+        reliability: 0.20
+      provider_order: ["openbb_api", "openbb_sdk", "yfinance", "fallback"]
+      timeout_ms: 1500
+      min_score: 0.15
+    fundamentals:
+      weights:
+        freshness: 0.20
+        completeness: 0.45
+        latency: 0.10
+        reliability: 0.25
+      provider_order: ["openbb_api", "openbb_sdk", "yfinance", "fallback"]
+      timeout_ms: 1500
+      min_score: 0.15
+    news:
+      weights:
+        freshness: 0.35
+        completeness: 0.25
+        latency: 0.20
+        reliability: 0.20
+      provider_order: ["openbb_api", "openbb_sdk", "yfinance"]
+      timeout_ms: 1500
+      min_score: 0.10
+    macro:
+      weights:
+        freshness: 0.25
+        completeness: 0.35
+        latency: 0.15
+        reliability: 0.25
+      provider_order: ["openbb_api", "openbb_sdk"]
+      timeout_ms: 1500
+      min_score: 0.10
+    options:
+      weights:
+        freshness: 0.30
+        completeness: 0.30
+        latency: 0.15
+        reliability: 0.25
+      provider_order: ["openbb_api", "openbb_sdk", "yfinance"]
+      timeout_ms: 1500
+      min_score: 0.10
+    insider:
+      weights:
+        freshness: 0.20
+        completeness: 0.40
+        latency: 0.10
+        reliability: 0.30
+      provider_order: ["openbb_api", "openbb_sdk", "fallback"]
+      timeout_ms: 1500
+      min_score: 0.10
+    congress:
+      weights:
+        freshness: 0.20
+        completeness: 0.40
+        latency: 0.10
+        reliability: 0.30
+      provider_order: ["openbb_api", "openbb_sdk", "fallback"]
+      timeout_ms: 1500
+      min_score: 0.10
+    earnings:
+      weights:
+        freshness: 0.20
+        completeness: 0.40
+        latency: 0.10
+        reliability: 0.30
+      provider_order: ["openbb_api", "openbb_sdk", "yfinance", "fallback"]
+      timeout_ms: 1500
+      min_score: 0.10
+
+portfolio_allocator:
+  mode: "dual_run_select_best"
+  static_stack: "hrp_risk_parity_cvar_guard"
+  alt_stack: "regime_switched_hrp_rp_cvar"
+  cvar_alpha: 0.95
+  cvar_guard_max_tail_loss: 0.06
+  regime_gross_scale: 0.80
+  vol_estimator:
+    primary: "yang_zhang"
+  constraints:
+    long_short_enabled: true
+    net_min: -0.20
+    net_max: 0.20
+    gross_max: 1.00
+    max_position_abs: 0.10
+  selector:
+    window_cycles: 20
+    switch_margin: 0.02
+    min_hold_cycles: 5
 
 # Backtesting
 backtest:

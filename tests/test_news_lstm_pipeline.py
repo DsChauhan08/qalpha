@@ -8,7 +8,7 @@ Tests:
 4. NewsLSTMStrategy - signal generation interface
 5. Integration - end-to-end from price data to signals
 
-All tests use synthetic data and mock TensorFlow where needed
+All tests use synthetic data and optional PyTorch execution
 to ensure they run fast and without GPU.
 """
 
@@ -28,10 +28,10 @@ import pytest
 # ---------------------------------------------------------------------------
 
 
-def _has_tensorflow() -> bool:
-    """Check if TensorFlow is available."""
+def _has_torch() -> bool:
+    """Check if PyTorch is available."""
     try:
-        import tensorflow  # noqa: F401
+        import torch  # noqa: F401
 
         return True
     except ImportError:
@@ -90,7 +90,8 @@ class TestNewsCollector:
         )
 
         assert NewsCollector is not None
-        assert len(SENTIMENT_FEATURE_COLS) == 16
+        # 16 sentiment proxy features + 5 price context features
+        assert len(SENTIMENT_FEATURE_COLS) == 21
 
     def test_build_historical_sentiment_shape(self):
         from quantum_alpha.data.collectors.news_collector import NewsCollector
@@ -99,8 +100,8 @@ class TestNewsCollector:
         df = make_ohlcv(200)
         sentiment = collector.build_historical_sentiment(df, "SPY")
 
-        # Should return 11 sentiment columns
-        assert sentiment.shape[1] == 11
+        # Historical sentiment proxy currently returns 16 columns
+        assert sentiment.shape[1] == 16
         assert len(sentiment) == len(df)
 
     def test_build_historical_sentiment_columns(self):
@@ -215,6 +216,7 @@ class TestNewsCollector:
 class TestNewsDrivenLSTM:
     """Tests for models/lstm_v4/news_lstm.py."""
 
+    @pytest.mark.skipif(not _has_torch(), reason="PyTorch not installed")
     def test_import_and_config(self):
         from quantum_alpha.models.lstm_v4.news_lstm import (
             NewsDrivenLSTM,
@@ -222,12 +224,13 @@ class TestNewsDrivenLSTM:
         )
 
         cfg = NewsLSTMConfig()
-        assert cfg.n_sentiment_features == 11
+        assert cfg.n_sentiment_features == 16
         assert cfg.n_price_features == 5
-        assert cfg.total_features == 16
+        assert cfg.total_features == 21
         assert cfg.sequence_length == 30
-        assert cfg.lstm_units == [64, 32]
+        assert cfg.lstm_units == [32]
 
+    @pytest.mark.skipif(not _has_torch(), reason="PyTorch not installed")
     def test_config_custom(self):
         from quantum_alpha.models.lstm_v4.news_lstm import NewsLSTMConfig
 
@@ -240,8 +243,9 @@ class TestNewsDrivenLSTM:
         assert cfg.total_features == 11
         assert cfg.sequence_length == 20
 
+    @pytest.mark.skipif(not _has_torch(), reason="PyTorch not installed")
     def test_predict_without_model(self):
-        """Without TF, predict() should return hold signals."""
+        """Without building the model, predict() should return hold signals."""
         from quantum_alpha.models.lstm_v4.news_lstm import (
             NewsDrivenLSTM,
             NewsLSTMConfig,
@@ -249,14 +253,14 @@ class TestNewsDrivenLSTM:
 
         model = NewsDrivenLSTM(NewsLSTMConfig())
         # model.model is None (not built)
-        X = np.random.randn(10, 30, 16)
+        X = np.random.randn(10, 30, model.config.total_features)
         preds = model.predict(X)
 
         assert preds["signal_probs"].shape == (10, 3)
         assert np.all(preds["signal"] == 1)  # hold
         assert np.all(preds["trade_action"] == 0)  # no trades
 
-    @pytest.mark.skipif(not _has_tensorflow(), reason="TensorFlow not installed")
+    @pytest.mark.skipif(not _has_torch(), reason="PyTorch not installed")
     def test_build_and_predict(self):
         from quantum_alpha.models.lstm_v4.news_lstm import (
             NewsDrivenLSTM,
@@ -270,9 +274,8 @@ class TestNewsDrivenLSTM:
         )
         model = NewsDrivenLSTM(cfg)
         model.build_model()
-        model.compile_model()
 
-        X = np.random.randn(5, 10, 16).astype(np.float32)
+        X = np.random.randn(5, 10, cfg.total_features).astype(np.float32)
         preds = model.predict(X)
 
         assert preds["signal_probs"].shape == (5, 3)
@@ -281,7 +284,7 @@ class TestNewsDrivenLSTM:
         assert preds["trade_action"].shape == (5,)
         assert set(np.unique(preds["trade_action"])).issubset({-1, 0, 1})
 
-    @pytest.mark.skipif(not _has_tensorflow(), reason="TensorFlow not installed")
+    @pytest.mark.skipif(not _has_torch(), reason="PyTorch not installed")
     def test_save_load(self):
         from quantum_alpha.models.lstm_v4.news_lstm import (
             NewsDrivenLSTM,
@@ -291,14 +294,13 @@ class TestNewsDrivenLSTM:
         cfg = NewsLSTMConfig(lstm_units=[16, 8], sequence_length=10)
         model = NewsDrivenLSTM(cfg)
         model.build_model()
-        model.compile_model()
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            path = os.path.join(tmpdir, "test_model.keras")
+            path = os.path.join(tmpdir, "test_model.pt")
             model.save(path)
 
             assert os.path.exists(path)
-            assert os.path.exists(path.replace(".keras", "_config.json"))
+            assert os.path.exists(path.replace(".pt", "_config.json"))
 
             model2 = NewsDrivenLSTM()
             model2.load(path)
@@ -314,11 +316,13 @@ class TestNewsDrivenLSTM:
 class TestNewsLSTMTrainer:
     """Tests for models/lstm_v4/news_trainer.py."""
 
+    @pytest.mark.skipif(not _has_torch(), reason="PyTorch not installed")
     def test_import(self):
         from quantum_alpha.models.lstm_v4.news_trainer import NewsLSTMTrainer
 
         assert NewsLSTMTrainer is not None
 
+    @pytest.mark.skipif(not _has_torch(), reason="PyTorch not installed")
     def test_prepare_data_shape(self):
         from quantum_alpha.models.lstm_v4.news_trainer import NewsLSTMTrainer
         from quantum_alpha.models.lstm_v4.news_lstm import NewsLSTMConfig
@@ -346,6 +350,7 @@ class TestNewsLSTMTrainer:
         assert X_val.shape[0] > 0
         assert X_val.shape[0] < X_tr.shape[0]
 
+    @pytest.mark.skipif(not _has_torch(), reason="PyTorch not installed")
     def test_prepare_data_scaler(self):
         """Scaler params should be stored after prepare_data."""
         from quantum_alpha.models.lstm_v4.news_trainer import NewsLSTMTrainer
@@ -360,7 +365,7 @@ class TestNewsLSTMTrainer:
         assert "std" in trainer.scaler_params
         assert len(trainer.scaler_params["mean"]) > 0
 
-    @pytest.mark.skipif(not _has_tensorflow(), reason="TensorFlow not installed")
+    @pytest.mark.skipif(not _has_torch(), reason="PyTorch not installed")
     def test_train_and_evaluate(self):
         from quantum_alpha.models.lstm_v4.news_trainer import NewsLSTMTrainer
         from quantum_alpha.models.lstm_v4.news_lstm import NewsLSTMConfig
@@ -395,7 +400,7 @@ class TestNewsLSTMTrainer:
         assert "selectivity" in metrics
         assert 0.0 <= metrics["accuracy"] <= 1.0
 
-    @pytest.mark.skipif(not _has_tensorflow(), reason="TensorFlow not installed")
+    @pytest.mark.skipif(not _has_torch(), reason="PyTorch not installed")
     def test_save_and_load_checkpoint(self):
         from quantum_alpha.models.lstm_v4.news_trainer import NewsLSTMTrainer
         from quantum_alpha.models.lstm_v4.news_lstm import NewsLSTMConfig
@@ -428,7 +433,7 @@ class TestNewsLSTMTrainer:
             name = trainer.save_checkpoint(name="test_ckpt")
 
             # Verify files exist
-            assert os.path.exists(os.path.join(tmpdir, "test_ckpt.keras"))
+            assert os.path.exists(os.path.join(tmpdir, "test_ckpt.pt"))
             assert os.path.exists(os.path.join(tmpdir, "test_ckpt_scaler.json"))
             assert os.path.exists(os.path.join(tmpdir, "test_ckpt_meta.json"))
 
@@ -513,7 +518,7 @@ class TestNewsLSTMStrategy:
         assert "action" in result
         assert result["action"] in (-1, 0, 1)
 
-    @pytest.mark.skipif(not _has_tensorflow(), reason="TensorFlow not installed")
+    @pytest.mark.skipif(not _has_torch(), reason="PyTorch not installed")
     def test_with_trained_checkpoint(self):
         """Full integration: train, save, load via strategy, generate signals."""
         from quantum_alpha.models.lstm_v4.news_trainer import NewsLSTMTrainer
@@ -563,7 +568,7 @@ class TestIntegration:
     """End-to-end integration tests."""
 
     def test_full_pipeline_no_tf(self):
-        """Full pipeline should work without TensorFlow (hold signals)."""
+        """Full pipeline should work without a trained checkpoint (hold signals)."""
         from quantum_alpha.data.collectors.news_collector import (
             NewsCollector,
             SENTIMENT_FEATURE_COLS,

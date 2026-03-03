@@ -47,7 +47,13 @@ class YFinanceProvider:
         try:
             ticker = self.yf.Ticker(symbol)
             try:
-                df = self._quiet_call(ticker.history, start=start, end=end, interval=interval)
+                df = self._quiet_call(
+                    ticker.history,
+                    start=start,
+                    end=end,
+                    interval=interval,
+                    timeout=10,
+                )
             except Exception:
                 df = self._quiet_call(
                     self.yf.download,
@@ -56,6 +62,7 @@ class YFinanceProvider:
                     end=end,
                     interval=interval,
                     progress=False,
+                    timeout=10,
                 )
 
             if isinstance(df.columns, pd.MultiIndex):
@@ -83,6 +90,7 @@ class YFinanceProvider:
                         period=period,
                         interval=interval,
                         progress=False,
+                        timeout=10,
                     )
                 except Exception:
                     df = pd.DataFrame()

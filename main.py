@@ -573,6 +573,74 @@ def _core_targets_from_mix(
     return _normalize_weights(available, budget=core_budget, long_only=True)
 
 
+def _tilt_core_mix(
+    core_mix: Dict[str, float],
+    data_frames: Dict[str, pd.DataFrame],
+    timestamp: datetime,
+    lookback_days: int,
+    tilt_strength: float,
+) -> Dict[str, float]:
+    """
+    Apply momentum tilt to core mix while preserving long-only normalization.
+
+    The tilt is cross-sectional: symbols with stronger recent momentum are
+    overweighted, weaker symbols underweighted.
+    """
+    if not core_mix:
+        return {}
+
+    strength = float(max(0.0, min(tilt_strength, 0.95)))
+    lb = int(max(21, lookback_days))
+    if strength <= 0.0 or len(core_mix) < 2:
+        return {str(k).upper(): float(max(v, 0.0)) for k, v in core_mix.items()}
+
+    base = {str(k).upper(): float(max(v, 0.0)) for k, v in core_mix.items()}
+    moms: Dict[str, float] = {}
+    ts = pd.Timestamp(timestamp)
+    if ts.tzinfo is not None:
+        ts = ts.tz_convert(None)
+
+    for sym in base.keys():
+        df = data_frames.get(sym)
+        if df is None or df.empty or "close" not in df.columns:
+            continue
+        close = pd.to_numeric(df["close"], errors="coerce").dropna()
+        if close.empty:
+            continue
+        idx = pd.to_datetime(close.index, errors="coerce")
+        if isinstance(idx, pd.DatetimeIndex) and idx.tz is not None:
+            idx = idx.tz_localize(None)
+        close.index = idx
+        close = close[~close.index.isna()].sort_index()
+        hist = close[close.index <= ts]
+        if len(hist) < lb + 1:
+            continue
+        prev = float(hist.iloc[-(lb + 1)])
+        last = float(hist.iloc[-1])
+        if prev <= 0 or not np.isfinite(prev) or not np.isfinite(last):
+            continue
+        moms[sym] = float(last / prev - 1.0)
+
+    if len(moms) < 2:
+        return base
+
+    vals = np.array(list(moms.values()), dtype=float)
+    if not np.isfinite(vals).all():
+        return base
+    centered = {s: float(v - vals.mean()) for s, v in moms.items()}
+    denom = float(max(np.max(np.abs(list(centered.values()))), 1e-9))
+
+    tilted = {}
+    for sym, bw in base.items():
+        score = float(centered.get(sym, 0.0) / denom)
+        tilted[sym] = float(max(bw * (1.0 + strength * score), 0.0))
+
+    total = float(sum(tilted.values()))
+    if total <= 0:
+        return base
+    return {s: float(w / total) for s, w in tilted.items()}
+
+
 def _combine_targets(*targets: Dict[str, float]) -> Dict[str, float]:
     out: Dict[str, float] = {}
     for t in targets:
@@ -917,6 +985,14 @@ def run_backtest(
         float(sleeves_cfg.get("lottery_max_per_symbol", 0.0075)), 0.001, 0.02
     )
     alpha_min_confidence = float(sleeves_cfg.get("alpha_min_confidence", 0.05))
+    core_tilt_enabled = bool(sleeves_cfg.get("core_tilt_enabled", True))
+    core_tilt_lookback_days = int(sleeves_cfg.get("core_tilt_lookback_days", 126))
+    core_tilt_strength = _clamp(
+        float(sleeves_cfg.get("core_tilt_strength", 0.35)), 0.0, 0.95
+    )
+    core_rebalance_band = _clamp(
+        float(sleeves_cfg.get("core_rebalance_band", 0.02)), 0.0, 0.10
+    )
     core_mix_cfg = sleeves_cfg.get("core_mix", {"SPY": 0.5, "QQQ": 0.3, "IWM": 0.2})
     core_mix = {
         str(k).upper(): float(v)
@@ -1568,9 +1644,18 @@ def run_backtest(
             state["alpha_scale_last"] = float(alpha_scale)
             state.setdefault("alpha_scale_history", []).append(float(alpha_scale))
 
+            effective_core_mix = core_mix
+            if core_tilt_enabled:
+                effective_core_mix = _tilt_core_mix(
+                    core_mix=core_mix,
+                    data_frames=data,
+                    timestamp=timestamp,
+                    lookback_days=core_tilt_lookback_days,
+                    tilt_strength=core_tilt_strength,
+                )
             core_targets = _core_targets_from_mix(
                 bars=bars,
-                core_mix=core_mix,
+                core_mix=effective_core_mix,
                 core_budget=core_budget_eff,
             )
             alpha_candidates = {
@@ -1709,6 +1794,15 @@ def run_backtest(
             else:
                 scale = cap / total_abs
                 target_positions = {s: float(w * scale) for s, w in target_positions.items()}
+
+        if sleeves_enabled and core_rebalance_band > 0:
+            current_w = _current_weights(bt, bars=bars, equity=bt._total_equity())
+            core_symbols = set(core_mix.keys())
+            for sym in core_symbols:
+                cur = float(current_w.get(sym, 0.0))
+                tgt = float(target_positions.get(sym, 0.0))
+                if abs(cur) > 1e-6 and abs(tgt - cur) < core_rebalance_band:
+                    target_positions[sym] = cur
 
         equity = bt._total_equity()
         all_symbols = set(target_positions.keys()) | set(bt.positions.keys())
@@ -2179,6 +2273,14 @@ def run_paper(
         float(sleeves_cfg.get("lottery_max_per_symbol", 0.0075)), 0.001, 0.02
     )
     alpha_min_confidence = float(sleeves_cfg.get("alpha_min_confidence", 0.05))
+    core_tilt_enabled = bool(sleeves_cfg.get("core_tilt_enabled", True))
+    core_tilt_lookback_days = int(sleeves_cfg.get("core_tilt_lookback_days", 126))
+    core_tilt_strength = _clamp(
+        float(sleeves_cfg.get("core_tilt_strength", 0.35)), 0.0, 0.95
+    )
+    core_rebalance_band = _clamp(
+        float(sleeves_cfg.get("core_rebalance_band", 0.02)), 0.0, 0.10
+    )
     core_mix_cfg = sleeves_cfg.get("core_mix", {"SPY": 0.5, "QQQ": 0.3, "IWM": 0.2})
     core_mix = {
         str(k).upper(): float(v)
@@ -2733,9 +2835,18 @@ def run_paper(
             state["alpha_scale_last"] = float(alpha_scale)
             state.setdefault("alpha_scale_history", []).append(float(alpha_scale))
 
+            effective_core_mix = core_mix
+            if core_tilt_enabled:
+                effective_core_mix = _tilt_core_mix(
+                    core_mix=core_mix,
+                    data_frames=data,
+                    timestamp=timestamp,
+                    lookback_days=core_tilt_lookback_days,
+                    tilt_strength=core_tilt_strength,
+                )
             core_targets = _core_targets_from_mix(
                 bars=bars,
-                core_mix=core_mix,
+                core_mix=effective_core_mix,
                 core_budget=core_budget_eff,
             )
             alpha_candidates = {
@@ -2874,6 +2985,15 @@ def run_paper(
             else:
                 scale = cap / total_abs
                 target_positions = {s: float(w * scale) for s, w in target_positions.items()}
+
+        if sleeves_enabled and core_rebalance_band > 0:
+            current_w = _current_weights(bt, bars=bars, equity=bt._total_equity())
+            core_symbols = set(core_mix.keys())
+            for sym in core_symbols:
+                cur = float(current_w.get(sym, 0.0))
+                tgt = float(target_positions.get(sym, 0.0))
+                if abs(cur) > 1e-6 and abs(tgt - cur) < core_rebalance_band:
+                    target_positions[sym] = cur
 
         equity = bt._total_equity()
         all_symbols = set(target_positions.keys()) | set(bt.positions.keys())

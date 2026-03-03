@@ -389,7 +389,7 @@ class DataCollector:
             raise ValueError(f"Provider routing failed for fundamentals {symbol}")
         return dict(selected.data)
 
-    @retry(max_retries=3)
+    @retry(max_retries=1, delay=0.25)
     def fetch_ohlcv(
         self,
         symbol: str,

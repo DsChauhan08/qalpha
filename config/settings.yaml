@@ -160,7 +160,7 @@ strategy:
   signal_threshold: 0.28  # Min signal strength to trade
   rebalance_frequency: "weekly"
   paper_rebalance_frequency: "weekly"
-  min_rebalance_notional_frac: 0.015
+  min_rebalance_notional_frac: 0.025
   momentum_top_pct: 80
   momentum_bottom_pct: 35
   relative_strength_top_n: 60
@@ -175,7 +175,7 @@ strategy:
   signal_scale: 1.2
   min_long_signal: 0.10
   market_off_scale: 0.80
-  anchor_core_to_quant_composite: true
+  anchor_core_to_quant_composite: false
   alpha_deploy_requires_relative_edge: true
   alpha_edge_lookback_days: 63
   alpha_min_scale: 0.0
@@ -185,10 +185,14 @@ strategy:
   alpha_recovery_excess: 0.03
   sleeves:
     enabled: true
-    core_budget: 0.98
-    alpha_budget: 0.02
+    core_budget: 1.00
+    alpha_budget: 0.00
     lottery_budget: 0.00
     core_loss_scale: 1.00
+    core_tilt_enabled: false
+    core_tilt_lookback_days: 126
+    core_tilt_strength: 0.35
+    core_rebalance_band: 0.02
     alpha_min_confidence: 0.08
     lottery_top_n: 3
     lottery_min_signal: 0.35
@@ -196,8 +200,8 @@ strategy:
     lottery_stop_loss: 0.08
     lottery_max_per_symbol: 0.0075
     core_mix:
-      QQQ: 0.50
-      IWM: 0.50
+      QQQ: 0.70
+      IWM: 0.30
 
 # Technical Indicators
 indicators:

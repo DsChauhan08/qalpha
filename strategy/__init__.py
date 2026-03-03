@@ -15,6 +15,7 @@ from quantum_alpha.strategy.sentiment_strategies import (
     ShortInterestStrategy,
 )
 from quantum_alpha.strategy.ml_strategies import MLTradingStrategy
+from quantum_alpha.strategy.meta_dual_blend_strategy import MetaDualBlendStrategy
 
 __all__ = [
     "MomentumStrategy",
@@ -30,4 +31,5 @@ __all__ = [
     "EarningsSurpriseStrategy",
     "ShortInterestStrategy",
     "MLTradingStrategy",
+    "MetaDualBlendStrategy",
 ]

@@ -245,7 +245,7 @@ MOMENTUM_QUALITY_FEATURES = [
     "return_skew_63d",  # Skewness of 63d returns
 ]
 
-ALL_FEATURE_COLS = (
+BASE_FEATURE_COLS = (
     TECHNICAL_FEATURES
     + STRATEGY_FEATURES
     + REGIME_FEATURES
@@ -258,6 +258,7 @@ ALL_FEATURE_COLS = (
     # MOMENTUM_QUALITY_FEATURES excluded — added noise and degraded OOS performance.
     # The base 74 features + GDELT produce the best walk-forward results.
 )
+ALL_FEATURE_COLS = list(BASE_FEATURE_COLS)
 
 # MC/Padé features — dynamically generated from MCPadeFeatureGenerator
 # These are added to ALL_FEATURE_COLS after import
@@ -283,6 +284,23 @@ def _get_mc_pade_generator():
             logger.warning(f"MC/Padé features unavailable: {e}")
             _mc_pade_gen = False  # Sentinel to avoid retrying
     return _mc_pade_gen if _mc_pade_gen is not False else None
+
+
+def _resolve_feature_set(feature_set: str | None) -> str:
+    value = str(feature_set or "base").strip().lower()
+    if value not in {"base", "mc_pade"}:
+        raise ValueError(f"Unsupported feature_set={feature_set!r}; expected base|mc_pade")
+    return value
+
+
+def _feature_family_counts(feature_cols: List[str]) -> Dict[str, int]:
+    mc_count = sum(1 for c in feature_cols if str(c).startswith(("mc_", "jd_", "rs_")))
+    pade_count = sum(1 for c in feature_cols if str(c).startswith("pade_"))
+    return {
+        "feature_count": int(len(feature_cols)),
+        "mc_feature_count": int(mc_count),
+        "pade_feature_count": int(pade_count),
+    }
 
 
 # GDELT tone data — lazy-loaded from pre-fetched pickle
@@ -1011,7 +1029,10 @@ def compute_features_single_symbol(
         future_return = (
             featured["close"].pct_change(FORWARD_PERIOD).shift(-FORWARD_PERIOD)
         )
-        featured["target"] = (future_return > 0).astype(int)
+        target = pd.Series(np.nan, index=featured.index, dtype=float)
+        valid_target = future_return.notna()
+        target.loc[valid_target] = (future_return.loc[valid_target] > 0).astype(float)
+        featured["target"] = target
 
         # Also store the actual forward return for backtesting
         featured["forward_return"] = future_return
@@ -1024,6 +1045,7 @@ def compute_features_single_symbol(
 
         # Drop rows where target is NaN (last FORWARD_PERIOD rows)
         featured = featured.dropna(subset=["target"])
+        featured["target"] = featured["target"].astype(int)
 
         # Select only the feature columns we want + target + metadata
         available_features = [c for c in ALL_FEATURE_COLS if c in featured.columns]
@@ -1197,14 +1219,22 @@ def build_feature_matrix(
 # =====================================================================
 
 
-def get_feature_columns(df: pd.DataFrame) -> List[str]:
-    """Get list of feature columns available in the DataFrame."""
-    return [c for c in ALL_FEATURE_COLS if c in df.columns]
+def get_feature_columns(df: pd.DataFrame, feature_set: str = "base") -> List[str]:
+    """Get list of feature columns available in the DataFrame for a feature set."""
+    fs = _resolve_feature_set(feature_set)
+    if fs == "mc_pade":
+        _get_mc_pade_generator()
+        candidates = ALL_FEATURE_COLS
+    else:
+        candidates = BASE_FEATURE_COLS
+    return [c for c in candidates if c in df.columns]
 
 
 def walk_forward_train(
     df: pd.DataFrame,
     n_folds: int = None,
+    feature_set: str = "base",
+    model_prefix: str = "meta_ensemble",
 ) -> Dict:
     """
     Walk-forward (expanding window) training and evaluation.
@@ -1220,8 +1250,16 @@ def walk_forward_train(
     from sklearn.metrics import accuracy_score, log_loss, roc_auc_score
     from sklearn.preprocessing import StandardScaler
 
-    feature_cols = get_feature_columns(df)
-    logger.info(f"Training with {len(feature_cols)} features on {len(df)} samples")
+    feature_cols = get_feature_columns(df, feature_set=feature_set)
+    logger.info(
+        "Training with %d features on %d samples (feature_set=%s, prefix=%s)",
+        len(feature_cols),
+        len(df),
+        feature_set,
+        model_prefix,
+    )
+    if len(feature_cols) == 0:
+        return {"error": f"No feature columns available for feature_set={feature_set}"}
 
     # Sort by date
     df = df.sort_index()
@@ -1462,19 +1500,34 @@ def walk_forward_train(
     )
     final_model.fit(X_all_scaled, y_all)
 
+    feature_meta = _feature_family_counts(feature_cols)
+
     # ── Save everything ───────────────────────────────────────────────
+    # Preserve legacy artifact names for the base model.
+    if model_prefix == "meta_ensemble":
+        model_path = MODEL_DIR / "meta_ensemble_model.pkl"
+        best_path = MODEL_DIR / "meta_ensemble_best_wf.pkl"
+        results_path = MODEL_DIR / "walk_forward_results.json"
+        pred_path = MODEL_DIR / "walk_forward_predictions.pkl"
+    else:
+        model_path = MODEL_DIR / f"{model_prefix}_model.pkl"
+        best_path = MODEL_DIR / f"{model_prefix}_best_wf.pkl"
+        results_path = MODEL_DIR / f"{model_prefix}_walk_forward_results.json"
+        pred_path = MODEL_DIR / f"{model_prefix}_walk_forward_predictions.pkl"
+
     # Save model
-    model_path = MODEL_DIR / "meta_ensemble_model.pkl"
     with open(model_path, "wb") as f:
         pickle.dump(
             {
                 "model": final_model,
                 "scaler": final_scaler,
                 "feature_cols": feature_cols,
+                "feature_set": feature_set,
                 "forward_period": FORWARD_PERIOD,
                 "trained_at": datetime.now().isoformat(),
                 "n_samples": len(df),
                 "n_features": len(feature_cols),
+                **feature_meta,
                 "walk_forward_results": all_results,
             },
             f,
@@ -1482,25 +1535,26 @@ def walk_forward_train(
     logger.info(f"Final model saved to {model_path}")
 
     # Save walk-forward best model
-    best_path = MODEL_DIR / "meta_ensemble_best_wf.pkl"
     with open(best_path, "wb") as f:
         pickle.dump(
             {
                 "model": best_model,
                 "scaler": best_scaler,
                 "feature_cols": feature_cols,
+                "feature_set": feature_set,
                 "forward_period": FORWARD_PERIOD,
                 "best_auc": best_auc,
+                **feature_meta,
             },
             f,
         )
 
     # Save results
-    results_path = MODEL_DIR / "walk_forward_results.json"
     with open(results_path, "w") as f:
         json.dump(
             {
                 "summary": {
+                    "feature_set": feature_set,
                     "forward_period": FORWARD_PERIOD,
                     "n_folds": len(all_results),
                     "avg_accuracy": float(avg_acc),
@@ -1509,6 +1563,7 @@ def walk_forward_train(
                     "avg_sharpe": float(avg_sharpe),
                     "avg_return": float(avg_return),
                     "n_features": len(feature_cols),
+                    **feature_meta,
                     "n_total_samples": len(df),
                     "feature_cols": feature_cols,
                 },
@@ -1521,18 +1576,19 @@ def walk_forward_train(
 
     # Save predictions
     if not all_preds.empty:
-        pred_path = MODEL_DIR / "walk_forward_predictions.pkl"
         all_preds.to_pickle(pred_path)
         logger.info(f"Predictions saved to {pred_path}")
 
     return {
         "summary": {
+            "feature_set": feature_set,
             "forward_period": FORWARD_PERIOD,
             "avg_accuracy": avg_acc,
             "avg_edge": avg_edge,
             "avg_auc": avg_auc,
             "avg_sharpe": avg_sharpe,
             "avg_return": avg_return,
+            **feature_meta,
         },
         "folds": all_results,
         "model": final_model,
@@ -1576,6 +1632,18 @@ def main():
         type=int,
         default=None,
         help="Limit number of walk-forward folds",
+    )
+    parser.add_argument(
+        "--feature-set",
+        type=str,
+        default="base",
+        choices=["base", "mc_pade"],
+        help="Feature family for training (default: base)",
+    )
+    parser.add_argument(
+        "--train-dual",
+        action="store_true",
+        help="Train both base and mc_pade models in one run",
     )
     parser.add_argument(
         "--forward-period",
@@ -1678,14 +1746,42 @@ def main():
             feature_matrix = pd.read_pickle(fm_path)
             logger.info(f"Loaded feature matrix: {len(feature_matrix)} samples")
 
-        results = walk_forward_train(feature_matrix, n_folds=args.n_folds)
+        if args.train_dual:
+            train_jobs = [
+                ("base", "meta_ensemble"),
+                ("mc_pade", "meta_ensemble_mc_pade"),
+            ]
+        else:
+            selected_set = _resolve_feature_set(args.feature_set)
+            selected_prefix = (
+                "meta_ensemble" if selected_set == "base" else "meta_ensemble_mc_pade"
+            )
+            train_jobs = [(selected_set, selected_prefix)]
 
-        if "error" not in results:
-            logger.info(f"\nFinal Results:")
+        for feature_set, model_prefix in train_jobs:
+            logger.info("\nTraining job: feature_set=%s model_prefix=%s", feature_set, model_prefix)
+            results = walk_forward_train(
+                feature_matrix,
+                n_folds=args.n_folds,
+                feature_set=feature_set,
+                model_prefix=model_prefix,
+            )
+
+            if "error" in results:
+                logger.error("Training failed for feature_set=%s: %s", feature_set, results["error"])
+                continue
+
+            logger.info("\nFinal Results (%s):", feature_set)
             logger.info(f"  Accuracy: {results['summary']['avg_accuracy']:.1%}")
             logger.info(f"  Edge:     {results['summary']['avg_edge']:+.1%}")
             logger.info(f"  AUC:      {results['summary']['avg_auc']:.4f}")
             logger.info(f"  Sharpe:   {results['summary']['avg_sharpe']:.2f}")
+            logger.info(
+                "  Features: total=%d mc=%d pade=%d",
+                int(results["summary"].get("feature_count", 0)),
+                int(results["summary"].get("mc_feature_count", 0)),
+                int(results["summary"].get("pade_feature_count", 0)),
+            )
 
 
 if __name__ == "__main__":

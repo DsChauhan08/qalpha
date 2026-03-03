@@ -279,6 +279,34 @@ def _render_provider_panel(status: dict) -> None:
         st.info("No provider status yet")
 
 
+def _render_pipeline_panel(status: dict) -> None:
+    st.subheader("Pipeline / Model Health")
+    latency = status.get("latency_ms") or {}
+    c1, c2, c3, c4, c5, c6 = st.columns(6)
+    c1.metric("Pipeline", str(status.get("pipeline_health", "n/a")))
+    c2.metric("Engine", str(status.get("decision_engine", "n/a")))
+    c3.metric("A/B Group", str(status.get("ab_group", "n/a")))
+    c4.metric("Anchor Fresh (min)", f"{float(status.get('anchor_cache_freshness_minutes', 0.0)):.1f}" if status.get("anchor_cache_freshness_minutes") is not None else "n/a")
+    c5.metric("Base Model", str(bool(status.get("model_health_base", False))))
+    c6.metric("MC Model", str(bool(status.get("model_health_mc", False))))
+
+    c7, c8, c9, c10 = st.columns(4)
+    c7.metric(
+        "Missing Base",
+        f"{float(status.get('feature_missing_ratio_base', 0.0)):.3f}",
+    )
+    c8.metric(
+        "Missing MC",
+        f"{float(status.get('feature_missing_ratio_mc', 0.0)):.3f}",
+    )
+    c9.metric(
+        "Cycle ms",
+        f"{float(latency.get('total_cycle_ms', 0.0)):.0f}",
+        f"budget={float(latency.get('budget_ms', 0.0)):.0f}",
+    )
+    c10.metric("Latency Pass", str(bool(latency.get("budget_pass", True))))
+
+
 def _auto_refresh(refresh_seconds: float) -> None:
     sec = max(1, int(round(float(refresh_seconds))))
     st.markdown(
@@ -315,6 +343,7 @@ def main() -> None:
     _render_risk_panel(status)
     _render_allocator_panel(status)
     _render_provider_panel(status)
+    _render_pipeline_panel(status)
 
     col1, col2 = st.columns(2)
     with col1:

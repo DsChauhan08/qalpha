@@ -32,9 +32,14 @@ from quantum_alpha.data.collectors.market_data import DataCollector
 from quantum_alpha.data.collectors.news_collector import NewsCollector
 from quantum_alpha.data.preprocessing.cleaners import DataCleaner
 from quantum_alpha.data.preprocessing.imputers import MissingValueImputer
+from quantum_alpha.execution.daily_anchor_cache import (
+    anchor_cache_freshness_minutes,
+    refresh_anchor_cache_if_needed,
+)
 from quantum_alpha.execution.openbb_api_manager import OpenBBAPIManager
 from quantum_alpha.features.technical.indicators import TechnicalFeatureGenerator
 from quantum_alpha.portfolio import PortfolioAllocatorEngine
+from quantum_alpha.strategy.meta_dual_blend_strategy import MetaDualBlendStrategy
 from quantum_alpha.strategy.news_lstm_strategy import NewsLSTMStrategy
 from quantum_alpha.strategy.signals import EnhancedCompositeStrategy
 
@@ -84,6 +89,14 @@ class SessionConfig:
     openbb_api_start_cmd: Optional[str] = None
     openbb_api_startup_timeout_s: float = 20.0
     portfolio_allocator_cfg: Optional[Dict] = None
+    meta_base_checkpoint_dir: Optional[str] = None
+    meta_mc_checkpoint_dir: Optional[str] = None
+    meta_blend_weights: Optional[List[float]] = None
+    anchor_cache_path: Optional[str] = None
+    ab_group: str = "auto"
+    latency_budget_ms: int = 20000
+    hybrid_gate_top_n: int = 40
+    anchor_universe_size: int = 200
 
 
 class PaperAccount:
@@ -254,11 +267,35 @@ def _parse_csv_str(value: str | None) -> list[str] | None:
     return out or None
 
 
+def _parse_csv_float(value: str | None) -> list[float] | None:
+    if not value:
+        return None
+    out: list[float] = []
+    for raw in value.split(","):
+        val = raw.strip()
+        if not val:
+            continue
+        try:
+            out.append(float(val))
+        except Exception:
+            continue
+    return out or None
+
+
 def _llm_cycle_active(cycle: int, cfg: SessionConfig) -> bool:
     if not cfg.llm_enabled:
         return False
     interval = max(1, int(cfg.llm_decision_interval_cycles))
     return ((int(cycle) - 1) % interval) == 0
+
+
+def _resolve_ab_group(cfg: SessionConfig, now_utc: datetime) -> str:
+    token = str(cfg.ab_group).strip().upper()
+    if token in {"A", "B"}:
+        return token
+    # Auto alternation by date parity (UTC date)
+    day_num = int(now_utc.strftime("%Y%m%d"))
+    return "A" if (day_num % 2 == 0) else "B"
 
 
 def _start_live_dashboard(
@@ -357,6 +394,7 @@ def _build_config(args: argparse.Namespace) -> SessionConfig:
         duration_minutes = _minutes_until_close(datetime.now(timezone.utc))
 
     llm_models = _parse_csv_str(args.llm_models)
+    meta_blend_weights = _parse_csv_float(args.meta_blend_weights)
 
     return SessionConfig(
         symbols=symbols,
@@ -430,6 +468,14 @@ def _build_config(args: argparse.Namespace) -> SessionConfig:
         openbb_api_start_cmd=os.getenv("OPENBB_API_START_CMD"),
         openbb_api_startup_timeout_s=float(openbb_api_cfg.get("startup_timeout_s", 20.0)),
         portfolio_allocator_cfg=portfolio_allocator_cfg if isinstance(portfolio_allocator_cfg, dict) else {},
+        meta_base_checkpoint_dir=args.meta_base_checkpoint_dir,
+        meta_mc_checkpoint_dir=args.meta_mc_checkpoint_dir,
+        meta_blend_weights=meta_blend_weights,
+        anchor_cache_path=args.anchor_cache_path,
+        ab_group=str(args.ab_group).upper(),
+        latency_budget_ms=max(1000, int(args.latency_budget_ms)),
+        hybrid_gate_top_n=max(1, int(args.hybrid_gate_top_n)),
+        anchor_universe_size=max(1, int(args.anchor_universe_size)),
     )
 
 
@@ -730,6 +776,126 @@ def _compute_target_weights_news_lstm(
     return weights, decisions[:20], alloc_diag
 
 
+def _compute_target_weights_meta_blend(
+    featured: Dict[str, pd.DataFrame],
+    cfg: SessionConfig,
+    anchor_predictions: Dict[str, Dict[str, object]],
+    llm_active: bool,
+    news_cache: Dict[str, List[str]],
+    gate_strategy: Optional[NewsLSTMStrategy] = None,
+    allocator: Optional[PortfolioAllocatorEngine] = None,
+    timestamp: Optional[datetime] = None,
+    top_n_for_gate: int = 40,
+) -> tuple[Dict[str, float], List[Dict], Dict[str, object], Dict[str, object]]:
+    raw_scores: Dict[str, float] = {}
+    decisions: List[Dict] = []
+
+    eligible: list[tuple[str, Dict[str, object]]] = []
+    for symbol, pred in anchor_predictions.items():
+        if symbol not in featured:
+            continue
+        eligible.append((symbol, pred))
+
+    # Rank by confidence for hybrid gating scope.
+    eligible.sort(
+        key=lambda kv: abs(float(kv[1].get("confidence", 0.0))),
+        reverse=True,
+    )
+    gated_set = {sym for sym, _ in eligible[: max(1, int(top_n_for_gate))]}
+
+    miss_base_vals: list[float] = []
+    miss_mc_vals: list[float] = []
+    used_blended = 0
+    used_base = 0
+    used_mc = 0
+
+    for symbol, pred in eligible:
+        up_prob = float(pred.get("up_probability_blend", pred.get("up_probability", 0.5)))
+        confidence = float(pred.get("confidence", abs(up_prob - 0.5) * 2.0))
+        signal = float((up_prob - 0.5) * 2.0)
+
+        miss_base = float(pred.get("missing_feature_ratio_base", 1.0))
+        miss_mc = float(pred.get("missing_feature_ratio_mc", 1.0))
+        model_used = str(pred.get("model_used", "unknown"))
+        miss_base_vals.append(miss_base)
+        miss_mc_vals.append(miss_mc)
+        if model_used == "blended":
+            used_blended += 1
+        elif model_used == "base_only":
+            used_base += 1
+        elif model_used == "mc_only":
+            used_mc += 1
+
+        llm_gate_pass = True
+        llm_decision = "SKIP"
+        if symbol in gated_set and gate_strategy is not None and llm_active:
+            headlines = news_cache.get(symbol, [])
+            try:
+                live = gate_strategy.generate_signals_live(df=featured[symbol], symbol=symbol, headlines=headlines)
+                llm_gate_pass = bool(live.get("llm_gate_pass", False))
+                llm_decision = str(live.get("llm_decision", "HOLD"))
+            except Exception:
+                llm_gate_pass = True
+                llm_decision = "ERROR_FALLBACK_PASS"
+
+        if cfg.long_only and signal < 0:
+            signal = 0.0
+        if signal > 0 and cfg.min_long_signal > 0:
+            signal = max(signal, cfg.min_long_signal)
+
+        trade_allowed = abs(signal) >= cfg.signal_threshold
+        if symbol in gated_set and gate_strategy is not None and llm_active and not llm_gate_pass:
+            trade_allowed = False
+
+        decisions.append(
+            {
+                "symbol": symbol,
+                "signal": float(signal),
+                "confidence": float(confidence),
+                "up_probability_blend": float(up_prob),
+                "up_probability_base": pred.get("up_probability_base"),
+                "up_probability_mc": pred.get("up_probability_mc"),
+                "missing_feature_ratio_base": float(miss_base),
+                "missing_feature_ratio_mc": float(miss_mc),
+                "model_used": model_used,
+                "llm_active_cycle": bool(llm_active and symbol in gated_set),
+                "llm_decision": llm_decision,
+                "llm_gate_pass": bool(llm_gate_pass),
+                "mode": "meta_blend_hybrid",
+            }
+        )
+
+        if not trade_allowed:
+            continue
+        if cfg.long_only:
+            score = max(signal, 0.0) * max(confidence, 0.05)
+        else:
+            score = signal * max(confidence, 0.05)
+        if abs(score) > 0:
+            raw_scores[symbol] = float(score)
+
+    decisions.sort(key=lambda x: abs(float(x.get("signal", 0.0))), reverse=True)
+    weights, alloc_diag = _portfolio_allocate(
+        allocator=allocator,
+        raw_scores=raw_scores,
+        featured=featured,
+        cfg=cfg,
+        timestamp=timestamp,
+    )
+
+    health = {
+        "feature_missing_ratio_base": float(np.mean(miss_base_vals)) if miss_base_vals else 1.0,
+        "feature_missing_ratio_mc": float(np.mean(miss_mc_vals)) if miss_mc_vals else 1.0,
+        "model_usage": {
+            "blended": int(used_blended),
+            "base_only": int(used_base),
+            "mc_only": int(used_mc),
+        },
+        "n_predictions": int(len(eligible)),
+    }
+    return weights, decisions[:20], alloc_diag, health
+
+
 def _save_outputs(
     cfg: SessionConfig,
     equity_curve: List[Dict],
@@ -874,6 +1040,10 @@ def run_realtime_paper(cfg: SessionConfig) -> Dict:
             "reason": "manage_process_disabled",
         }
 
+    strategy: object
+    hybrid_gate_strategy: Optional[NewsLSTMStrategy] = None
+    meta_blend_strategy: Optional[MetaDualBlendStrategy] = None
+    meta_blend_init_error: Optional[str] = None
     if cfg.strategy_type == "news_lstm":
         strategy = NewsLSTMStrategy(
             checkpoint_name=cfg.checkpoint_name,
@@ -887,8 +1057,45 @@ def run_realtime_paper(cfg: SessionConfig) -> Dict:
             llm_max_calls=cfg.llm_max_calls,
             llm_env_path=cfg.llm_env_path,
         )
+    elif cfg.strategy_type == "meta_blend_hybrid":
+        try:
+            blend_weights = (
+                tuple(cfg.meta_blend_weights[:2])
+                if cfg.meta_blend_weights and len(cfg.meta_blend_weights) >= 2
+                else (0.35, 0.65)
+            )
+            meta_blend_strategy = MetaDualBlendStrategy(
+                base_checkpoint_dir=cfg.meta_base_checkpoint_dir,
+                mc_checkpoint_dir=cfg.meta_mc_checkpoint_dir,
+                blend_weights=blend_weights,
+            )
+            strategy = meta_blend_strategy
+        except Exception as exc:
+            meta_blend_init_error = str(exc)
+            strategy = EnhancedCompositeStrategy()
+        # Optional gate model for top-N candidate adjudication.
+        if cfg.llm_enabled:
+            try:
+                hybrid_gate_strategy = NewsLSTMStrategy(
+                    checkpoint_name=cfg.checkpoint_name,
+                    signal_threshold=cfg.signal_threshold,
+                    llm_enabled=cfg.llm_enabled,
+                    llm_mode=cfg.llm_mode,
+                    llm_models=cfg.llm_models,
+                    llm_min_alignment=cfg.llm_min_alignment,
+                    llm_fail_mode=cfg.llm_fail_mode,
+                    llm_scope=cfg.llm_scope,
+                    llm_max_calls=cfg.llm_max_calls,
+                    llm_env_path=cfg.llm_env_path,
+                )
+            except Exception:
+                hybrid_gate_strategy = None
     else:
         strategy = EnhancedCompositeStrategy()
+
+    enhanced_fallback_strategy = (
+        strategy if isinstance(strategy, EnhancedCompositeStrategy) else EnhancedCompositeStrategy()
+    )
 
     account = PaperAccount(
         initial_capital=cfg.capital,
@@ -911,6 +1118,21 @@ def run_realtime_paper(cfg: SessionConfig) -> Dict:
     liquid_symbols_cache: Optional[List[str]] = None
     llm_active_this_cycle = False
     allocator_diag: Dict[str, object] = {}
+    ab_group_active = _resolve_ab_group(cfg, session_start)
+    decision_engine = cfg.strategy_type
+    anchor_cache_payload: Dict[str, object] = {}
+    pipeline_health = "ok"
+    feature_missing_ratio_base = 0.0
+    feature_missing_ratio_mc = 0.0
+    model_health_base = bool(meta_blend_strategy is not None and meta_blend_strategy.model_health().get("base_ok"))
+    model_health_mc = bool(meta_blend_strategy is not None and meta_blend_strategy.model_health().get("mc_ok"))
+    latency_ms = {
+        "data_ms": 0.0,
+        "decision_ms": 0.0,
+        "total_cycle_ms": 0.0,
+        "budget_ms": float(cfg.latency_budget_ms),
+        "budget_pass": True,
+    }
 
     _write_live_status(
         cfg,
@@ -932,8 +1154,21 @@ def run_realtime_paper(cfg: SessionConfig) -> Dict:
             "provider_status": collector.get_provider_diagnostics().get("last_selection", {}),
             "provider_degraded": False,
             "openbb_api": openbb_boot,
+            "decision_engine": decision_engine,
+            "ab_group": ab_group_active,
+            "pipeline_health": pipeline_health,
+            "anchor_cache_freshness_minutes": None,
+            "model_health_base": bool(model_health_base),
+            "model_health_mc": bool(model_health_mc),
+            "feature_missing_ratio_base": float(feature_missing_ratio_base),
+            "feature_missing_ratio_mc": float(feature_missing_ratio_mc),
+            "latency_ms": latency_ms,
             "output_dir": str(cfg.output_dir),
-            "note": "Session started, waiting for first data collection cycle",
+            "note": (
+                "Session started, waiting for first data collection cycle"
+                if not meta_blend_init_error
+                else f"Session started with fallback: {meta_blend_init_error}"
+            ),
             **_pnl_fields(
                 equity=account.cash,
                 starting_capital=cfg.capital,
@@ -945,6 +1180,7 @@ def run_realtime_paper(cfg: SessionConfig) -> Dict:
     try:
         while datetime.now(timezone.utc) < session_end:
             cycle += 1
+            cycle_t0 = time.perf_counter()
             now = datetime.now(timezone.utc)
             openbb_health = bool(openbb_manager.health()) if cfg.openbb_enabled else False
 
@@ -962,10 +1198,16 @@ def run_realtime_paper(cfg: SessionConfig) -> Dict:
             else:
                 symbols_this_cycle = list(cfg.symbols)
 
-            if cfg.strategy_type == "news_lstm":
+            if cfg.strategy_type in {"news_lstm", "meta_blend_hybrid"}:
                 llm_active_this_cycle = _llm_cycle_active(cycle=cycle, cfg=cfg)
                 if hasattr(strategy, "_llm_router") and getattr(strategy, "_llm_router", None):
                     strategy._llm_router.config.enabled = bool(llm_active_this_cycle)
+                if (
+                    hybrid_gate_strategy is not None
+                    and hasattr(hybrid_gate_strategy, "_llm_router")
+                    and getattr(hybrid_gate_strategy, "_llm_router", None)
+                ):
+                    hybrid_gate_strategy._llm_router.config.enabled = bool(llm_active_this_cycle)
             else:
                 llm_active_this_cycle = False
 
@@ -993,6 +1235,15 @@ def run_realtime_paper(cfg: SessionConfig) -> Dict:
                         "allocator_chosen_stack": allocator_diag.get("chosen_stack"),
                         "risk_snapshot": allocator_diag.get("risk_snapshot", {}),
                         "provider_status": collector.get_provider_diagnostics().get("last_selection", {}),
+                        "decision_engine": decision_engine,
+                        "ab_group": ab_group_active,
+                        "pipeline_health": pipeline_health,
+                        "anchor_cache_freshness_minutes": anchor_cache_freshness_minutes(anchor_cache_payload),
+                        "model_health_base": bool(model_health_base),
+                        "model_health_mc": bool(model_health_mc),
+                        "feature_missing_ratio_base": float(feature_missing_ratio_base),
+                        "feature_missing_ratio_mc": float(feature_missing_ratio_mc),
+                        "latency_ms": latency_ms,
                         "openbb_api": {
                             "enabled": bool(cfg.openbb_enabled),
                             "healthy": bool(openbb_health),
@@ -1006,6 +1257,7 @@ def run_realtime_paper(cfg: SessionConfig) -> Dict:
                     },
                 )
 
+            data_t0 = time.perf_counter()
             featured_all = _collect_featured_data(
                 collector=collector,
                 cleaner=cleaner,
@@ -1018,6 +1270,8 @@ def run_realtime_paper(cfg: SessionConfig) -> Dict:
                 use_cache=(cfg.interval.lower() == "1d"),
                 progress_callback=_progress_update,
             )
+            data_t1 = time.perf_counter()
+            latency_ms["data_ms"] = float((data_t1 - data_t0) * 1000.0)
 
             provider_status = collector.get_provider_diagnostics().get("last_selection", {})
             provider_degraded = any(
@@ -1025,8 +1279,17 @@ def run_realtime_paper(cfg: SessionConfig) -> Dict:
                 for v in provider_status.values()
                 if isinstance(v, dict)
             )
+            if provider_degraded and pipeline_health == "ok":
+                pipeline_health = "degraded"
 
             if not featured_all:
+                cycle_t1 = time.perf_counter()
+                latency_ms["decision_ms"] = 0.0
+                latency_ms["total_cycle_ms"] = float((cycle_t1 - cycle_t0) * 1000.0)
+                latency_ms["budget_pass"] = bool(
+                    float(latency_ms.get("total_cycle_ms", 0.0)) <= float(cfg.latency_budget_ms)
+                )
+                latency_ms["budget_ms"] = float(cfg.latency_budget_ms)
                 _write_live_status(
                     cfg,
                     {
@@ -1042,6 +1305,15 @@ def run_realtime_paper(cfg: SessionConfig) -> Dict:
                         "llm_decision_interval_cycles": int(cfg.llm_decision_interval_cycles),
                         "provider_status": provider_status,
                         "provider_degraded": bool(provider_degraded),
+                        "decision_engine": decision_engine,
+                        "ab_group": ab_group_active,
+                        "pipeline_health": "failed",
+                        "anchor_cache_freshness_minutes": anchor_cache_freshness_minutes(anchor_cache_payload),
+                        "model_health_base": bool(model_health_base),
+                        "model_health_mc": bool(model_health_mc),
+                        "feature_missing_ratio_base": float(feature_missing_ratio_base),
+                        "feature_missing_ratio_mc": float(feature_missing_ratio_mc),
+                        "latency_ms": latency_ms,
                         "openbb_api": {
                             "enabled": bool(cfg.openbb_enabled),
                             "healthy": bool(openbb_health),
@@ -1102,6 +1374,13 @@ def run_realtime_paper(cfg: SessionConfig) -> Dict:
 
             if last_bar_time is not None and latest_ts <= last_bar_time and cycle > 1:
                 current_equity = account.equity(last_prices)
+                latency_ms["decision_ms"] = 0.0
+                cycle_t1 = time.perf_counter()
+                latency_ms["total_cycle_ms"] = float((cycle_t1 - cycle_t0) * 1000.0)
+                latency_ms["budget_pass"] = bool(
+                    float(latency_ms.get("total_cycle_ms", 0.0)) <= float(cfg.latency_budget_ms)
+                )
+                latency_ms["budget_ms"] = float(cfg.latency_budget_ms)
                 equity_curve.append(
                     {
                         "timestamp": str(pd.Timestamp.now(tz="UTC")),
@@ -1136,6 +1415,15 @@ def run_realtime_paper(cfg: SessionConfig) -> Dict:
                         "risk_snapshot": allocator_diag.get("risk_snapshot", {}),
                         "provider_status": provider_status,
                         "provider_degraded": bool(provider_degraded),
+                        "decision_engine": decision_engine,
+                        "ab_group": ab_group_active,
+                        "pipeline_health": pipeline_health,
+                        "anchor_cache_freshness_minutes": anchor_cache_freshness_minutes(anchor_cache_payload),
+                        "model_health_base": bool(model_health_base),
+                        "model_health_mc": bool(model_health_mc),
+                        "feature_missing_ratio_base": float(feature_missing_ratio_base),
+                        "feature_missing_ratio_mc": float(feature_missing_ratio_mc),
+                        "latency_ms": latency_ms,
                         "openbb_api": {
                             "enabled": bool(cfg.openbb_enabled),
                             "healthy": bool(openbb_health),
@@ -1158,7 +1446,10 @@ def run_realtime_paper(cfg: SessionConfig) -> Dict:
 
             last_bar_time = latest_ts
 
+            decision_t0 = time.perf_counter()
             if cfg.strategy_type == "news_lstm":
+                decision_engine = "news_lstm"
+                pipeline_health = "ok"
                 should_refresh_news = (
                     news_last_refresh is None
                     or (now - news_last_refresh).total_seconds() >= cfg.news_poll_seconds
@@ -1201,14 +1492,149 @@ def run_realtime_paper(cfg: SessionConfig) -> Dict:
                     allocator=allocator,
                     timestamp=latest_ts.to_pydatetime() if hasattr(latest_ts, "to_pydatetime") else datetime.now(),
                 )
+                feature_missing_ratio_base = 0.0
+                feature_missing_ratio_mc = 0.0
             else:
-                target_weights, latest_decisions, allocator_diag = _compute_target_weights_enhanced(
-                    strategy=strategy,
-                    featured=featured_trade,
-                    cfg=cfg,
-                    allocator=allocator,
-                    timestamp=latest_ts.to_pydatetime() if hasattr(latest_ts, "to_pydatetime") else datetime.now(),
-                )
+                if cfg.strategy_type == "meta_blend_hybrid" and ab_group_active == "B":
+                    decision_engine = "meta_blend_hybrid"
+                    model_health = (
+                        meta_blend_strategy.model_health()
+                        if meta_blend_strategy is not None
+                        else {"base_ok": False, "mc_ok": False}
+                    )
+                    model_health_base = bool(model_health.get("base_ok", False))
+                    model_health_mc = bool(model_health.get("mc_ok", False))
+                    if not model_health_base and not model_health_mc:
+                        pipeline_health = "failed"
+                    elif not model_health_base or not model_health_mc:
+                        pipeline_health = "degraded"
+                    else:
+                        pipeline_health = "ok"
+
+                    # Build/refresh daily anchor cache on top liquid anchor universe.
+                    anchor_featured = dict(featured_all)
+                    if len(anchor_featured) > cfg.anchor_universe_size:
+                        top_anchor = set(
+                            _top_dollar_volume_symbols(anchor_featured, cfg.anchor_universe_size)
+                        )
+                        anchor_featured = {
+                            sym: frame for sym, frame in anchor_featured.items() if sym in top_anchor
+                        }
+
+                    anchor_cache_path = (
+                        Path(cfg.anchor_cache_path)
+                        if cfg.anchor_cache_path
+                        else (cfg.output_dir / "anchor_cache.json")
+                    )
+                    if meta_blend_strategy is not None:
+                        anchor_cache_payload = refresh_anchor_cache_if_needed(
+                            anchor_featured,
+                            meta_blend_strategy,
+                            cache_path=anchor_cache_path,
+                            force=False,
+                            decision_engine=decision_engine,
+                        )
+                    else:
+                        anchor_cache_payload = {}
+
+                    anchor_predictions = (
+                        anchor_cache_payload.get("predictions", {})
+                        if isinstance(anchor_cache_payload, dict)
+                        else {}
+                    )
+
+                    if not isinstance(anchor_predictions, dict) or len(anchor_predictions) == 0:
+                        pipeline_health = "failed"
+                        decision_engine = "enhanced_fallback_no_anchor"
+                        target_weights, latest_decisions, allocator_diag = _compute_target_weights_enhanced(
+                            strategy=enhanced_fallback_strategy,
+                            featured=featured_trade,
+                            cfg=cfg,
+                            allocator=allocator,
+                            timestamp=latest_ts.to_pydatetime() if hasattr(latest_ts, "to_pydatetime") else datetime.now(),
+                        )
+                        feature_missing_ratio_base = 1.0
+                        feature_missing_ratio_mc = 1.0
+                    else:
+                        # Hybrid gating: refresh news only for top-N confidence symbols.
+                        candidate_syms = sorted(
+                            anchor_predictions.keys(),
+                            key=lambda s: abs(float(anchor_predictions[s].get("confidence", 0.0))),
+                            reverse=True,
+                        )[: max(1, int(cfg.hybrid_gate_top_n))]
+
+                        should_refresh_news = (
+                            news_last_refresh is None
+                            or (now - news_last_refresh).total_seconds() >= cfg.news_poll_seconds
+                        )
+                        if should_refresh_news and cfg.llm_enabled and hybrid_gate_strategy is not None:
+                            refreshed = 0
+                            for sym in candidate_syms:
+                                if sym not in featured_trade:
+                                    continue
+                                try:
+                                    articles = news_collector.fetch_live_news(
+                                        sym,
+                                        max_articles=cfg.news_max_articles,
+                                    )
+                                except Exception:
+                                    articles = []
+                                headlines: List[str] = []
+                                for article in articles:
+                                    title = str(article.get("title", "")).strip()
+                                    summary = str(article.get("summary", "")).strip()
+                                    text = title if title else summary
+                                    if text:
+                                        headlines.append(text[:180])
+                                news_cache[sym] = headlines
+                                refreshed += 1
+                            news_last_refresh = now
+                            print(
+                                f"[{now}] refreshed hybrid gate news for {refreshed} symbols",
+                                flush=True,
+                            )
+
+                        llm_gate_active = bool(llm_active_this_cycle)
+                        if float(latency_ms.get("data_ms", 0.0)) > float(cfg.latency_budget_ms) * 0.8:
+                            llm_gate_active = False
+                            if pipeline_health != "failed":
+                                pipeline_health = "degraded"
+
+                        target_weights, latest_decisions, allocator_diag, meta_health = _compute_target_weights_meta_blend(
+                            featured=featured_trade,
+                            cfg=cfg,
+                            anchor_predictions=anchor_predictions,
+                            llm_active=llm_gate_active,
+                            news_cache=news_cache,
+                            gate_strategy=hybrid_gate_strategy if cfg.llm_enabled else None,
+                            allocator=allocator,
+                            timestamp=latest_ts.to_pydatetime() if hasattr(latest_ts, "to_pydatetime") else datetime.now(),
+                            top_n_for_gate=cfg.hybrid_gate_top_n,
+                        )
+                        feature_missing_ratio_base = float(meta_health.get("feature_missing_ratio_base", 1.0))
+                        feature_missing_ratio_mc = float(meta_health.get("feature_missing_ratio_mc", 1.0))
+                        if feature_missing_ratio_base > 0.40 or feature_missing_ratio_mc > 0.40:
+                            pipeline_health = "degraded"
+                else:
+                    # Enhanced path (default + A/B control group A)
+                    decision_engine = (
+                        "enhanced_ab_a"
+                        if cfg.strategy_type == "meta_blend_hybrid" and ab_group_active == "A"
+                        else "enhanced"
+                    )
+                    pipeline_health = "ok"
+                    target_weights, latest_decisions, allocator_diag = _compute_target_weights_enhanced(
+                        strategy=enhanced_fallback_strategy,
+                        featured=featured_trade,
+                        cfg=cfg,
+                        allocator=allocator,
+                        timestamp=latest_ts.to_pydatetime() if hasattr(latest_ts, "to_pydatetime") else datetime.now(),
+                    )
+                    feature_missing_ratio_base = 0.0
+                    feature_missing_ratio_mc = 0.0
+
+            decision_t1 = time.perf_counter()
+            latency_ms["decision_ms"] = float((decision_t1 - decision_t0) * 1000.0)
 
             account.rebalance(
                 target_weights=target_weights,
@@ -1227,6 +1653,14 @@ def run_realtime_paper(cfg: SessionConfig) -> Dict:
                     "n_positions": len(account.positions),
                 }
             )
+            cycle_t1 = time.perf_counter()
+            latency_ms["total_cycle_ms"] = float((cycle_t1 - cycle_t0) * 1000.0)
+            latency_ms["budget_pass"] = bool(
+                float(latency_ms.get("total_cycle_ms", 0.0)) <= float(cfg.latency_budget_ms)
+            )
+            latency_ms["budget_ms"] = float(cfg.latency_budget_ms)
+            if not bool(latency_ms.get("budget_pass", True)):
+                pipeline_health = "degraded" if pipeline_health != "failed" else pipeline_health
 
             _write_live_status(
                 cfg,
@@ -1258,6 +1692,15 @@ def run_realtime_paper(cfg: SessionConfig) -> Dict:
                     "risk_snapshot": allocator_diag.get("risk_snapshot", {}),
                     "provider_status": provider_status,
                     "provider_degraded": bool(provider_degraded),
+                    "decision_engine": decision_engine,
+                    "ab_group": ab_group_active,
+                    "pipeline_health": pipeline_health,
+                    "anchor_cache_freshness_minutes": anchor_cache_freshness_minutes(anchor_cache_payload),
+                    "model_health_base": bool(model_health_base),
+                    "model_health_mc": bool(model_health_mc),
+                    "feature_missing_ratio_base": float(feature_missing_ratio_base),
+                    "feature_missing_ratio_mc": float(feature_missing_ratio_mc),
+                    "latency_ms": latency_ms,
                     "openbb_api": {
                         "enabled": bool(cfg.openbb_enabled),
                         "healthy": bool(openbb_health),
@@ -1278,7 +1721,9 @@ def run_realtime_paper(cfg: SessionConfig) -> Dict:
                 f"[{latest_ts}] cycle={cycle} equity=${current_equity:,.2f} "
                 f"pnl=${(current_equity - cfg.capital):,.2f} cash=${account.cash:,.2f} "
                 f"positions={len(account.positions)} trades={len(account.trades)} "
-                f"llm_cycle={'on' if llm_active_this_cycle else 'off'}",
+                f"llm_cycle={'on' if llm_active_this_cycle else 'off'} "
+                f"engine={decision_engine} "
+                f"lat={latency_ms.get('total_cycle_ms', 0.0):.0f}ms",
                 flush=True,
             )
             time.sleep(cfg.poll_seconds)
@@ -1310,6 +1755,15 @@ def run_realtime_paper(cfg: SessionConfig) -> Dict:
         "slippage_bps": cfg.slippage_bps,
         "min_commission": cfg.min_commission,
         "min_trade_notional": cfg.min_trade_notional,
+        "decision_engine": decision_engine,
+        "ab_group": ab_group_active,
+        "pipeline_health": pipeline_health,
+        "anchor_cache_freshness_minutes": anchor_cache_freshness_minutes(anchor_cache_payload),
+        "model_health_base": bool(model_health_base),
+        "model_health_mc": bool(model_health_mc),
+        "feature_missing_ratio_base": float(feature_missing_ratio_base),
+        "feature_missing_ratio_mc": float(feature_missing_ratio_mc),
+        "latency_ms": latency_ms,
         "allocator_chosen_stack": allocator_diag.get("chosen_stack"),
         "risk_snapshot": allocator_diag.get("risk_snapshot", {}),
         "provider_status": collector.get_provider_diagnostics().get("last_selection", {}),
@@ -1328,6 +1782,15 @@ def run_realtime_paper(cfg: SessionConfig) -> Dict:
             "profit_dollars": profit,
             "return_pct": return_pct,
             "trades": len(account.trades),
+            "decision_engine": decision_engine,
+            "ab_group": ab_group_active,
+            "pipeline_health": pipeline_health,
+            "anchor_cache_freshness_minutes": anchor_cache_freshness_minutes(anchor_cache_payload),
+            "model_health_base": bool(model_health_base),
+            "model_health_mc": bool(model_health_mc),
+            "feature_missing_ratio_base": float(feature_missing_ratio_base),
+            "feature_missing_ratio_mc": float(feature_missing_ratio_mc),
+            "latency_ms": latency_ms,
             "allocator_chosen_stack": allocator_diag.get("chosen_stack"),
             "risk_snapshot": allocator_diag.get("risk_snapshot", {}),
             "provider_status": collector.get_provider_diagnostics().get("last_selection", {}),
@@ -1369,7 +1832,7 @@ def main() -> None:
         "--strategy-type",
         type=str,
         default="enhanced",
-        choices=["enhanced", "news_lstm"],
+        choices=["enhanced", "news_lstm", "meta_blend_hybrid"],
         help="Signal engine to use",
     )
     parser.add_argument(
@@ -1377,6 +1840,55 @@ def main() -> None:
         type=str,
         default=None,
         help="News-LSTM checkpoint name (auto-detect when omitted)",
+    )
+    parser.add_argument(
+        "--meta-base-checkpoint-dir",
+        type=str,
+        default=None,
+        help="Checkpoint directory for base meta model",
+    )
+    parser.add_argument(
+        "--meta-mc-checkpoint-dir",
+        type=str,
+        default=None,
+        help="Checkpoint directory for MC/Padé meta model",
+    )
+    parser.add_argument(
+        "--meta-blend-weights",
+        type=str,
+        default=None,
+        help="Comma-separated blend weights: base,mc (default 0.35,0.65)",
+    )
+    parser.add_argument(
+        "--anchor-cache-path",
+        type=str,
+        default=None,
+        help="Path to daily anchor cache JSON (default: session_dir/anchor_cache.json)",
+    )
+    parser.add_argument(
+        "--ab-group",
+        type=str,
+        default="auto",
+        choices=["auto", "A", "B", "a", "b"],
+        help="A/B routing group for meta_blend_hybrid",
+    )
+    parser.add_argument(
+        "--latency-budget-ms",
+        type=int,
+        default=20000,
+        help="Cycle latency budget in milliseconds",
+    )
+    parser.add_argument(
+        "--hybrid-gate-top-n",
+        type=int,
+        default=40,
+        help="Apply hybrid news/LLM gate only to top-N anchor candidates",
+    )
+    parser.add_argument(
+        "--anchor-universe-size",
+        type=int,
+        default=200,
+        help="Anchor scoring universe size (top liquid symbols)",
     )
     parser.add_argument(
         "--llm-enable",
@@ -1555,7 +2067,8 @@ def main() -> None:
         f"min_notional=${cfg.min_trade_notional:,.0f} comm={cfg.commission_rate} "
         f"min_comm=${cfg.min_commission:.2f} slip={cfg.slippage_bps:.1f}bps "
         f"news_poll={cfg.news_poll_seconds}s llm={'on' if cfg.llm_enabled else 'off'} "
-        f"llm_every={cfg.llm_decision_interval_cycles}cy",
+        f"llm_every={cfg.llm_decision_interval_cycles}cy "
+        f"ab={cfg.ab_group} latency_budget={cfg.latency_budget_ms}ms",
         flush=True,
     )
     dashboard_meta: Dict[str, object] = {"started": False}

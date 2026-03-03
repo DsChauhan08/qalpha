@@ -200,8 +200,8 @@ strategy:
     lottery_stop_loss: 0.08
     lottery_max_per_symbol: 0.0075
     core_mix:
-      QQQ: 0.70
-      IWM: 0.30
+      QQQ: 0.72
+      IWM: 0.28
 
 # Technical Indicators
 indicators:

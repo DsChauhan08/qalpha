@@ -136,6 +136,14 @@ risk:
   max_position_size: 0.05  # Max 5% per position
   max_portfolio_leverage: 1.10
   max_drawdown: 0.10  # 10% max drawdown
+  hard_drawdown_limit: 0.20
+  hard_drawdown_action: "flatten"
+  hard_drawdown_cooldown_days: 20
+  hard_drawdown_recovery_level: 0.10
+  hard_drawdown_require_positive_quant_ir: true
+  hard_drawdown_ir_lookback_bars: 63
+  core_drawdown_scaling_enabled: true
+  core_min_exposure_in_drawdown: 0.35
   max_daily_loss: 0.03
   max_weekly_loss: 0.07
   var_confidence: 0.95
@@ -173,6 +181,7 @@ strategy:
   long_only: true
   risk_off_cash: false
   signal_scale: 1.2
+  enhanced_debug_components: false
   min_long_signal: 0.10
   market_off_scale: 0.80
   anchor_core_to_quant_composite: false
@@ -245,7 +254,8 @@ validation:
   promotion_oos_required_windows: 4
   promotion_oos_required_beats: 3
   paper_min_bars: 120
-  constraint_max_drawdown: 0.25
+  constraint_max_drawdown: 0.20
   constraint_beta_min: 0.8
   constraint_beta_max: 1.2
-  constraint_min_information_ratio: 0.0
+  constraint_min_information_ratio: 0.10
+  constraint_min_excess_total_return_vs_quant: 0.0

@@ -1,14 +1,19 @@
 import pandas as pd
+import yaml
 
 from quantum_alpha.backtesting.robustness_suite import (
     _benchmark_relative_metrics,
     _score_candidate,
 )
 from quantum_alpha.main import (
+    _init_hard_drawdown_state,
     _rolling_oos_vs_benchmark,
     _select_liquid_subset,
     _normalize_weights,
+    load_config,
+    _promotion_verdict_from_metrics,
     _strict_promotion_ready,
+    _update_hard_drawdown_guard,
     _update_loss_limit_state,
 )
 
@@ -254,3 +259,98 @@ def test_update_loss_limit_state_triggers_daily_and_weekly_stops():
     )
     assert r2["weekly_stop_active"] is True
     assert r2["stop_active"] is True
+
+
+def test_hard_drawdown_guard_triggers_and_reenters_after_cooldown():
+    state = {}
+    _init_hard_drawdown_state(state)
+    ts0 = pd.Timestamp("2026-01-02")
+
+    r0 = _update_hard_drawdown_guard(
+        state=state,
+        timestamp=ts0,
+        current_drawdown=-0.21,
+        equity_curve=[],
+        quant_returns=None,
+        limit=0.20,
+        action="flatten",
+        cooldown_days=5,
+        recovery_level=0.10,
+        require_positive_quant_ir=False,
+        ir_lookback_bars=63,
+    )
+    assert r0["trigger_now"] is True
+    assert r0["halted"] is True
+    assert r0["force_flatten"] is True
+
+    r1 = _update_hard_drawdown_guard(
+        state=state,
+        timestamp=ts0 + pd.Timedelta(days=2),
+        current_drawdown=-0.12,
+        equity_curve=[],
+        quant_returns=None,
+        limit=0.20,
+        action="flatten",
+        cooldown_days=5,
+        recovery_level=0.10,
+        require_positive_quant_ir=False,
+        ir_lookback_bars=63,
+    )
+    assert r1["halted"] is True
+    assert r1["reentered"] is False
+
+    r2 = _update_hard_drawdown_guard(
+        state=state,
+        timestamp=ts0 + pd.Timedelta(days=6),
+        current_drawdown=-0.08,
+        equity_curve=[],
+        quant_returns=None,
+        limit=0.20,
+        action="flatten",
+        cooldown_days=5,
+        recovery_level=0.10,
+        require_positive_quant_ir=False,
+        ir_lookback_bars=63,
+    )
+    assert r2["halted"] is False
+    assert r2["reentered"] is True
+    assert int(state.get("hard_dd_reentries", 0)) == 1
+
+
+def test_promotion_verdict_collects_fail_reasons():
+    verdict = _promotion_verdict_from_metrics(
+        {
+            "benchmark_constraints_passed": False,
+            "benchmark_constraint_fail_reasons": ["information_ratio_below_min"],
+            "mcpt_pass_stage2_0_05": False,
+            "rolling_oos_n_windows": 2,
+            "rolling_oos_beats": 1,
+            "promotion_oos_required_windows": 4,
+            "promotion_oos_required_beats": 3,
+        }
+    )
+    assert verdict["eligible"] is False
+    reasons = verdict["fail_reasons"]
+    assert "constraint:information_ratio_below_min" in reasons
+    assert "mcpt_stage2_failed" in reasons
+    assert "rolling_oos_windows_below_min:2<4" in reasons
+    assert "rolling_oos_beats_below_min:1<3" in reasons
+
+
+def test_load_config_deep_merge_preserves_defensive_defaults(tmp_path):
+    cfg_dir = tmp_path / "cfg"
+    cfg_dir.mkdir(parents=True, exist_ok=True)
+    override = {
+        "strategy": {
+            "signal_scale": 1.5,
+            "sleeves": {
+                "core_budget": 0.9,
+            },
+        }
+    }
+    with open(cfg_dir / "settings.yaml", "w", encoding="utf-8") as f:
+        yaml.safe_dump(override, f)
+
+    merged = load_config(str(cfg_dir))
+    assert merged["strategy"]["anchor_core_to_quant_composite"] is False
+    assert merged["strategy"]["sleeves"]["core_tilt_enabled"] is False

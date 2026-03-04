@@ -462,7 +462,9 @@ class AdaptiveCompositeStrategy:
             return "mean_reverting"
         return "mixed"
 
-    def generate_signals(self, df: pd.DataFrame) -> pd.DataFrame:
+    def generate_signals(
+        self, df: pd.DataFrame, return_components: bool = False
+    ) -> pd.DataFrame:
         regime = self._regime(df)
 
         mom_df = self.momentum.generate_signals(df)
@@ -522,6 +524,13 @@ class AdaptiveCompositeStrategy:
             + tsm_df["signal_confidence"] * weights["ts_mom"]
         )
 
+        if return_components:
+            result["component_momentum"] = mom_df["signal"] * weights["momentum"]
+            result["component_mean_rev"] = mr_df["signal"] * weights["mean_rev"]
+            result["component_trend"] = trend_df["signal"] * weights["trend"]
+            result["component_breakout"] = brk_df["signal"] * weights["breakout"]
+            result["component_ts_mom"] = tsm_df["signal"] * weights["ts_mom"]
+
         close = df["close"]
         long_ma = close.rolling(self.long_trend_window).mean()
         trend_dir = np.sign(close - long_ma).fillna(0.0)
@@ -565,6 +574,7 @@ class EnhancedCompositeStrategy:
         stat_arb_n_factors: int = 3,
         residual_threshold: float = 1.5,
         long_trend_window: int = 200,
+        debug_components: bool = False,
     ):
         self.base_weight = base_weight
         self.cross_sectional_weight = cross_sectional_weight
@@ -572,6 +582,7 @@ class EnhancedCompositeStrategy:
         self.momentum_n_top = momentum_n_top
         self.stat_arb_n_factors = stat_arb_n_factors
         self.residual_threshold = residual_threshold
+        self.debug_components = bool(debug_components)
 
         # Base strategy
         self.adaptive = AdaptiveCompositeStrategy(
@@ -743,7 +754,14 @@ class EnhancedCompositeStrategy:
             DataFrame with signal, signal_confidence, regime columns
         """
         # Base adaptive signal
-        result = self.adaptive.generate_signals(df)
+        result = self.adaptive.generate_signals(
+            df, return_components=self.debug_components
+        )
+
+        if self.debug_components:
+            result["component_xs_momentum"] = 0.0
+            result["component_stat_arb"] = 0.0
+            result["component_regime_mom"] = 0.0
 
         if symbol is None:
             return result
@@ -782,8 +800,10 @@ class EnhancedCompositeStrategy:
 
         # Compute blended cross-asset signal aligned to df's index
         xs_combined = pd.Series(0.0, index=df.index, dtype=float)
+        aligned_signals: Dict[str, pd.Series] = {}
         for (name, sig), w in zip(xs_signals, xs_weights):
             aligned = sig.reindex(df.index, method=None).fillna(0.0)
+            aligned_signals[name] = aligned
             xs_combined += aligned * w
 
         # Blend with base signal
@@ -801,5 +821,15 @@ class EnhancedCompositeStrategy:
         result["signal"] = blended
         result["signal_confidence"] = (base_conf + agreement_boost).clip(0, 1)
         result["xs_signal"] = xs_combined
+        if self.debug_components:
+            result["component_xs_momentum"] = aligned_signals.get(
+                "xs_momentum", pd.Series(0.0, index=df.index, dtype=float)
+            )
+            result["component_stat_arb"] = aligned_signals.get(
+                "stat_arb", pd.Series(0.0, index=df.index, dtype=float)
+            )
+            result["component_regime_mom"] = aligned_signals.get(
+                "regime_mom", pd.Series(0.0, index=df.index, dtype=float)
+            )
 
         return result

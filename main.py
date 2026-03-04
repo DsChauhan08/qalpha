@@ -4,12 +4,13 @@ Single command deployment for backtesting.
 """
 
 import sys
+import json
 import yaml
 import numpy as np
 import pandas as pd
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 # Add project root to path
 PROJECT_ROOT = Path(__file__).parent.parent
@@ -30,6 +31,9 @@ from quantum_alpha.backtesting.validation import MCPT, BootstrapAnalysis
 from quantum_alpha.backtesting.performance_metrics import (
     compute_metrics,
     compute_metrics_from_returns,
+)
+from quantum_alpha.backtesting.enhanced_factor_diagnostics import (
+    run_enhanced_factor_diagnostics,
 )
 from quantum_alpha.backtesting.performance_gate import (
     evaluate_gate,
@@ -53,38 +57,64 @@ from quantum_alpha.monitoring.alert_system import AlertManager, build_default_ru
 from quantum_alpha.plugins import load_plugins
 
 
+def _deep_merge_dicts(base: Optional[Dict], override: Optional[Dict]) -> Dict:
+    """Recursively merge two mapping objects."""
+    out: Dict[str, Any] = dict(base or {})
+    for key, value in (override or {}).items():
+        if isinstance(value, dict) and isinstance(out.get(key), dict):
+            out[key] = _deep_merge_dicts(out.get(key), value)
+        else:
+            out[key] = value
+    return out
+
+
+def _load_yaml_file(path: Path) -> Dict:
+    if not path.exists():
+        raise FileNotFoundError(f"Config file not found: {path}")
+    with open(path, "r", encoding="utf-8") as f:
+        blob = yaml.safe_load(f) or {}
+    if not isinstance(blob, dict):
+        raise ValueError(f"YAML must be a mapping: {path}")
+    return blob
+
+
 def load_config(config_path: str = None) -> Dict:
     """Load configuration from YAML file."""
+    default_settings_path = PROJECT_ROOT / "quantum_alpha" / "config" / "settings.yaml"
+    base_settings = _load_yaml_file(default_settings_path)
+
     if config_path is None:
-        config_path = PROJECT_ROOT / "quantum_alpha" / "config" / "settings.yaml"
+        resolved_config_path = default_settings_path
+        override_settings = {}
+    else:
+        resolved_config_path = Path(config_path)
+        if resolved_config_path.is_dir():
+            resolved_config_path = resolved_config_path / "settings.yaml"
+        override_settings = _load_yaml_file(resolved_config_path)
 
-    config_path = Path(config_path)
-    if config_path.is_dir():
-        config_path = config_path / "settings.yaml"
-
-    with open(config_path, "r") as f:
-        settings = yaml.safe_load(f)
+    settings = _deep_merge_dicts(base_settings, override_settings)
 
     issues = validate_settings(settings)
-    config_dir = config_path.parent
+    config_dirs: List[Path] = [default_settings_path.parent]
+    resolved_dir = resolved_config_path.parent
+    if resolved_dir not in config_dirs:
+        config_dirs.append(resolved_dir)
 
-    strategies_path = config_dir / "strategies.yaml"
-    if strategies_path.exists():
-        with open(strategies_path, "r") as f:
-            strategies_cfg = yaml.safe_load(f)
-        issues.extend(validate_strategies(strategies_cfg))
+    for config_dir in config_dirs:
+        strategies_path = config_dir / "strategies.yaml"
+        if strategies_path.exists():
+            strategies_cfg = _load_yaml_file(strategies_path)
+            issues.extend(validate_strategies(strategies_cfg))
 
-    risk_limits_path = config_dir / "risk_limits.yaml"
-    if risk_limits_path.exists():
-        with open(str(risk_limits_path), "r") as f:
-            risk_cfg = yaml.safe_load(f)
-        issues.extend(validate_risk_limits(risk_cfg))
+        risk_limits_path = config_dir / "risk_limits.yaml"
+        if risk_limits_path.exists():
+            risk_cfg = _load_yaml_file(risk_limits_path)
+            issues.extend(validate_risk_limits(risk_cfg))
 
-    data_sources_path = config_dir / "data_sources.yaml"
-    if data_sources_path.exists():
-        with open(str(data_sources_path), "r") as f:
-            data_cfg = yaml.safe_load(f)
-        issues.extend(validate_data_sources(data_cfg))
+        data_sources_path = config_dir / "data_sources.yaml"
+        if data_sources_path.exists():
+            data_cfg = _load_yaml_file(data_sources_path)
+            issues.extend(validate_data_sources(data_cfg))
 
     if issues:
         raise ValueError(f"Config validation failed: {', '.join(issues)}")
@@ -707,6 +737,157 @@ def _update_loss_limit_state(
     }
 
 
+def _init_hard_drawdown_state(state: Dict) -> None:
+    state.setdefault("hard_dd_halted", False)
+    state.setdefault("hard_dd_triggered", False)
+    state.setdefault("hard_dd_trigger_ts", None)
+    state.setdefault("hard_dd_halt_started_ts", None)
+    state.setdefault("hard_dd_halt_bars", 0)
+    state.setdefault("hard_dd_reentries", 0)
+    state.setdefault("hard_dd_reentry_ts", [])
+    state.setdefault("hard_dd_last_quant_ir", None)
+
+
+def _trailing_quant_information_ratio(
+    equity_curve: List[Dict],
+    quant_returns: Optional[pd.Series],
+    lookback_bars: int = 63,
+) -> Optional[float]:
+    if (
+        quant_returns is None
+        or quant_returns.empty
+        or not equity_curve
+        or len(equity_curve) < max(20, lookback_bars)
+    ):
+        return None
+
+    eq = pd.DataFrame(equity_curve)
+    if "timestamp" not in eq.columns or "equity" not in eq.columns:
+        return None
+    eq["timestamp"] = pd.to_datetime(eq["timestamp"], errors="coerce")
+    eq = eq.dropna(subset=["timestamp", "equity"]).set_index("timestamp").sort_index()
+    if eq.empty:
+        return None
+
+    strategy_returns = eq["equity"].astype(float).pct_change(fill_method=None).dropna()
+    strategy_returns = _normalize_return_index(strategy_returns)
+    if strategy_returns.empty:
+        return None
+
+    strat_aligned, quant_aligned = strategy_returns.align(quant_returns, join="inner")
+    if strat_aligned.empty:
+        return None
+
+    if lookback_bars > 0:
+        strat_aligned = strat_aligned.tail(lookback_bars)
+        quant_aligned = quant_aligned.tail(lookback_bars)
+    if len(strat_aligned) < 20:
+        return None
+
+    rel_metrics = compute_metrics_from_returns(
+        strat_aligned,
+        benchmark_returns=quant_aligned,
+    )
+    ir = rel_metrics.get("information_ratio")
+    if ir is None or not np.isfinite(ir):
+        return None
+    return float(ir)
+
+
+def _update_hard_drawdown_guard(
+    state: Dict,
+    timestamp: datetime,
+    current_drawdown: float,
+    equity_curve: List[Dict],
+    quant_returns: Optional[pd.Series],
+    limit: float,
+    action: str,
+    cooldown_days: int,
+    recovery_level: float,
+    require_positive_quant_ir: bool,
+    ir_lookback_bars: int = 63,
+) -> Dict[str, object]:
+    _init_hard_drawdown_state(state)
+    action_key = str(action or "flatten").lower().strip()
+
+    if limit <= 0:
+        return {
+            "halted": False,
+            "trigger_now": False,
+            "force_flatten": False,
+            "reentered": False,
+        }
+
+    trigger_now = False
+    reentered = False
+
+    if not bool(state.get("hard_dd_halted", False)) and current_drawdown <= -float(limit):
+        state["hard_dd_halted"] = True
+        state["hard_dd_triggered"] = True
+        if state.get("hard_dd_trigger_ts") is None:
+            state["hard_dd_trigger_ts"] = timestamp.isoformat()
+        state["hard_dd_halt_started_ts"] = timestamp.isoformat()
+        trigger_now = True
+
+    halted = bool(state.get("hard_dd_halted", False))
+    if halted:
+        state["hard_dd_halt_bars"] = int(state.get("hard_dd_halt_bars", 0)) + 1
+
+        halt_started = pd.to_datetime(
+            state.get("hard_dd_halt_started_ts"),
+            errors="coerce",
+        )
+        cooldown_ok = True
+        if cooldown_days > 0 and pd.notna(halt_started):
+            cooldown_ok = bool((timestamp - halt_started).days >= int(cooldown_days))
+
+        recovered_ok = bool(current_drawdown >= -abs(float(recovery_level)))
+        ir_ok = True
+        trailing_ir: Optional[float] = None
+        if require_positive_quant_ir:
+            trailing_ir = _trailing_quant_information_ratio(
+                equity_curve=equity_curve,
+                quant_returns=quant_returns,
+                lookback_bars=ir_lookback_bars,
+            )
+            state["hard_dd_last_quant_ir"] = trailing_ir
+            ir_ok = trailing_ir is not None and trailing_ir >= 0.0
+
+        if cooldown_ok and recovered_ok and ir_ok:
+            state["hard_dd_halted"] = False
+            state["hard_dd_halt_started_ts"] = None
+            state["hard_dd_reentries"] = int(state.get("hard_dd_reentries", 0)) + 1
+            reentry_ts = list(state.get("hard_dd_reentry_ts", []))
+            reentry_ts.append(timestamp.isoformat())
+            state["hard_dd_reentry_ts"] = reentry_ts
+            halted = False
+            reentered = True
+
+    force_flatten = bool(halted and action_key == "flatten")
+    return {
+        "halted": halted,
+        "trigger_now": trigger_now,
+        "force_flatten": force_flatten,
+        "reentered": reentered,
+    }
+
+
+def _submit_flatten_orders(bt: Backtester, bars: Dict[str, pd.Series]) -> int:
+    """Submit market orders to flatten all currently open positions."""
+    submitted = 0
+    for symbol, pos in list(bt.positions.items()):
+        qty = float(getattr(pos, "quantity", 0.0))
+        if abs(qty) <= 1e-12:
+            continue
+        bar = bars.get(symbol)
+        if bar is None:
+            continue
+        side = OrderSide.SELL if qty > 0 else OrderSide.BUY
+        bt.submit_order(symbol, side, abs(qty), OrderType.MARKET)
+        submitted += 1
+    return submitted
+
+
 def _strict_promotion_ready(
     metrics: Dict[str, float | bool], required_windows: int, required_beats: int
 ) -> Tuple[bool, int, int]:
@@ -719,6 +900,49 @@ def _strict_promotion_ready(
         and int(metrics.get("rolling_oos_beats", 0)) >= req_beats
     )
     return ready, req_windows, req_beats
+
+
+def _promotion_verdict_from_metrics(metrics: Dict[str, object]) -> Dict[str, object]:
+    """Build explicit promotion verdict with concrete fail reasons."""
+    fail_reasons: List[str] = []
+    constraint_failures = list(metrics.get("benchmark_constraint_fail_reasons", []))
+    if not bool(metrics.get("benchmark_constraints_passed", False)):
+        if constraint_failures:
+            fail_reasons.extend([f"constraint:{r}" for r in constraint_failures])
+        else:
+            fail_reasons.append("constraint:unknown")
+
+    if not bool(metrics.get("mcpt_pass_stage2_0_05", False)):
+        fail_reasons.append("mcpt_stage2_failed")
+
+    req_windows = int(metrics.get("promotion_oos_required_windows", 4) or 4)
+    req_beats = int(metrics.get("promotion_oos_required_beats", 3) or 3)
+    n_windows = int(metrics.get("rolling_oos_n_windows", 0) or 0)
+    beats = int(metrics.get("rolling_oos_beats", 0) or 0)
+    if n_windows < req_windows:
+        fail_reasons.append(
+            f"rolling_oos_windows_below_min:{n_windows}<{req_windows}"
+        )
+    if beats < req_beats:
+        fail_reasons.append(f"rolling_oos_beats_below_min:{beats}<{req_beats}")
+
+    # Deduplicate while preserving order.
+    fail_reasons = list(dict.fromkeys(fail_reasons))
+    eligible = len(fail_reasons) == 0
+
+    return {
+        "eligible": bool(eligible),
+        "failed": bool(not eligible),
+        "fail_reasons": fail_reasons,
+        "benchmark_constraints_passed": bool(
+            metrics.get("benchmark_constraints_passed", False)
+        ),
+        "mcpt_stage2_passed": bool(metrics.get("mcpt_pass_stage2_0_05", False)),
+        "rolling_oos_n_windows": n_windows,
+        "rolling_oos_beats": beats,
+        "rolling_oos_required_windows": req_windows,
+        "rolling_oos_required_beats": req_beats,
+    }
 
 
 def _normalize_return_index(series: pd.Series) -> pd.Series:
@@ -932,9 +1156,27 @@ def run_backtest(
     max_position = float(risk_cfg.get("max_position_size", 0.25))
     max_leverage = float(risk_cfg.get("max_portfolio_leverage", 1.0))
     max_drawdown = float(risk_cfg.get("max_drawdown", 0.10))
+    hard_drawdown_limit = float(risk_cfg.get("hard_drawdown_limit", 0.20))
+    hard_drawdown_action = str(risk_cfg.get("hard_drawdown_action", "flatten"))
+    hard_drawdown_cooldown_days = int(risk_cfg.get("hard_drawdown_cooldown_days", 20))
+    hard_drawdown_recovery_level = float(risk_cfg.get("hard_drawdown_recovery_level", 0.10))
+    hard_drawdown_require_positive_quant_ir = bool(
+        risk_cfg.get("hard_drawdown_require_positive_quant_ir", True)
+    )
+    hard_drawdown_ir_lookback_bars = int(
+        risk_cfg.get("hard_drawdown_ir_lookback_bars", 63)
+    )
     max_daily_loss = float(risk_cfg.get("max_daily_loss", 0.03))
     max_weekly_loss = float(risk_cfg.get("max_weekly_loss", 0.07))
     kelly_fraction = float(risk_cfg.get("kelly_fraction", 0.5))
+    core_drawdown_scaling_enabled = bool(
+        risk_cfg.get("core_drawdown_scaling_enabled", True)
+    )
+    core_min_exposure_in_drawdown = _clamp(
+        float(risk_cfg.get("core_min_exposure_in_drawdown", 0.35)),
+        0.0,
+        1.0,
+    )
     rebalance_frequency = str(strategy_cfg.get("rebalance_frequency", "daily"))
     paper_rebalance = strategy_cfg.get("paper_rebalance_frequency")
     if paper_rebalance:
@@ -946,7 +1188,7 @@ def run_backtest(
     min_long_signal = float(strategy_cfg.get("min_long_signal", 0.0))
     market_off_scale = float(strategy_cfg.get("market_off_scale", 1.0))
     anchor_core_to_quant = bool(
-        strategy_cfg.get("anchor_core_to_quant_composite", True)
+        strategy_cfg.get("anchor_core_to_quant_composite", False)
     )
     alpha_deploy_requires_relative_edge = bool(
         strategy_cfg.get("alpha_deploy_requires_relative_edge", True)
@@ -985,7 +1227,10 @@ def run_backtest(
         float(sleeves_cfg.get("lottery_max_per_symbol", 0.0075)), 0.001, 0.02
     )
     alpha_min_confidence = float(sleeves_cfg.get("alpha_min_confidence", 0.05))
-    core_tilt_enabled = bool(sleeves_cfg.get("core_tilt_enabled", True))
+    core_tilt_enabled = bool(sleeves_cfg.get("core_tilt_enabled", False))
+    enhanced_debug_components = bool(
+        strategy_cfg.get("enhanced_debug_components", False)
+    )
     core_tilt_lookback_days = int(sleeves_cfg.get("core_tilt_lookback_days", 126))
     core_tilt_strength = _clamp(
         float(sleeves_cfg.get("core_tilt_strength", 0.35)), 0.0, 0.95
@@ -1042,7 +1287,9 @@ def run_backtest(
     elif strategy_type == "composite":
         strategy = CompositeStrategy()
     elif strategy_type in ("adaptive", "enhanced"):
-        strategy = EnhancedCompositeStrategy()
+        strategy = EnhancedCompositeStrategy(
+            debug_components=enhanced_debug_components
+        )
     elif strategy_type == "sentiment":
         from quantum_alpha.strategy.sentiment_strategies import SocialSentimentStrategy
 
@@ -1349,10 +1596,11 @@ def run_backtest(
         "alpha_scale_last": 1.0,
         "alpha_scale_history": [],
     }
+    _init_hard_drawdown_state(state)
 
-    # Dynamic drawdown control — soft scaling only, no circuit breaker.
-    # Thresholds are wide enough for multi-decade equity backtests where
-    # 20-30% drawdowns are normal (e.g. 2008, 2020, 2022).
+    # Dynamic drawdown control for continuous exposure scaling.
+    # Hard circuit breaker (flatten + cooldown) is handled separately
+    # via _update_hard_drawdown_guard().
     dd_warning = float(risk_cfg.get("dd_warning", 0.15))
     dd_critical = float(risk_cfg.get("dd_critical", 0.25))
     dd_breaker = float(risk_cfg.get("dd_circuit_breaker", 0.40))
@@ -1372,6 +1620,10 @@ def run_backtest(
     def trading_strategy(timestamp, bars, bt):
         """Strategy execution function."""
         equity = bt._total_equity()
+        state["peak_equity"] = max(float(state.get("peak_equity", equity)), equity)
+        peak = float(state.get("peak_equity", equity))
+        state["current_drawdown"] = (equity - peak) / peak if peak > 0 else 0.0
+
         loss_status = _update_loss_limit_state(
             state=state,
             timestamp=timestamp,
@@ -1379,32 +1631,48 @@ def run_backtest(
             max_daily_loss=max_daily_loss,
             max_weekly_loss=max_weekly_loss,
         )
+        hard_dd = _update_hard_drawdown_guard(
+            state=state,
+            timestamp=timestamp,
+            current_drawdown=float(state.get("current_drawdown", 0.0)),
+            equity_curve=bt.equity_curve,
+            quant_returns=quant_returns_control,
+            limit=hard_drawdown_limit,
+            action=hard_drawdown_action,
+            cooldown_days=hard_drawdown_cooldown_days,
+            recovery_level=hard_drawdown_recovery_level,
+            require_positive_quant_ir=hard_drawdown_require_positive_quant_ir,
+            ir_lookback_bars=hard_drawdown_ir_lookback_bars,
+        )
 
         # Update drawdown controller every bar
         dd_metrics = dd_controller.update(equity, timestamp)
 
-        # Soft exposure scaling only — no hard circuit breaker that closes
-        # all positions.  The exposure_multiplier already approaches zero
-        # as drawdown deepens, which achieves the same effect without the
-        # all-or-nothing slam that destroys multi-decade backtests.
+        # Exposure multiplier is soft scaling; hard breaker behavior is
+        # enforced separately through hard_dd state.
         exposure_mult = dd_metrics.exposure_multiplier
 
-        force_rebalance = bool(loss_status["stop_active"])
+        force_rebalance = bool(
+            loss_status["stop_active"]
+            or hard_dd.get("trigger_now", False)
+            or hard_dd.get("force_flatten", False)
+        )
         if (
             not _should_rebalance(timestamp, state["last_rebalance"], rebalance_frequency)
             and not force_rebalance
         ):
-            state["peak_equity"] = max(state["peak_equity"], equity)
-            state["current_drawdown"] = (equity - state["peak_equity"]) / state[
-                "peak_equity"
-            ]
             return
 
         state["last_rebalance"] = timestamp
+        if bool(hard_dd.get("force_flatten", False)):
+            _submit_flatten_orders(bt, bars)
+            return
+
         target_positions = {}
         signal_strengths = {}
         signal_confidences = {}
         volatilities = {}
+        rp_drawdown_mult = 1.0
         trade_history = (
             np.array([t["pnl"] for t in bt.trades]) if bt.trades else np.array([0])
         )
@@ -1502,14 +1770,8 @@ def run_backtest(
                 volatility = 0.02
             volatility = volatility * np.sqrt(252)
             volatilities[symbol] = max(volatility, 1e-6)
-            if use_rp_allocation:
-                continue
 
             confidence = row.get("signal_confidence", 0.5)
-
-            # Get current position
-            current_pos = bt.positions.get(symbol)
-            current_qty = current_pos.quantity if current_pos else 0
 
             # Calculate position size
             sizing = position_sizer.calculate(
@@ -1522,6 +1784,10 @@ def run_backtest(
 
             if sizing["halt_trading"]:
                 return
+
+            rp_drawdown_mult = min(rp_drawdown_mult, float(sizing.get("dd_multiplier", 1.0)))
+            if use_rp_allocation:
+                continue
 
             target_positions[symbol] = sizing["position_size"]
 
@@ -1537,7 +1803,8 @@ def run_backtest(
                 total_inv = sum(inv.values())
                 if total_inv > 0:
                     target_positions = {
-                        s: (inv[s] / total_inv) * max_leverage for s in inv
+                        s: (inv[s] / total_inv) * max_leverage * rp_drawdown_mult
+                        for s in inv
                     }
             if not target_positions:
                 return
@@ -1580,8 +1847,6 @@ def run_backtest(
             cap = min(cap, market_off_leverage_cap * faster_derisk_warning_mult)
         if anchor_core_to_quant and not loss_status["stop_active"]:
             cap = max(cap, min(max_leverage, core_budget))
-        if anchor_core_to_quant and not loss_status["stop_active"]:
-            cap = max(cap, min(max_leverage, core_budget))
 
         if sleeves_enabled:
             today_key = timestamp.date().isoformat()
@@ -1602,7 +1867,17 @@ def run_backtest(
                     blocked[sym] = today_key
                     entries.pop(sym, None)
 
-            core_budget_eff = core_budget * (core_loss_scale if loss_status["stop_active"] else 1.0)
+            core_drawdown_mult = 1.0
+            if core_drawdown_scaling_enabled:
+                core_drawdown_mult = max(
+                    core_min_exposure_in_drawdown,
+                    min(1.0, float(exposure_mult)),
+                )
+            core_budget_eff = (
+                core_budget
+                * (core_loss_scale if loss_status["stop_active"] else 1.0)
+                * core_drawdown_mult
+            )
             alpha_budget_eff = 0.0 if loss_status["stop_active"] else alpha_budget
             lottery_budget_eff = 0.0 if loss_status["stop_active"] else lottery_budget
 
@@ -1903,6 +2178,13 @@ def run_backtest(
         metrics["alpha_scale_avg"] = 1.0
     metrics["max_daily_loss_limit"] = float(max_daily_loss)
     metrics["max_weekly_loss_limit"] = float(max_weekly_loss)
+    metrics["hard_dd_limit"] = float(hard_drawdown_limit)
+    metrics["hard_dd_triggered"] = bool(state.get("hard_dd_triggered", False))
+    metrics["hard_dd_trigger_ts"] = state.get("hard_dd_trigger_ts")
+    metrics["hard_dd_halt_bars"] = int(state.get("hard_dd_halt_bars", 0))
+    metrics["hard_dd_reentries"] = int(state.get("hard_dd_reentries", 0))
+    metrics["hard_dd_reentry_ts"] = list(state.get("hard_dd_reentry_ts", []))
+    metrics["hard_dd_last_quant_ir"] = state.get("hard_dd_last_quant_ir")
 
     market_metrics = (
         compute_metrics_from_returns(market_returns, benchmark_returns=market_returns)
@@ -1915,6 +2197,8 @@ def run_backtest(
         else {}
     )
 
+    constraint_fail_reasons: List[str] = []
+    metrics["benchmark_constraints_passed"] = False
     if quant_returns is not None and not quant_returns.empty:
         strategy_returns = backtester.get_equity_series().pct_change(fill_method=None).dropna()
         strategy_returns = _normalize_return_index(strategy_returns)
@@ -1930,16 +2214,40 @@ def run_backtest(
             metrics["quant_information_ratio"] = float(
                 rel_metrics.get("information_ratio", 0.0)
             )
-            md_limit = float(validation_cfg.get("constraint_max_drawdown", 0.25))
+            md_limit = float(validation_cfg.get("constraint_max_drawdown", 0.20))
             beta_min = float(validation_cfg.get("constraint_beta_min", 0.8))
             beta_max = float(validation_cfg.get("constraint_beta_max", 1.2))
-            min_info = float(validation_cfg.get("constraint_min_information_ratio", 0.0))
-            constraints_pass = (
-                abs(float(metrics.get("max_drawdown", 0.0))) <= md_limit
-                and beta_min <= float(rel_metrics.get("beta", 0.0)) <= beta_max
-                and float(rel_metrics.get("information_ratio", 0.0)) > min_info
+            min_info = float(validation_cfg.get("constraint_min_information_ratio", 0.10))
+            min_excess = float(
+                validation_cfg.get("constraint_min_excess_total_return_vs_quant", 0.0)
             )
-            metrics["benchmark_constraints_passed"] = bool(constraints_pass)
+            metrics["constraint_max_drawdown_limit"] = float(md_limit)
+            metrics["constraint_beta_min"] = float(beta_min)
+            metrics["constraint_beta_max"] = float(beta_max)
+            metrics["constraint_min_information_ratio"] = float(min_info)
+            metrics["constraint_min_excess_total_return_vs_quant"] = float(min_excess)
+
+            max_dd_ok = abs(float(metrics.get("max_drawdown", 0.0))) <= md_limit
+            beta_ok = beta_min <= float(rel_metrics.get("beta", 0.0)) <= beta_max
+            info_ok = float(rel_metrics.get("information_ratio", 0.0)) >= min_info
+            excess_ok = float(metrics.get("excess_total_return_vs_quant", 0.0)) >= min_excess
+
+            if not max_dd_ok:
+                constraint_fail_reasons.append(
+                    "max_drawdown_exceeded"
+                )
+            if not beta_ok:
+                constraint_fail_reasons.append("quant_beta_out_of_bounds")
+            if not info_ok:
+                constraint_fail_reasons.append("information_ratio_below_min")
+            if not excess_ok:
+                constraint_fail_reasons.append("excess_total_return_vs_quant_below_min")
+            metrics["benchmark_constraints_passed"] = len(constraint_fail_reasons) == 0
+        else:
+            constraint_fail_reasons.append("insufficient_overlap_with_quant_benchmark")
+    else:
+        constraint_fail_reasons.append("quant_benchmark_returns_unavailable")
+    metrics["benchmark_constraint_fail_reasons"] = constraint_fail_reasons
 
     try:
         market_fund = collector.fetch_fundamentals(market_benchmark)
@@ -2006,6 +2314,26 @@ def run_backtest(
         except Exception as exc:
             quant_firm_benchmarks = {"error": str(exc)}
 
+    factor_diagnostics = None
+    if use_enhanced and enhanced_debug_components:
+        try:
+            stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+            output_dir = (
+                PROJECT_ROOT / "quantum_alpha" / "artifacts" / f"factor_diag_{stamp}"
+            )
+            factor_diagnostics = run_enhanced_factor_diagnostics(
+                frames=data,
+                output_dir=output_dir,
+            )
+            metrics["factor_diagnostics_generated"] = True
+            metrics["factor_diagnostics_dir"] = str(
+                factor_diagnostics.get("output_dir", "")
+            )
+        except Exception as exc:
+            factor_diagnostics = {"error": str(exc)}
+            metrics["factor_diagnostics_generated"] = False
+            metrics["factor_diagnostics_error"] = str(exc)
+
     if verbose:
         print(f"\n{'=' * 60}")
         print("BACKTEST RESULTS")
@@ -2036,6 +2364,10 @@ def run_backtest(
                     "Bench Constraints: "
                     f"{str(metrics['benchmark_constraints_passed']).upper():>7}"
                 )
+                if not metrics.get("benchmark_constraints_passed", False):
+                    reasons = metrics.get("benchmark_constraint_fail_reasons", [])
+                    if reasons:
+                        print(f"Constraint Fails: {', '.join(str(r) for r in reasons)}")
         if "gate_passed" in metrics:
             print(f"Gate Passed:     {str(metrics['gate_passed']).upper():>10}")
             print(f"Gate Coverage:   {metrics['gate_coverage']:>10d}")
@@ -2093,6 +2425,7 @@ def run_backtest(
         "gate_details": gate_details,
         "quant_firm_benchmarks": quant_firm_benchmarks,
         "quant_firm_rows": quant_firm_rows,
+        "factor_diagnostics": factor_diagnostics,
         "equity_curve": backtester.equity_curve,
         "trades": backtester.trades,
         "fills": backtester.fills,
@@ -2159,6 +2492,8 @@ def run_backtest(
             metrics["promotion_oos_required_beats"] = int(strict_beats)
             metrics["promotion_ready"] = bool(strict_ready)
         else:
+            metrics["promotion_oos_required_windows"] = max(int(promo_req_windows), 4)
+            metrics["promotion_oos_required_beats"] = max(int(promo_req_beats), 3)
             metrics["promotion_ready"] = False
 
         if verbose:
@@ -2185,6 +2520,41 @@ def run_backtest(
                     "  Promotion (>=3/4 + constraints + MCPT stage2): "
                     f"{'YES' if metrics.get('promotion_ready', False) else 'NO'}"
                 )
+    else:
+        metrics.setdefault("mcpt_pass_stage2_0_05", False)
+        metrics.setdefault("rolling_oos_n_windows", 0)
+        metrics.setdefault("rolling_oos_beats", 0)
+        metrics["promotion_oos_required_windows"] = max(
+            int(validation_cfg.get("promotion_oos_required_windows", 4)),
+            4,
+        )
+        metrics["promotion_oos_required_beats"] = max(
+            int(validation_cfg.get("promotion_oos_required_beats", 3)),
+            3,
+        )
+        metrics["promotion_ready"] = False
+
+    promotion_verdict = _promotion_verdict_from_metrics(metrics)
+    if not validate:
+        reasons = list(promotion_verdict.get("fail_reasons", []))
+        if "validation_not_run" not in reasons:
+            reasons.insert(0, "validation_not_run")
+        promotion_verdict["fail_reasons"] = reasons
+        promotion_verdict["failed"] = True
+        promotion_verdict["eligible"] = False
+    metrics["promotion_ready"] = bool(promotion_verdict.get("eligible", False))
+    metrics["promotion_fail_reasons"] = list(
+        promotion_verdict.get("fail_reasons", [])
+    )
+    results["promotion_verdict"] = promotion_verdict
+
+    if verbose:
+        verdict = results["promotion_verdict"]
+        print("Promotion Verdict:")
+        print(f"  Eligible: {'YES' if verdict.get('eligible') else 'NO'}")
+        reasons = verdict.get("fail_reasons", [])
+        if reasons:
+            print(f"  Fail Reasons: {', '.join(str(r) for r in reasons)}")
 
     return results
 
@@ -2197,6 +2567,7 @@ def run_paper(
     strategy_type: str = "enhanced",
     paper_bars: int = 120,
     strategy_kwargs: Optional[Dict] = None,
+    config_path: Optional[str] = None,
     verbose: bool = True,
 ) -> Dict:
     """
@@ -2213,11 +2584,11 @@ def run_paper(
         print(f"Paper Bars: {paper_bars}")
         print(f"{'=' * 60}\n")
 
-    settings = load_config(None)
+    settings = load_config(config_path)
     risk_cfg = settings.get("risk", {}) if settings else {}
     strategy_cfg = settings.get("strategy", {}) if settings else {}
     validation_cfg = settings.get("validation", {}) if settings else {}
-    config_dir = _resolve_config_dir(None)
+    config_dir = _resolve_config_dir(config_path)
     strategies_cfg = _load_optional_yaml(config_dir / "strategies.yaml")
     sentiment_cfg = {}
     if strategies_cfg and "strategies" in strategies_cfg:
@@ -2225,9 +2596,27 @@ def run_paper(
     max_position = float(risk_cfg.get("max_position_size", 0.25))
     max_leverage = float(risk_cfg.get("max_portfolio_leverage", 1.0))
     max_drawdown = float(risk_cfg.get("max_drawdown", 0.10))
+    hard_drawdown_limit = float(risk_cfg.get("hard_drawdown_limit", 0.20))
+    hard_drawdown_action = str(risk_cfg.get("hard_drawdown_action", "flatten"))
+    hard_drawdown_cooldown_days = int(risk_cfg.get("hard_drawdown_cooldown_days", 20))
+    hard_drawdown_recovery_level = float(risk_cfg.get("hard_drawdown_recovery_level", 0.10))
+    hard_drawdown_require_positive_quant_ir = bool(
+        risk_cfg.get("hard_drawdown_require_positive_quant_ir", True)
+    )
+    hard_drawdown_ir_lookback_bars = int(
+        risk_cfg.get("hard_drawdown_ir_lookback_bars", 63)
+    )
     max_daily_loss = float(risk_cfg.get("max_daily_loss", 0.03))
     max_weekly_loss = float(risk_cfg.get("max_weekly_loss", 0.07))
     kelly_fraction = float(risk_cfg.get("kelly_fraction", 0.5))
+    core_drawdown_scaling_enabled = bool(
+        risk_cfg.get("core_drawdown_scaling_enabled", True)
+    )
+    core_min_exposure_in_drawdown = _clamp(
+        float(risk_cfg.get("core_min_exposure_in_drawdown", 0.35)),
+        0.0,
+        1.0,
+    )
     rebalance_frequency = str(strategy_cfg.get("rebalance_frequency", "daily"))
     momentum_top_pct = float(strategy_cfg.get("momentum_top_pct", 80))
     momentum_bottom_pct = float(strategy_cfg.get("momentum_bottom_pct", 35))
@@ -2236,7 +2625,7 @@ def run_paper(
     min_long_signal = float(strategy_cfg.get("min_long_signal", 0.0))
     market_off_scale = float(strategy_cfg.get("market_off_scale", 1.0))
     anchor_core_to_quant = bool(
-        strategy_cfg.get("anchor_core_to_quant_composite", True)
+        strategy_cfg.get("anchor_core_to_quant_composite", False)
     )
     alpha_deploy_requires_relative_edge = bool(
         strategy_cfg.get("alpha_deploy_requires_relative_edge", True)
@@ -2273,7 +2662,10 @@ def run_paper(
         float(sleeves_cfg.get("lottery_max_per_symbol", 0.0075)), 0.001, 0.02
     )
     alpha_min_confidence = float(sleeves_cfg.get("alpha_min_confidence", 0.05))
-    core_tilt_enabled = bool(sleeves_cfg.get("core_tilt_enabled", True))
+    core_tilt_enabled = bool(sleeves_cfg.get("core_tilt_enabled", False))
+    enhanced_debug_components = bool(
+        strategy_cfg.get("enhanced_debug_components", False)
+    )
     core_tilt_lookback_days = int(sleeves_cfg.get("core_tilt_lookback_days", 126))
     core_tilt_strength = _clamp(
         float(sleeves_cfg.get("core_tilt_strength", 0.35)), 0.0, 0.95
@@ -2324,7 +2716,7 @@ def run_paper(
             )
         paper_bars = min_paper_bars
 
-    collector = DataCollector(runtime_mode="paper", config_path=None)
+    collector = DataCollector(runtime_mode="paper", config_path=config_path)
     feature_gen = TechnicalFeatureGenerator()
     cleaner = DataCleaner()
     imputer = MissingValueImputer()
@@ -2341,7 +2733,9 @@ def run_paper(
     elif strategy_type == "composite":
         strategy = CompositeStrategy()
     elif strategy_type in ("adaptive", "enhanced"):
-        strategy = EnhancedCompositeStrategy()
+        strategy = EnhancedCompositeStrategy(
+            debug_components=enhanced_debug_components
+        )
     elif strategy_type == "sentiment":
         from quantum_alpha.strategy.sentiment_strategies import SocialSentimentStrategy
 
@@ -2591,6 +2985,7 @@ def run_paper(
         "alpha_scale_last": 1.0,
         "alpha_scale_history": [],
     }
+    _init_hard_drawdown_state(state)
     dd_controller = DrawdownController(
         warning_threshold=dd_warning,
         critical_threshold=dd_critical,
@@ -2604,6 +2999,10 @@ def run_paper(
 
     def trading_strategy(timestamp, bars, bt):
         equity = bt._total_equity()
+        state["peak_equity"] = max(float(state.get("peak_equity", equity)), equity)
+        peak = float(state.get("peak_equity", equity))
+        state["current_drawdown"] = (equity - peak) / peak if peak > 0 else 0.0
+
         loss_status = _update_loss_limit_state(
             state=state,
             timestamp=timestamp,
@@ -2611,25 +3010,43 @@ def run_paper(
             max_daily_loss=max_daily_loss,
             max_weekly_loss=max_weekly_loss,
         )
+        hard_dd = _update_hard_drawdown_guard(
+            state=state,
+            timestamp=timestamp,
+            current_drawdown=float(state.get("current_drawdown", 0.0)),
+            equity_curve=bt.equity_curve,
+            quant_returns=quant_returns_control,
+            limit=hard_drawdown_limit,
+            action=hard_drawdown_action,
+            cooldown_days=hard_drawdown_cooldown_days,
+            recovery_level=hard_drawdown_recovery_level,
+            require_positive_quant_ir=hard_drawdown_require_positive_quant_ir,
+            ir_lookback_bars=hard_drawdown_ir_lookback_bars,
+        )
         dd_metrics = dd_controller.update(equity, timestamp)
         exposure_mult = dd_metrics.exposure_multiplier
 
-        force_rebalance = bool(loss_status["stop_active"])
+        force_rebalance = bool(
+            loss_status["stop_active"]
+            or hard_dd.get("trigger_now", False)
+            or hard_dd.get("force_flatten", False)
+        )
         if (
             not _should_rebalance(timestamp, state["last_rebalance"], rebalance_frequency)
             and not force_rebalance
         ):
-            state["peak_equity"] = max(state["peak_equity"], equity)
-            state["current_drawdown"] = (equity - state["peak_equity"]) / state[
-                "peak_equity"
-            ]
             return
 
         state["last_rebalance"] = timestamp
+        if bool(hard_dd.get("force_flatten", False)):
+            _submit_flatten_orders(bt, bars)
+            return
+
         target_positions = {}
         signal_strengths = {}
         signal_confidences = {}
         volatilities = {}
+        rp_drawdown_mult = 1.0
         trade_history = (
             np.array([t["pnl"] for t in bt.trades]) if bt.trades else np.array([0])
         )
@@ -2700,13 +3117,8 @@ def run_paper(
                 volatility = 0.02
             volatility = volatility * np.sqrt(252)
             volatilities[symbol] = max(volatility, 1e-6)
-            if use_rp_allocation:
-                continue
 
             confidence = row.get("signal_confidence", 0.5)
-
-            current_pos = bt.positions.get(symbol)
-            current_qty = current_pos.quantity if current_pos else 0
 
             sizing = position_sizer.calculate(
                 trade_history=trade_history,
@@ -2718,6 +3130,10 @@ def run_paper(
 
             if sizing["halt_trading"]:
                 return
+
+            rp_drawdown_mult = min(rp_drawdown_mult, float(sizing.get("dd_multiplier", 1.0)))
+            if use_rp_allocation:
+                continue
 
             target_positions[symbol] = sizing["position_size"]
 
@@ -2733,7 +3149,8 @@ def run_paper(
                 total_inv = sum(inv.values())
                 if total_inv > 0:
                     target_positions = {
-                        s: (inv[s] / total_inv) * max_leverage for s in inv
+                        s: (inv[s] / total_inv) * max_leverage * rp_drawdown_mult
+                        for s in inv
                     }
             if not target_positions:
                 return
@@ -2773,6 +3190,8 @@ def run_paper(
             cap = min(cap, dd_leverage_cap_critical * faster_derisk_critical_mult)
         if not market_risk_on:
             cap = min(cap, market_off_leverage_cap * faster_derisk_warning_mult)
+        if anchor_core_to_quant and not loss_status["stop_active"]:
+            cap = max(cap, min(max_leverage, core_budget))
 
         if sleeves_enabled:
             today_key = timestamp.date().isoformat()
@@ -2793,7 +3212,17 @@ def run_paper(
                     blocked[sym] = today_key
                     entries.pop(sym, None)
 
-            core_budget_eff = core_budget * (core_loss_scale if loss_status["stop_active"] else 1.0)
+            core_drawdown_mult = 1.0
+            if core_drawdown_scaling_enabled:
+                core_drawdown_mult = max(
+                    core_min_exposure_in_drawdown,
+                    min(1.0, float(exposure_mult)),
+                )
+            core_budget_eff = (
+                core_budget
+                * (core_loss_scale if loss_status["stop_active"] else 1.0)
+                * core_drawdown_mult
+            )
             alpha_budget_eff = 0.0 if loss_status["stop_active"] else alpha_budget
             lottery_budget_eff = 0.0 if loss_status["stop_active"] else lottery_budget
 
@@ -3041,6 +3470,34 @@ def run_paper(
             metrics["alpha_scale_avg"] = 1.0
         metrics["max_daily_loss_limit"] = float(max_daily_loss)
         metrics["max_weekly_loss_limit"] = float(max_weekly_loss)
+        metrics["hard_dd_limit"] = float(hard_drawdown_limit)
+        metrics["hard_dd_triggered"] = bool(state.get("hard_dd_triggered", False))
+        metrics["hard_dd_trigger_ts"] = state.get("hard_dd_trigger_ts")
+        metrics["hard_dd_halt_bars"] = int(state.get("hard_dd_halt_bars", 0))
+        metrics["hard_dd_reentries"] = int(state.get("hard_dd_reentries", 0))
+        metrics["hard_dd_reentry_ts"] = list(state.get("hard_dd_reentry_ts", []))
+        metrics["hard_dd_last_quant_ir"] = state.get("hard_dd_last_quant_ir")
+        if quant_returns_control is not None and not quant_returns_control.empty:
+            strategy_returns = (
+                paper_trader.backtester.get_equity_series()
+                .pct_change(fill_method=None)
+                .dropna()
+            )
+            strategy_returns = _normalize_return_index(strategy_returns)
+            strat_aligned, quant_aligned = strategy_returns.align(
+                quant_returns_control, join="inner"
+            )
+            if not strat_aligned.empty:
+                rel_metrics = compute_metrics_from_returns(
+                    strat_aligned, benchmark_returns=quant_aligned
+                )
+                quant_total = _total_return_from_returns(quant_aligned)
+                strat_total = _total_return_from_returns(strat_aligned)
+                metrics["excess_total_return_vs_quant"] = float(strat_total - quant_total)
+                metrics["quant_information_ratio"] = float(
+                    rel_metrics.get("information_ratio", 0.0)
+                )
+                metrics["quant_beta"] = float(rel_metrics.get("beta", 0.0))
 
     if verbose and "error" not in metrics:
         print(f"\n{'=' * 60}")
@@ -3058,6 +3515,16 @@ def run_paper(
         print(f"Profit Factor:  {metrics['profit_factor']:>10.2f}")
         print(f"Total Trades:   {metrics['n_trades']:>10d}")
         print(f"Final Equity:   ${metrics['final_equity']:>10,.2f}")
+        if "excess_total_return_vs_quant" in metrics:
+            print(
+                "Excess vs QQQ/IWM:"
+                f" {metrics['excess_total_return_vs_quant'] * 100:>9.2f}%"
+            )
+            print(
+                "Quant InfoRatio: "
+                f"{metrics.get('quant_information_ratio', 0.0):>10.2f}"
+            )
+            print(f"Quant Beta:      {metrics.get('quant_beta', 0.0):>10.2f}")
         print(f"{'=' * 60}\n")
 
     return {
@@ -3067,6 +3534,124 @@ def run_paper(
         "trades": paper_trader.backtester.trades,
         "fills": paper_trader.backtester.fills,
     }
+
+
+def run_paper_ab_comparison(
+    symbols: list,
+    start_date: datetime,
+    end_date: datetime,
+    config_a: str,
+    config_b: str,
+    initial_capital: float = 100000,
+    strategy_type: str = "enhanced",
+    paper_bars: int = 120,
+    output_path: Optional[str] = None,
+    verbose: bool = True,
+) -> Dict:
+    """
+    Run paper A/B comparison (Group A baseline vs Group B hardened).
+    """
+    res_a = run_paper(
+        symbols=symbols,
+        start_date=start_date,
+        end_date=end_date,
+        initial_capital=initial_capital,
+        strategy_type=strategy_type,
+        paper_bars=paper_bars,
+        config_path=config_a,
+        verbose=verbose,
+    )
+    res_b = run_paper(
+        symbols=symbols,
+        start_date=start_date,
+        end_date=end_date,
+        initial_capital=initial_capital,
+        strategy_type=strategy_type,
+        paper_bars=paper_bars,
+        config_path=config_b,
+        verbose=verbose,
+    )
+
+    m_a = res_a.get("metrics", {}) if isinstance(res_a, dict) else {}
+    m_b = res_b.get("metrics", {}) if isinstance(res_b, dict) else {}
+
+    compare_keys = [
+        "total_return",
+        "max_drawdown",
+        "sharpe_ratio",
+        "win_rate",
+        "excess_total_return_vs_quant",
+        "quant_information_ratio",
+        "hard_dd_triggered",
+        "hard_dd_halt_bars",
+    ]
+
+    comparisons: Dict[str, Dict[str, object]] = {}
+    for key in compare_keys:
+        a_val = m_a.get(key)
+        b_val = m_b.get(key)
+        delta = None
+        if isinstance(a_val, (int, float)) and isinstance(b_val, (int, float)):
+            delta = float(b_val) - float(a_val)
+        comparisons[key] = {
+            "A": a_val,
+            "B": b_val,
+            "delta_b_minus_a": delta,
+        }
+
+    dd_cap = 0.20
+    b_dd = abs(float(m_b.get("max_drawdown", 0.0)))
+    objective_checks = {
+        "b_within_dd_cap_20pct": bool(b_dd <= dd_cap),
+        "b_excess_vs_quant_gt_a": bool(
+            float(m_b.get("excess_total_return_vs_quant", -np.inf))
+            > float(m_a.get("excess_total_return_vs_quant", -np.inf))
+        ),
+        "b_quant_ir_gt_a": bool(
+            float(m_b.get("quant_information_ratio", -np.inf))
+            > float(m_a.get("quant_information_ratio", -np.inf))
+        ),
+        "b_drawdown_not_worse_than_a": bool(
+            b_dd <= abs(float(m_a.get("max_drawdown", np.inf)))
+        ),
+    }
+    promote_b = all(objective_checks.values())
+
+    summary = {
+        "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+        "group_a": {"config_path": str(config_a), "metrics": m_a},
+        "group_b": {"config_path": str(config_b), "metrics": m_b},
+        "comparisons": comparisons,
+        "objective_checks": objective_checks,
+        "promotion_decision": {
+            "promote_group_b": bool(promote_b),
+            "reason": (
+                "group_b_passed"
+                if promote_b
+                else "group_b_failed_objective_or_dd_cap"
+            ),
+        },
+    }
+
+    if output_path is None:
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        output = PROJECT_ROOT / "quantum_alpha" / "artifacts" / f"paper_ab_{stamp}.json"
+    else:
+        output = Path(output_path)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with open(output, "w", encoding="utf-8") as f:
+        json.dump(summary, f, indent=2)
+    summary["output_path"] = str(output)
+
+    if verbose:
+        print("\nPAPER A/B SUMMARY")
+        print(f"  Output: {output}")
+        print(
+            "  Promote Group B: "
+            f"{'YES' if summary['promotion_decision']['promote_group_b'] else 'NO'}"
+        )
+
+    return summary
 
 
 def main():
@@ -3121,6 +3706,29 @@ def main():
         type=int,
         default=120,
         help="Number of most recent bars to simulate in paper mode",
+    )
+    parser.add_argument(
+        "--paper-ab",
+        action="store_true",
+        help="Run paper A/B comparison (requires --paper-config-a and --paper-config-b)",
+    )
+    parser.add_argument(
+        "--paper-config-a",
+        type=str,
+        default=None,
+        help="Config path for paper Group A",
+    )
+    parser.add_argument(
+        "--paper-config-b",
+        type=str,
+        default=None,
+        help="Config path for paper Group B",
+    )
+    parser.add_argument(
+        "--paper-ab-output",
+        type=str,
+        default=None,
+        help="Output path for paper A/B summary JSON",
     )
     parser.add_argument("--validate", action="store_true", help="Run MCPT validation")
     parser.add_argument("--config", type=str, default=None, help="Config file path")
@@ -3198,6 +3806,24 @@ def main():
         return results
 
     elif args.mode == "paper":
+        if args.paper_ab:
+            if not args.paper_config_a or not args.paper_config_b:
+                print(
+                    "paper-ab requires both --paper-config-a and --paper-config-b"
+                )
+                return None
+            return run_paper_ab_comparison(
+                symbols=args.symbols,
+                start_date=start_date,
+                end_date=end_date,
+                config_a=args.paper_config_a,
+                config_b=args.paper_config_b,
+                initial_capital=args.capital,
+                strategy_type=args.strategy,
+                paper_bars=args.paper_bars,
+                output_path=args.paper_ab_output,
+                verbose=True,
+            )
         results = run_paper(
             symbols=args.symbols,
             start_date=start_date,
@@ -3205,6 +3831,7 @@ def main():
             initial_capital=args.capital,
             strategy_type=args.strategy,
             paper_bars=args.paper_bars,
+            config_path=args.config,
             verbose=True,
         )
         if isinstance(results, dict) and "metrics" in results:

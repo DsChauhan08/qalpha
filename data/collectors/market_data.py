@@ -96,9 +96,28 @@ class DataCollector:
 
         self.parquet_manager = None
         if use_parquet_cache:
+            parquet_engine: Optional[str] = None
+            try:
+                import pyarrow  # noqa: F401
+
+                parquet_engine = "pyarrow"
+            except Exception:
+                try:
+                    import fastparquet  # noqa: F401
+
+                    parquet_engine = "fastparquet"
+                except Exception:
+                    logger.info(
+                        "Parquet cache disabled: no parquet engine installed (pyarrow/fastparquet)."
+                    )
+
+            if parquet_engine is None:
+                use_parquet_cache = False
+
+        if use_parquet_cache:
             parquet_dir = self.cache_dir / "parquet"
             self.parquet_manager = ParquetManager(
-                str(parquet_dir), ttl_hours=cache_ttl_hours
+                str(parquet_dir), ttl_hours=cache_ttl_hours, engine=parquet_engine
             )
         self.quality_checker = DataQualityChecker()
 
@@ -416,7 +435,7 @@ class DataCollector:
                             },
                         )
                         return cached
-                except ImportError as exc:
+                except Exception as exc:
                     logger.warning("Parquet cache unavailable: %s", exc)
 
             if self.sqlite_cache:
@@ -511,7 +530,7 @@ class DataCollector:
             if self._use_parquet(start, end, interval):
                 try:
                     self.parquet_manager.save(df, symbol, start, end, interval)
-                except ImportError as exc:
+                except Exception as exc:
                     logger.warning("Parquet save unavailable: %s", exc)
 
         return df

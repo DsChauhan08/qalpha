@@ -71,3 +71,107 @@
 2026-02-27 11:36:25,099 | INFO | quantum_alpha.risk.drawdown_control | Drawdown state transition: warning -> recovery
 2026-02-27 11:36:25,104 | INFO | quantum_alpha.risk.drawdown_control | Drawdown state transition: recovery -> normal
 2026-02-27 11:36:57,130 | WARNING | quantum_alpha.monitoring.alert_system | Max drawdown -13.03% exceeds threshold 10.00%
+2026-03-03 06:30:22,354 | WARNING | quantum_alpha.data.collectors.market_data | Data quality issues for AAL: return_outliers
+2026-03-03 06:30:52,236 | WARNING | quantum_alpha.data.collectors.market_data | Data quality issues for AIG: return_outliers
+2026-03-03 06:31:12,839 | WARNING | quantum_alpha.data.collectors.market_data | Data quality issues for AMD: return_outliers
+2026-03-03 06:31:30,308 | WARNING | quantum_alpha.data.collectors.market_data | Data quality issues for APA: return_outliers
+2026-03-03 06:31:45,433 | WARNING | quantum_alpha.data.collectors.market_data | Data quality issues for ARWR: return_outliers
+2026-03-03 06:32:21,870 | WARNING | quantum_alpha.data.collectors.market_data | Data quality issues for BC: return_outliers
+2026-03-03 06:32:43,042 | WARNING | quantum_alpha.data.collectors.market_data | Data quality issues for BLDR: return_outliers
+2026-03-03 06:33:06,930 | WARNING | quantum_alpha.data.collectors.market_data | Data quality issues for C: return_outliers
+2026-03-03 06:33:15,181 | WARNING | quantum_alpha.data.collectors.market_data | Data quality issues for CAR: return_outliers
+2026-03-03 06:33:24,140 | WARNING | quantum_alpha.data.collectors.market_data | Data quality issues for CBRE: return_outliers
+2026-03-03 06:33:37,226 | WARNING | quantum_alpha.data.collectors.market_data | Data quality issues for CELH: return_outliers
+2026-03-03 06:33:49,407 | WARNING | quantum_alpha.data.collectors.market_data | Data quality issues for CHRD: return_outliers
+2026-03-03 06:34:13,312 | WARNING | quantum_alpha.data.collectors.market_data | Data quality issues for CNO: return_outliers
+2026-03-03 06:34:34,387 | WARNING | quantum_alpha.data.collectors.market_data | Data quality issues for CPRI: return_outliers
+2026-03-03 06:35:04,030 | WARNING | quantum_alpha.data.collectors.market_data | Data quality issues for CVNA: return_outliers
+2026-03-03 06:35:10,252 | WARNING | quantum_alpha.data.collectors.market_data | Data quality issues for CYTK: return_outliers
+2026-03-03 06:37:00,329 | INFO | quantum_alpha.strategy.meta_ensemble_strategy | Loaded meta-ensemble model from meta_ensemble_model.pkl (86 features)
+2026-03-03 06:37:11,798 | INFO | quantum_alpha.meta_ensemble | GDELT tone data loaded: 318143 records, 96 symbols
+2026-03-03 06:37:11,870 | INFO | quantum_alpha.strategy.meta_ensemble_strategy | [A] 21/86 features filled with defaults (cross-sectional or MC/Padé)
+2026-03-03 06:37:11,938 | INFO | quantum_alpha.strategy.meta_ensemble_strategy | [A] Meta-ensemble signals: BUY=1797, SELL=313, HOLD=2921 (active=41.9%, avg_conf=0.169, sizing=proportional)
+2026-03-03 06:37:23,494 | INFO | quantum_alpha.strategy.meta_ensemble_strategy | [AA] 21/86 features filled with defaults (cross-sectional or MC/Padé)
+2026-03-03 06:37:23,537 | INFO | quantum_alpha.strategy.meta_ensemble_strategy | [AA] Meta-ensemble signals: BUY=1610, SELL=790, HOLD=2631 (active=47.7%, avg_conf=0.191, sizing=proportional)
+2026-03-03 06:37:33,027 | INFO | quantum_alpha.strategy.meta_ensemble_strategy | [AAL] 21/86 features filled with defaults (cross-sectional or MC/Padé)
+2026-03-03 06:37:33,065 | INFO | quantum_alpha.strategy.meta_ensemble_strategy | [AAL] Meta-ensemble signals: BUY=1671, SELL=869, HOLD=2491 (active=50.5%, avg_conf=0.198, sizing=proportional)
+2026-03-03 06:37:43,076 | INFO | quantum_alpha.strategy.meta_ensemble_strategy | [AAON] 21/86 features filled with defaults (cross-sectional or MC/Padé)
+2026-03-03 06:37:43,130 | INFO | quantum_alpha.strategy.meta_ensemble_strategy | [AAON] Meta-ensemble signals: BUY=1638, SELL=561, HOLD=2832 (active=43.7%, avg_conf=0.171, sizing=proportional)
+2026-03-03 06:37:52,809 | INFO | quantum_alpha.strategy.meta_ensemble_strategy | [AAPL] 12/86 features filled with defaults (cross-sectional or MC/Padé)
+2026-03-03 06:37:52,848 | INFO | quantum_alpha.strategy.meta_ensemble_strategy | [AAPL] Meta-ensemble signals: BUY=1792, SELL=338, HOLD=2901 (active=42.3%, avg_conf=0.171, sizing=proportional)
+2026-03-03 06:37:59,104 | INFO | quantum_alpha.strategy.meta_ensemble_strategy | [ABBV] 12/86 features filled with defaults (cross-sectional or MC/Padé)
+2026-03-03 06:37:59,133 | INFO | quantum_alpha.strategy.meta_ensemble_strategy | [ABBV] Meta-ensemble signals: BUY=1214, SELL=146, HOLD=1910 (active=41.6%, avg_conf=0.164, sizing=proportional)
+2026-03-03 06:38:01,713 | INFO | quantum_alpha.strategy.meta_ensemble_strategy | [ABNB] 21/86 features filled with defaults (cross-sectional or MC/Padé)
+2026-03-03 06:38:01,730 | INFO | quantum_alpha.strategy.meta_ensemble_strategy | [ABNB] Meta-ensemble signals: BUY=344, SELL=139, HOLD=787 (active=38.0%, avg_conf=0.172, sizing=proportional)
+2026-03-03 06:38:12,188 | INFO | quantum_alpha.strategy.meta_ensemble_strategy | [ABT] 12/86 features filled with defaults (cross-sectional or MC/Padé)
+2026-03-03 06:38:12,224 | INFO | quantum_alpha.strategy.meta_ensemble_strategy | [ABT] Meta-ensemble signals: BUY=2394, SELL=133, HOLD=2504 (active=50.2%, avg_conf=0.164, sizing=proportional)
+2026-03-03 06:38:37,951 | WARNING | quantum_alpha.data.collectors.market_data | Parquet save unavailable: engine must be one of 'pyarrow', 'fastparquet'
+2026-03-03 06:38:39,177 | WARNING | quantum_alpha.data.collectors.market_data | Parquet save unavailable: engine must be one of 'pyarrow', 'fastparquet'
+2026-03-03 06:38:40,553 | WARNING | quantum_alpha.data.collectors.market_data | Parquet save unavailable: engine must be one of 'pyarrow', 'fastparquet'
+2026-03-03 06:38:41,760 | WARNING | quantum_alpha.data.collectors.market_data | Parquet save unavailable: engine must be one of 'pyarrow', 'fastparquet'
+2026-03-03 06:38:42,967 | WARNING | quantum_alpha.data.collectors.market_data | Parquet save unavailable: engine must be one of 'pyarrow', 'fastparquet'
+2026-03-03 06:38:44,255 | WARNING | quantum_alpha.data.collectors.market_data | Parquet save unavailable: engine must be one of 'pyarrow', 'fastparquet'
+2026-03-03 06:38:45,813 | WARNING | quantum_alpha.data.collectors.market_data | Data quality issues for DHR: return_outliers
+2026-03-03 06:38:45,820 | WARNING | quantum_alpha.data.collectors.market_data | Parquet save unavailable: engine must be one of 'pyarrow', 'fastparquet'
+2026-03-03 06:38:47,043 | WARNING | quantum_alpha.data.collectors.market_data | Parquet save unavailable: engine must be one of 'pyarrow', 'fastparquet'
+2026-03-03 06:38:48,428 | WARNING | quantum_alpha.data.collectors.market_data | Parquet save unavailable: engine must be one of 'pyarrow', 'fastparquet'
+2026-03-03 06:38:49,732 | WARNING | quantum_alpha.data.collectors.market_data | Parquet save unavailable: engine must be one of 'pyarrow', 'fastparquet'
+2026-03-03 06:38:51,009 | WARNING | quantum_alpha.data.collectors.market_data | Parquet save unavailable: engine must be one of 'pyarrow', 'fastparquet'
+2026-03-03 06:38:52,546 | WARNING | quantum_alpha.data.collectors.market_data | Parquet save unavailable: engine must be one of 'pyarrow', 'fastparquet'
+2026-03-03 06:38:53,738 | WARNING | quantum_alpha.data.collectors.market_data | Parquet save unavailable: engine must be one of 'pyarrow', 'fastparquet'
+2026-03-03 06:38:54,982 | WARNING | quantum_alpha.data.collectors.market_data | Parquet save unavailable: engine must be one of 'pyarrow', 'fastparquet'
+2026-03-03 06:38:56,001 | WARNING | quantum_alpha.data.collectors.market_data | Parquet save unavailable: engine must be one of 'pyarrow', 'fastparquet'
+2026-03-03 06:38:57,113 | WARNING | quantum_alpha.data.collectors.market_data | Parquet save unavailable: engine must be one of 'pyarrow', 'fastparquet'
+2026-03-03 06:38:58,371 | WARNING | quantum_alpha.data.collectors.market_data | Parquet save unavailable: engine must be one of 'pyarrow', 'fastparquet'
+2026-03-03 06:38:59,453 | WARNING | quantum_alpha.data.collectors.market_data | Parquet save unavailable: engine must be one of 'pyarrow', 'fastparquet'
+2026-03-03 06:39:00,555 | WARNING | quantum_alpha.data.collectors.market_data | Parquet save unavailable: engine must be one of 'pyarrow', 'fastparquet'
+2026-03-03 06:39:01,987 | WARNING | quantum_alpha.data.collectors.market_data | Parquet save unavailable: engine must be one of 'pyarrow', 'fastparquet'
+2026-03-03 06:39:03,008 | WARNING | quantum_alpha.data.collectors.market_data | Parquet save unavailable: engine must be one of 'pyarrow', 'fastparquet'
+2026-03-03 06:39:04,286 | WARNING | quantum_alpha.data.collectors.market_data | Parquet save unavailable: engine must be one of 'pyarrow', 'fastparquet'
+2026-03-03 06:39:05,326 | WARNING | quantum_alpha.data.collectors.market_data | Parquet save unavailable: engine must be one of 'pyarrow', 'fastparquet'
+2026-03-03 06:39:06,522 | WARNING | quantum_alpha.data.collectors.market_data | Parquet save unavailable: engine must be one of 'pyarrow', 'fastparquet'
+2026-03-03 06:39:07,721 | WARNING | quantum_alpha.data.collectors.market_data | Parquet save unavailable: engine must be one of 'pyarrow', 'fastparquet'
+2026-03-03 06:39:09,220 | WARNING | quantum_alpha.data.collectors.market_data | Parquet save unavailable: engine must be one of 'pyarrow', 'fastparquet'
+2026-03-03 06:39:40,495 | WARNING | quantum_alpha.data.collectors.market_data | Data quality issues for DXCM: return_outliers
+2026-03-03 06:40:31,420 | WARNING | quantum_alpha.data.collectors.market_data | Data quality issues for EWBC: return_outliers
+2026-03-03 06:40:35,188 | WARNING | quantum_alpha.data.collectors.market_data | Data quality issues for EXEL: return_outliers
+2026-03-03 06:41:08,573 | WARNING | quantum_alpha.data.collectors.market_data | Data quality issues for FITB: return_outliers
+2026-03-03 06:41:16,782 | WARNING | quantum_alpha.data.collectors.market_data | Data quality issues for FLR: return_outliers
+2026-03-03 06:41:30,337 | WARNING | quantum_alpha.data.collectors.market_data | Data quality issues for FR: return_outliers
+2026-03-03 06:41:58,941 | WARNING | quantum_alpha.data.collectors.market_data | Data quality issues for GL: return_outliers
+2026-03-03 06:42:05,359 | WARNING | quantum_alpha.data.collectors.market_data | Data quality issues for GME: return_outliers
+2026-03-03 06:42:15,574 | WARNING | quantum_alpha.data.collectors.market_data | Data quality issues for GPK: return_outliers
+2026-03-03 06:42:31,798 | WARNING | quantum_alpha.data.collectors.market_data | Data quality issues for HALO: return_outliers
+2026-03-03 06:42:34,826 | WARNING | quantum_alpha.data.collectors.market_data | Data quality issues for HBAN: return_outliers
+2026-03-03 06:42:41,696 | WARNING | quantum_alpha.data.collectors.market_data | Data quality issues for HIG: return_outliers
+2026-03-03 06:42:56,115 | WARNING | quantum_alpha.data.collectors.market_data | Data quality issues for HOOD: return_outliers
+2026-03-03 06:43:52,169 | WARNING | quantum_alpha.data.collectors.market_data | Data quality issues for JAZZ: return_outliers
+2026-03-03 06:43:56,677 | WARNING | quantum_alpha.data.collectors.market_data | Data quality issues for JCI: return_outliers
+2026-03-03 06:44:11,531 | WARNING | quantum_alpha.data.collectors.market_data | Data quality issues for KEY: return_outliers
+2026-03-03 06:44:41,031 | WARNING | quantum_alpha.data.collectors.market_data | Data quality issues for LAD: return_outliers
+2026-03-03 06:45:03,329 | WARNING | quantum_alpha.data.collectors.market_data | Data quality issues for LNTH: return_outliers
+2026-03-03 06:45:15,753 | WARNING | quantum_alpha.data.collectors.market_data | Data quality issues for LVS: return_outliers
+2026-03-03 06:45:41,169 | WARNING | quantum_alpha.data.collectors.market_data | Data quality issues for MEDP: return_outliers
+2026-03-03 06:46:05,478 | WARNING | quantum_alpha.data.collectors.market_data | Data quality issues for MP: return_outliers
+2026-03-03 06:46:13,868 | WARNING | quantum_alpha.data.collectors.market_data | Data quality issues for MS: return_outliers
+2026-03-03 06:46:29,449 | WARNING | quantum_alpha.data.collectors.market_data | Data quality issues for MTDR: return_outliers
+2026-03-03 06:46:30,914 | WARNING | quantum_alpha.data.collectors.market_data | Data quality issues for MTG: return_outliers
+2026-03-03 06:46:43,084 | WARNING | quantum_alpha.data.collectors.market_data | Data quality issues for NBIX: return_outliers
+2026-03-03 06:48:09,654 | WARNING | quantum_alpha.data.collectors.market_data | Data quality issues for OVV: return_outliers
+2026-03-03 06:48:11,235 | WARNING | quantum_alpha.data.collectors.market_data | Data quality issues for OXY: return_outliers
+2026-03-03 06:48:25,272 | WARNING | quantum_alpha.data.collectors.market_data | Data quality issues for PCG: return_outliers
+2026-03-03 06:48:36,901 | WARNING | quantum_alpha.data.collectors.market_data | Data quality issues for PFGC: return_outliers
+2026-03-03 06:49:06,969 | WARNING | quantum_alpha.data.collectors.market_data | Data quality issues for PPC: return_outliers
+2026-03-03 06:49:11,235 | WARNING | quantum_alpha.data.collectors.market_data | Data quality issues for PR: return_outliers
+2026-03-03 06:49:53,688 | WARNING | quantum_alpha.data.collectors.market_data | Data quality issues for RMBS: return_outliers
+2026-03-03 06:50:23,827 | WARNING | quantum_alpha.data.collectors.market_data | Data quality issues for SATS: return_outliers
+2026-03-03 06:50:38,552 | WARNING | quantum_alpha.data.collectors.market_data | Data quality issues for SHC: return_outliers
+2026-03-03 06:51:22,973 | WARNING | quantum_alpha.data.collectors.market_data | Data quality issues for STT: return_outliers
+2026-03-03 06:51:56,078 | WARNING | quantum_alpha.data.collectors.market_data | Data quality issues for THC: return_outliers
+2026-03-03 06:52:14,006 | WARNING | quantum_alpha.data.collectors.market_data | Data quality issues for TRGP: return_outliers
+2026-03-03 06:52:30,975 | WARNING | quantum_alpha.data.collectors.market_data | Data quality issues for TTWO: return_outliers
+2026-03-03 06:52:40,887 | WARNING | quantum_alpha.data.collectors.market_data | Data quality issues for UAL: return_outliers
+2026-03-03 06:53:26,380 | WARNING | quantum_alpha.data.collectors.market_data | Data quality issues for VRTX: return_outliers
+2026-03-03 06:53:35,407 | WARNING | quantum_alpha.data.collectors.market_data | Data quality issues for WAL: return_outliers
+2026-03-03 06:54:32,684 | WARNING | quantum_alpha.strategy.signals | Insufficient data for cross-asset signals: 45 rows
+2026-03-03 11:11:11,113 | WARNING | quantum_alpha.strategy.signals | Insufficient data for cross-asset signals: 45 rows

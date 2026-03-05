@@ -933,7 +933,30 @@ def _save_outputs(
 
 def _write_live_status(cfg: SessionConfig, status: Dict) -> None:
     status_path = cfg.output_dir / "live_status.json"
+    if not isinstance(status.get("model_health"), dict):
+        status = dict(status)
+        status["model_health"] = {
+            "base_ok": bool(status.get("model_health_base", False)),
+            "mc_ok": bool(status.get("model_health_mc", False)),
+        }
     status_path.write_text(json.dumps(status, indent=2))
+
+
+def _get_meta_model_health(
+    strategy: Optional[MetaDualBlendStrategy],
+) -> Dict[str, object]:
+    if strategy is None:
+        return {"base_ok": False, "mc_ok": False}
+    try:
+        health = strategy.model_health()
+    except Exception as exc:
+        return {"base_ok": False, "mc_ok": False, "error": str(exc)}
+    if not isinstance(health, dict):
+        return {"base_ok": False, "mc_ok": False}
+    health = dict(health)
+    health.setdefault("base_ok", False)
+    health.setdefault("mc_ok", False)
+    return health
 
 
 def _pnl_fields(
@@ -1124,8 +1147,9 @@ def run_realtime_paper(cfg: SessionConfig) -> Dict:
     pipeline_health = "ok"
     feature_missing_ratio_base = 0.0
     feature_missing_ratio_mc = 0.0
-    model_health_base = bool(meta_blend_strategy is not None and meta_blend_strategy.model_health().get("base_ok"))
-    model_health_mc = bool(meta_blend_strategy is not None and meta_blend_strategy.model_health().get("mc_ok"))
+    model_health = _get_meta_model_health(meta_blend_strategy)
+    model_health_base = bool(model_health.get("base_ok", False))
+    model_health_mc = bool(model_health.get("mc_ok", False))
     latency_ms = {
         "data_ms": 0.0,
         "decision_ms": 0.0,
@@ -1498,9 +1522,7 @@ def run_realtime_paper(cfg: SessionConfig) -> Dict:
                 if cfg.strategy_type == "meta_blend_hybrid" and ab_group_active == "B":
                     decision_engine = "meta_blend_hybrid"
                     model_health = (
-                        meta_blend_strategy.model_health()
-                        if meta_blend_strategy is not None
-                        else {"base_ok": False, "mc_ok": False}
+                        _get_meta_model_health(meta_blend_strategy)
                     )
                     model_health_base = bool(model_health.get("base_ok", False))
                     model_health_mc = bool(model_health.get("mc_ok", False))
@@ -1759,6 +1781,7 @@ def run_realtime_paper(cfg: SessionConfig) -> Dict:
         "ab_group": ab_group_active,
         "pipeline_health": pipeline_health,
         "anchor_cache_freshness_minutes": anchor_cache_freshness_minutes(anchor_cache_payload),
+        "model_health": model_health,
         "model_health_base": bool(model_health_base),
         "model_health_mc": bool(model_health_mc),
         "feature_missing_ratio_base": float(feature_missing_ratio_base),
@@ -1786,6 +1809,7 @@ def run_realtime_paper(cfg: SessionConfig) -> Dict:
             "ab_group": ab_group_active,
             "pipeline_health": pipeline_health,
             "anchor_cache_freshness_minutes": anchor_cache_freshness_minutes(anchor_cache_payload),
+            "model_health": model_health,
             "model_health_base": bool(model_health_base),
             "model_health_mc": bool(model_health_mc),
             "feature_missing_ratio_base": float(feature_missing_ratio_base),

@@ -28,7 +28,12 @@ class _FakeStrategy:
         return out
 
     def model_health(self):
-        return {"base_ok": True, "mc_ok": True}
+        return {
+            "base_ok": True,
+            "mc_ok": True,
+            "base_feature_set": "base",
+            "mc_feature_set": "mc_pade",
+        }
 
 
 def _frames():
@@ -61,6 +66,8 @@ def test_anchor_cache_refresh_and_reuse(tmp_path):
     )
     assert payload1.get("asof_date") == "2026-03-01"
     assert int(payload1.get("symbols_scored", 0)) == 2
+    assert payload1.get("model_health", {}).get("mc_feature_set") == "mc_pade"
+    assert payload1.get("model_health_mc") is True
     assert strategy.calls == 1
 
     payload2 = refresh_anchor_cache_if_needed(

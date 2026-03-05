@@ -30,6 +30,26 @@ def _safe_float(value: object, default: float = 0.0) -> float:
         return float(default)
 
 
+def _feature_family_counts(feature_cols: list[str]) -> dict[str, int]:
+    mc_count = sum(1 for c in feature_cols if str(c).startswith(("mc_", "jd_", "rs_")))
+    pade_count = sum(1 for c in feature_cols if str(c).startswith("pade_"))
+    return {
+        "feature_count": int(len(feature_cols)),
+        "mc_feature_count": int(mc_count),
+        "pade_feature_count": int(pade_count),
+    }
+
+
+def _infer_feature_set(declared_feature_set: object, feature_cols: list[str]) -> str:
+    value = str(declared_feature_set or "").strip().lower()
+    if value in {"base", "mc_pade"}:
+        return value
+    stats = _feature_family_counts(feature_cols)
+    if stats["mc_feature_count"] > 0 or stats["pade_feature_count"] > 0:
+        return "mc_pade"
+    return "base"
+
+
 class MetaDualBlendStrategy:
     """
     Load base + MC/Padé meta checkpoints and emit blended probabilities.
@@ -83,14 +103,41 @@ class MetaDualBlendStrategy:
         feature_cols = checkpoint.get("feature_cols")
         if not isinstance(feature_cols, list) or len(feature_cols) == 0:
             raise RuntimeError(f"Missing feature_cols in {model_path}")
+        declared_feature_set = checkpoint.get("feature_set")
+        feature_stats = _feature_family_counts(list(feature_cols))
         return {
             "model_path": str(model_path),
             "model": model,
             "scaler": checkpoint.get("scaler"),
             "feature_cols": list(feature_cols),
-            "feature_set": str(checkpoint.get("feature_set", "")),
+            "feature_set": _infer_feature_set(declared_feature_set, list(feature_cols)),
+            "declared_feature_set": (
+                str(declared_feature_set).strip().lower() if declared_feature_set else None
+            ),
+            "feature_stats": feature_stats,
             "metadata": checkpoint,
         }
+
+    def _validate_bundle(self, bundle: Dict[str, object], role: str) -> Dict[str, object]:
+        if role != "mc":
+            return bundle
+
+        stats = bundle.get("feature_stats", {})
+        mc_count = int(stats.get("mc_feature_count", 0))
+        pade_count = int(stats.get("pade_feature_count", 0))
+        declared_feature_set = bundle.get("declared_feature_set")
+
+        if declared_feature_set and declared_feature_set != "mc_pade":
+            raise RuntimeError(
+                f"MC checkpoint declares feature_set={declared_feature_set!r}: "
+                f"{bundle.get('model_path')}"
+            )
+        if mc_count <= 0 and pade_count <= 0:
+            raise RuntimeError(
+                "MC checkpoint contains no MC/Padé features: "
+                f"{bundle.get('model_path')}"
+            )
+        return bundle
 
     def _load_models(self) -> None:
         # Base model
@@ -115,19 +162,27 @@ class MetaDualBlendStrategy:
             [
                 "meta_ensemble_mc_pade_model.pkl",
                 "meta_ensemble_mc_pade_best_wf.pkl",
-                "meta_ensemble_model.pkl",
-                "meta_ensemble_best_wf.pkl",
             ],
         )
         if mc_path is None:
             self._mc_error = f"No MC checkpoint found in {self.mc_checkpoint_dir}"
         else:
             try:
-                self._mc_bundle = self._load_bundle(mc_path)
+                self._mc_bundle = self._validate_bundle(self._load_bundle(mc_path), role="mc")
             except Exception as exc:
                 self._mc_error = str(exc)
 
     def model_health(self) -> Dict[str, object]:
+        base_stats = (
+            dict(self._base_bundle.get("feature_stats", {}))
+            if isinstance(self._base_bundle, dict)
+            else {}
+        )
+        mc_stats = (
+            dict(self._mc_bundle.get("feature_stats", {}))
+            if isinstance(self._mc_bundle, dict)
+            else {}
+        )
         return {
             "base_ok": self._base_bundle is not None,
             "mc_ok": self._mc_bundle is not None,
@@ -135,6 +190,28 @@ class MetaDualBlendStrategy:
             "mc_error": self._mc_error,
             "base_model_path": self._base_bundle.get("model_path") if self._base_bundle else None,
             "mc_model_path": self._mc_bundle.get("model_path") if self._mc_bundle else None,
+            "base_feature_set": self._base_bundle.get("feature_set") if self._base_bundle else None,
+            "mc_feature_set": self._mc_bundle.get("feature_set") if self._mc_bundle else None,
+            "base_declared_feature_set": (
+                self._base_bundle.get("declared_feature_set") if self._base_bundle else None
+            ),
+            "mc_declared_feature_set": (
+                self._mc_bundle.get("declared_feature_set") if self._mc_bundle else None
+            ),
+            "base_feature_count": int(base_stats.get("feature_count", 0)),
+            "base_mc_feature_count": int(base_stats.get("mc_feature_count", 0)),
+            "base_pade_feature_count": int(base_stats.get("pade_feature_count", 0)),
+            "mc_feature_count": int(mc_stats.get("feature_count", 0)),
+            "mc_mc_feature_count": int(mc_stats.get("mc_feature_count", 0)),
+            "mc_pade_feature_count": int(mc_stats.get("pade_feature_count", 0)),
+            "checkpoints_distinct": (
+                None
+                if not self._base_bundle or not self._mc_bundle
+                else bool(
+                    str(self._base_bundle.get("model_path"))
+                    != str(self._mc_bundle.get("model_path"))
+                )
+            ),
             "blend_weights": [float(self.blend_weights[0]), float(self.blend_weights[1])],
         }
 
@@ -239,4 +316,3 @@ class MetaDualBlendStrategy:
                 continue
             out[str(symbol)] = pred
         return out
-

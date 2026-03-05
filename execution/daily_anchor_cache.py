@@ -67,14 +67,18 @@ def build_anchor_cache_payload(
         return {}
     asof_date = str(latest.date())
     predictions = strategy.build_anchor_predictions(featured)
+    model_health = strategy.model_health() if hasattr(strategy, "model_health") else {}
+    if not isinstance(model_health, dict):
+        model_health = {}
     return {
         "asof_date": asof_date,
         "generated_at_utc": _to_utc_iso(datetime.now(timezone.utc)),
         "decision_engine": str(decision_engine),
         "symbols_scored": int(len(predictions)),
         "predictions": predictions,
-        "model_health_base": bool(strategy.model_health().get("base_ok", False)),
-        "model_health_mc": bool(strategy.model_health().get("mc_ok", False)),
+        "model_health": model_health,
+        "model_health_base": bool(model_health.get("base_ok", False)),
+        "model_health_mc": bool(model_health.get("mc_ok", False)),
     }
 
 
@@ -107,4 +111,3 @@ def refresh_anchor_cache_if_needed(
     cache_file.parent.mkdir(parents=True, exist_ok=True)
     cache_file.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     return payload
-

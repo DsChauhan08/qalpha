@@ -263,7 +263,17 @@ ALL_FEATURE_COLS = list(BASE_FEATURE_COLS)
 # MC/Padé features — dynamically generated from MCPadeFeatureGenerator
 # These are added to ALL_FEATURE_COLS after import
 MC_PADE_FEATURES: List[str] = []
+PATH_SHAPE_FEATURES: List[str] = []
 _mc_pade_gen = None
+_path_shape_gen = None
+
+DEFAULT_PROMOTION_COMMISSION_BPS = 10.0
+COMMISSION_SENSITIVITY_BPS = [0.0, 5.0, 10.0, 20.0]
+DEFAULT_MIN_UP_PROBABILITY = 0.55
+DEFAULT_INNER_TOP_K = [3, 5, 10]
+DEFAULT_INNER_HOLD_DAYS = [5, 10, 21]
+DEFAULT_INNER_REBALANCE_INTERVALS = [1, 5]
+DEFAULT_INNER_LONG_ONLY_THRESHOLDS = [0.50, 0.55, 0.60]
 
 
 def _get_mc_pade_generator():
@@ -286,20 +296,49 @@ def _get_mc_pade_generator():
     return _mc_pade_gen if _mc_pade_gen is not False else None
 
 
+def _get_path_shape_generator():
+    """Lazy-initialize the regime path-shape feature generator."""
+    global _path_shape_gen, PATH_SHAPE_FEATURES, ALL_FEATURE_COLS
+    if _path_shape_gen is None:
+        try:
+            from quantum_alpha.features.regime_path_shape import (
+                RegimePathShapeFeatureGenerator,
+            )
+
+            _path_shape_gen = RegimePathShapeFeatureGenerator()
+            PATH_SHAPE_FEATURES = _path_shape_gen.get_feature_names()
+            for f in PATH_SHAPE_FEATURES:
+                if f not in ALL_FEATURE_COLS:
+                    ALL_FEATURE_COLS.append(f)
+            logger.info(
+                "Regime path-shape features loaded: %d features",
+                len(PATH_SHAPE_FEATURES),
+            )
+        except Exception as e:
+            logger.warning(f"Regime path-shape features unavailable: {e}")
+            _path_shape_gen = False
+    return _path_shape_gen if _path_shape_gen is not False else None
+
+
 def _resolve_feature_set(feature_set: str | None) -> str:
     value = str(feature_set or "base").strip().lower()
-    if value not in {"base", "mc_pade"}:
-        raise ValueError(f"Unsupported feature_set={feature_set!r}; expected base|mc_pade")
+    if value not in {"base", "mc_pade", "path_shape", "hybrid_math"}:
+        raise ValueError(
+            f"Unsupported feature_set={feature_set!r}; "
+            "expected base|mc_pade|path_shape|hybrid_math"
+        )
     return value
 
 
 def _feature_family_counts(feature_cols: List[str]) -> Dict[str, int]:
     mc_count = sum(1 for c in feature_cols if str(c).startswith(("mc_", "jd_", "rs_")))
     pade_count = sum(1 for c in feature_cols if str(c).startswith("pade_"))
+    path_shape_count = sum(1 for c in feature_cols if str(c).startswith("ps_"))
     return {
         "feature_count": int(len(feature_cols)),
         "mc_feature_count": int(mc_count),
         "pade_feature_count": int(pade_count),
+        "path_shape_feature_count": int(path_shape_count),
     }
 
 
@@ -871,6 +910,14 @@ def compute_features_single_symbol(
             except Exception as e:
                 logger.debug(f"MC/Padé features failed for {symbol}: {e}")
 
+        # Step 5.25: Regime path-shape features (past-only mathematical sleeve)
+        path_shape_gen = _get_path_shape_generator()
+        if path_shape_gen is not None:
+            try:
+                featured = path_shape_gen.generate_features(featured)
+            except Exception as e:
+                logger.debug(f"Regime path-shape features failed for {symbol}: {e}")
+
         # Step 5.5: GDELT news tone features (real sentiment from news articles)
         # Data covers 2017-01-01 to present; pre-2017 rows get NaN → filled with 0.
         # GDELT pickle columns: tone, tone_ma5, ... → renamed to gdelt_tone, gdelt_tone_ma5, ...
@@ -1225,9 +1272,402 @@ def get_feature_columns(df: pd.DataFrame, feature_set: str = "base") -> List[str
     if fs == "mc_pade":
         _get_mc_pade_generator()
         candidates = ALL_FEATURE_COLS
+        candidates = [c for c in candidates if not str(c).startswith("ps_")]
+    elif fs == "path_shape":
+        _get_path_shape_generator()
+        candidates = list(BASE_FEATURE_COLS) + list(PATH_SHAPE_FEATURES)
+    elif fs == "hybrid_math":
+        _get_mc_pade_generator()
+        _get_path_shape_generator()
+        candidates = list(ALL_FEATURE_COLS)
     else:
         candidates = BASE_FEATURE_COLS
     return [c for c in candidates if c in df.columns]
+
+
+class _IdentityCalibrator:
+    def transform(self, values):
+        arr = np.asarray(values, dtype=float)
+        return np.clip(arr, 0.0, 1.0)
+
+
+def _build_classifier():
+    from sklearn.ensemble import HistGradientBoostingClassifier
+
+    class_weight = "balanced" if FORWARD_PERIOD <= 1 else None
+    return HistGradientBoostingClassifier(
+        max_iter=500,
+        max_depth=6,
+        learning_rate=0.05,
+        min_samples_leaf=50,
+        l2_regularization=1.0,
+        max_bins=255,
+        early_stopping=True,
+        validation_fraction=0.1,
+        n_iter_no_change=20,
+        random_state=42,
+        class_weight=class_weight,
+    )
+
+
+def _build_return_regressor():
+    from sklearn.ensemble import HistGradientBoostingRegressor
+
+    return HistGradientBoostingRegressor(
+        max_iter=400,
+        max_depth=6,
+        learning_rate=0.05,
+        min_samples_leaf=50,
+        l2_regularization=1.0,
+        max_bins=255,
+        early_stopping=True,
+        validation_fraction=0.1,
+        n_iter_no_change=20,
+        random_state=42,
+    )
+
+
+def _split_train_calibration(
+    train_df: pd.DataFrame,
+    min_calibration_dates: int = 63,
+    calibration_frac: float = 0.15,
+) -> tuple[pd.Series, pd.Series]:
+    """Chronological split for model fitting vs calibration/inner selection."""
+    dates = pd.Index(train_df.index.unique().sort_values())
+    if len(dates) <= max(40, min_calibration_dates + 20):
+        cutoff = dates[max(1, int(len(dates) * 0.85))]
+        fit_mask = train_df.index < cutoff
+        cal_mask = train_df.index >= cutoff
+        return fit_mask, cal_mask
+
+    cal_n = max(min_calibration_dates, int(np.ceil(len(dates) * calibration_frac)))
+    cal_n = min(cal_n, len(dates) - 20)
+    cutoff = dates[-cal_n]
+    fit_mask = train_df.index < cutoff
+    cal_mask = train_df.index >= cutoff
+    return fit_mask, cal_mask
+
+
+def _fit_dual_target_models(
+    train_df: pd.DataFrame,
+    feature_cols: List[str],
+    estimated_round_trip_cost: float,
+    min_up_probability: float = DEFAULT_MIN_UP_PROBABILITY,
+) -> Dict[str, object]:
+    from sklearn.isotonic import IsotonicRegression
+    from sklearn.preprocessing import StandardScaler
+
+    fit_mask, cal_mask = _split_train_calibration(train_df)
+    fit_df = train_df.loc[fit_mask].copy()
+    cal_df = train_df.loc[cal_mask].copy()
+    if len(fit_df) < 100 or len(cal_df) < 25:
+        fit_df = train_df.iloc[:-max(25, len(train_df) // 10)].copy()
+        cal_df = train_df.iloc[-max(25, len(train_df) // 10) :].copy()
+    if len(fit_df) < 100 or len(cal_df) < 25:
+        raise RuntimeError("Insufficient samples for train/calibration split")
+
+    scaler = StandardScaler()
+    X_fit = scaler.fit_transform(fit_df[feature_cols].values)
+    X_fit = np.nan_to_num(X_fit, nan=0.0, posinf=3.0, neginf=-3.0)
+    X_cal = scaler.transform(cal_df[feature_cols].values)
+    X_cal = np.nan_to_num(X_cal, nan=0.0, posinf=3.0, neginf=-3.0)
+
+    y_fit = fit_df["target"].values
+    y_cal = cal_df["target"].values
+    r_fit = pd.to_numeric(fit_df["forward_return"], errors="coerce").fillna(0.0).values
+
+    classifier = _build_classifier()
+    regressor = _build_return_regressor()
+
+    classifier.fit(X_fit, y_fit)
+    regressor.fit(X_fit, r_fit)
+
+    raw_cal = classifier.predict_proba(X_cal)[:, 1]
+    if len(np.unique(y_cal)) >= 2:
+        calibrator = IsotonicRegression(out_of_bounds="clip")
+        calibrator.fit(raw_cal, y_cal)
+    else:
+        calibrator = _IdentityCalibrator()
+
+    return {
+        "classifier": classifier,
+        "regressor": regressor,
+        "calibrator": calibrator,
+        "scaler": scaler,
+        "feature_cols": list(feature_cols),
+        "min_up_probability": float(min_up_probability),
+        "estimated_round_trip_cost": float(estimated_round_trip_cost),
+        "fit_samples": int(len(fit_df)),
+        "calibration_samples": int(len(cal_df)),
+        "calibration_start": str(cal_df.index.min().date()),
+        "calibration_end": str(cal_df.index.max().date()),
+    }
+
+
+def _predict_dual_target(bundle: Dict[str, object], frame: pd.DataFrame) -> pd.DataFrame:
+    X = frame[bundle["feature_cols"]].values
+    X_scaled = bundle["scaler"].transform(X)
+    X_scaled = np.nan_to_num(X_scaled, nan=0.0, posinf=3.0, neginf=-3.0)
+
+    y_proba_raw = bundle["classifier"].predict_proba(X_scaled)[:, 1]
+    calibrator = bundle.get("calibrator")
+    if calibrator is not None and hasattr(calibrator, "transform"):
+        y_proba = np.asarray(calibrator.transform(y_proba_raw), dtype=float)
+    else:
+        y_proba = y_proba_raw
+    predicted_return = np.asarray(bundle["regressor"].predict(X_scaled), dtype=float)
+    net_expected_return = predicted_return - float(bundle["estimated_round_trip_cost"])
+    veto_mask = y_proba < float(bundle.get("min_up_probability", DEFAULT_MIN_UP_PROBABILITY))
+    portfolio_score = net_expected_return.copy()
+    portfolio_score[veto_mask] = -1e9
+
+    out = frame[["symbol", "target", "forward_return"]].copy()
+    out = out.rename(columns={"target": "y_true"})
+    out["y_proba_raw"] = y_proba_raw
+    out["y_proba"] = np.clip(y_proba, 0.0, 1.0)
+    out["predicted_return"] = predicted_return
+    out["net_expected_return"] = net_expected_return
+    out["portfolio_score"] = portfolio_score
+    out["vetoed"] = veto_mask.astype(int)
+    out["y_pred"] = (out["y_proba"] >= 0.5).astype(int)
+    return out
+
+
+def _score_portfolio_metrics(metrics: Dict[str, float]) -> float:
+    return float(
+        metrics.get("annual_return", 0.0)
+        + 0.40 * metrics.get("sharpe", 0.0)
+        + 0.10 * metrics.get("total_return", 0.0)
+        - 0.25 * abs(metrics.get("max_drawdown", 0.0))
+    )
+
+
+def _select_nested_portfolio_config(
+    pred_df: pd.DataFrame,
+    top_ks: List[int] | None = None,
+    hold_days_list: List[int] | None = None,
+    rebalance_intervals: List[int] | None = None,
+    min_up_probs: List[float] | None = None,
+    commission_bps: float = DEFAULT_PROMOTION_COMMISSION_BPS,
+) -> Dict[str, object]:
+    top_ks = [int(v) for v in (top_ks or DEFAULT_INNER_TOP_K)]
+    hold_days_list = [int(v) for v in (hold_days_list or DEFAULT_INNER_HOLD_DAYS)]
+    rebalance_intervals = [
+        int(v) for v in (rebalance_intervals or DEFAULT_INNER_REBALANCE_INTERVALS)
+    ]
+    min_up_probs = [float(v) for v in (min_up_probs or DEFAULT_INNER_LONG_ONLY_THRESHOLDS)]
+
+    best_cfg: Dict[str, object] | None = None
+    best_metrics: Dict[str, float] | None = None
+    best_score = -np.inf
+
+    for top_k in top_ks:
+        for hold_days in hold_days_list:
+            for rebalance_interval in rebalance_intervals:
+                for min_up_probability in min_up_probs:
+                    metrics = _evaluate_ranked_portfolio(
+                        pred_df,
+                        hold_days=hold_days,
+                        top_k=top_k,
+                        rebalance_interval=rebalance_interval,
+                        long_only=True,
+                        score_column="portfolio_score",
+                        min_probability=min_up_probability,
+                        commission_bps=commission_bps,
+                    )
+                    score = _score_portfolio_metrics(metrics)
+                    if score > best_score:
+                        best_score = score
+                        best_cfg = {
+                            "top_k": int(top_k),
+                            "hold_days": int(hold_days),
+                            "rebalance_interval": int(rebalance_interval),
+                            "min_up_probability": float(min_up_probability),
+                        }
+                        best_metrics = metrics
+
+    if best_cfg is None or best_metrics is None:
+        raise RuntimeError("Nested portfolio selection failed")
+
+    return {
+        "config": best_cfg,
+        "metrics": best_metrics,
+        "selection_score": float(best_score),
+    }
+
+
+def _select_median_config(configs: List[Dict[str, object]]) -> Dict[str, object]:
+    if not configs:
+        return {
+            "top_k": 5,
+            "hold_days": max(5, FORWARD_PERIOD),
+            "rebalance_interval": 1,
+            "min_up_probability": DEFAULT_MIN_UP_PROBABILITY,
+        }
+
+    def _median_int(key: str, default: int) -> int:
+        vals = [int(c.get(key, default)) for c in configs]
+        return int(np.median(vals)) if vals else default
+
+    def _median_float(key: str, default: float) -> float:
+        vals = [float(c.get(key, default)) for c in configs]
+        return float(np.median(vals)) if vals else default
+
+    return {
+        "top_k": _median_int("top_k", 5),
+        "hold_days": _median_int("hold_days", max(5, FORWARD_PERIOD)),
+        "rebalance_interval": _median_int("rebalance_interval", 1),
+        "min_up_probability": _median_float(
+            "min_up_probability", DEFAULT_MIN_UP_PROBABILITY
+        ),
+    }
+
+
+def _evaluate_ranked_portfolio(
+    pred_df: pd.DataFrame,
+    hold_days: int,
+    top_frac: float = 0.10,
+    top_k: int | None = None,
+    rebalance_interval: int | None = None,
+    long_only: bool = False,
+    score_column: str = "y_proba",
+    min_probability: float = 0.0,
+    commission_bps: float = 0.0,
+) -> Dict[str, float]:
+    """
+    Evaluate predictions as a date-level ranked portfolio.
+
+    This avoids the misleading sample-level return sum from aggregating
+    tens of thousands of symbol-date rows. For multi-day forward targets,
+    it only evaluates non-overlapping rebalance dates spaced by hold_days.
+    """
+    if pred_df is None or len(pred_df) == 0:
+        return {
+            "total_return": 0.0,
+            "annual_return": 0.0,
+            "sharpe": 0.0,
+            "max_drawdown": 0.0,
+            "avg_spread": 0.0,
+            "n_rebalance_periods": 0,
+            "avg_names_per_side": 0.0,
+        }
+
+    work = pred_df.copy()
+    work["date"] = pd.to_datetime(work["date"], errors="coerce").dt.normalize()
+    work["y_proba"] = pd.to_numeric(work["y_proba"], errors="coerce")
+    work["forward_return"] = pd.to_numeric(work["forward_return"], errors="coerce")
+    work = work.dropna(subset=["date", "y_proba", "forward_return"])
+    if len(work) == 0:
+        return {
+            "total_return": 0.0,
+            "annual_return": 0.0,
+            "sharpe": 0.0,
+            "max_drawdown": 0.0,
+            "avg_spread": 0.0,
+            "n_rebalance_periods": 0,
+            "avg_names_per_side": 0.0,
+        }
+
+    unique_dates = sorted(pd.unique(work["date"]))
+    step = max(int(hold_days), int(rebalance_interval or hold_days), 1)
+    rebalance_dates = set(unique_dates[::step])
+    work = work[work["date"].isin(rebalance_dates)]
+
+    period_rows = []
+    for date, grp in work.groupby("date", sort=True):
+        score_values = pd.to_numeric(grp.get(score_column), errors="coerce")
+        grp = grp.assign(_score=score_values).dropna(subset=["_score"])
+        if len(grp) < 1:
+            continue
+        n = len(grp)
+        if long_only:
+            eligible = grp.copy()
+            if "y_proba" in eligible.columns:
+                eligible = eligible[eligible["y_proba"] >= float(min_probability)]
+            eligible = eligible.sort_values("_score", ascending=False)
+            if top_k is None:
+                k = max(1, int(np.ceil(n * float(top_frac))))
+            else:
+                k = int(top_k)
+            selected = eligible.head(max(1, k))
+            if len(selected) == 0:
+                continue
+            gross_return = float(selected["forward_return"].mean())
+            commission_rate = float(commission_bps) / 10_000.0
+            period_return = gross_return - (2.0 * commission_rate)
+            period_rows.append(
+                {
+                    "date": date,
+                    "portfolio_return": period_return,
+                    "spread_return": period_return,
+                    "n_names_per_side": float(len(selected)),
+                }
+            )
+        else:
+            grp = grp.sort_values("_score")
+            if n < 2:
+                continue
+            k = max(1, int(np.ceil(n * float(top_frac))))
+            k = min(k, n // 2)
+            if k < 1:
+                continue
+
+            short_ret = float(grp.iloc[:k]["forward_return"].mean())
+            long_ret = float(grp.iloc[-k:]["forward_return"].mean())
+            spread = long_ret - short_ret
+            period_rows.append(
+                {
+                    "date": date,
+                    "portfolio_return": 0.5 * spread,
+                    "spread_return": spread,
+                    "n_names_per_side": float(k),
+                }
+            )
+
+    if not period_rows:
+        return {
+            "total_return": 0.0,
+            "annual_return": 0.0,
+            "sharpe": 0.0,
+            "max_drawdown": 0.0,
+            "avg_spread": 0.0,
+            "n_rebalance_periods": 0,
+            "avg_names_per_side": 0.0,
+        }
+
+    period_df = pd.DataFrame(period_rows).sort_values("date")
+    returns = period_df["portfolio_return"].astype(float).reset_index(drop=True)
+    equity = (1.0 + returns).cumprod()
+    total_return = float(equity.iloc[-1] - 1.0)
+
+    periods_per_year = 252.0 / float(step)
+    n_periods = len(returns)
+    years = n_periods / max(periods_per_year, 1e-8)
+    annual_return = (
+        float((1.0 + total_return) ** (1.0 / max(years, 1e-8)) - 1.0)
+        if n_periods > 0
+        else 0.0
+    )
+
+    vol = float(returns.std(ddof=1)) if n_periods > 1 else 0.0
+    sharpe = (
+        float(returns.mean() / vol * np.sqrt(periods_per_year))
+        if vol > 1e-12
+        else 0.0
+    )
+
+    running_max = equity.cummax()
+    max_drawdown = float((equity / running_max - 1.0).min()) if n_periods > 0 else 0.0
+
+    return {
+        "total_return": total_return,
+        "annual_return": annual_return,
+        "sharpe": sharpe,
+        "max_drawdown": max_drawdown,
+        "avg_spread": float(period_df["spread_return"].mean()),
+        "n_rebalance_periods": int(n_periods),
+        "avg_names_per_side": float(period_df["n_names_per_side"].mean()),
+    }
 
 
 def walk_forward_train(
@@ -1246,9 +1686,7 @@ def walk_forward_train(
 
     Returns dict with fold results and final model.
     """
-    from sklearn.ensemble import HistGradientBoostingClassifier
     from sklearn.metrics import accuracy_score, log_loss, roc_auc_score
-    from sklearn.preprocessing import StandardScaler
 
     feature_cols = get_feature_columns(df, feature_set=feature_set)
     logger.info(
@@ -1303,9 +1741,13 @@ def walk_forward_train(
     # Training loop
     all_results = []
     all_predictions = []
-    best_model = None
+    best_classifier = None
+    best_regressor = None
+    best_calibrator = None
     best_auc = 0
     best_scaler = None
+    selected_configs: List[Dict[str, object]] = []
+    promotion_cost_rate = (DEFAULT_PROMOTION_COMMISSION_BPS * 2.0) / 10_000.0
 
     for fold_i, (train_end, test_start, test_end) in enumerate(folds):
         logger.info(f"\n--- Fold {fold_i + 1}/{len(folds)} ---")
@@ -1316,51 +1758,50 @@ def walk_forward_train(
         train_mask = df.index < train_end
         test_mask = (df.index >= test_start) & (df.index <= test_end)
 
-        X_train = df.loc[train_mask, feature_cols].values
-        y_train = df.loc[train_mask, "target"].values
-        X_test = df.loc[test_mask, feature_cols].values
-        y_test = df.loc[test_mask, "target"].values
+        train_df = df.loc[train_mask, feature_cols + ["target", "forward_return", "symbol"]].copy()
+        test_df = df.loc[test_mask, feature_cols + ["target", "forward_return", "symbol"]].copy()
+        y_train = train_df["target"].values
+        y_test = test_df["target"].values
 
-        if len(X_train) < 100 or len(X_test) < 50:
-            logger.warning(f"  Skipping fold: train={len(X_train)}, test={len(X_test)}")
+        if len(train_df) < 100 or len(test_df) < 50:
+            logger.warning(f"  Skipping fold: train={len(train_df)}, test={len(test_df)}")
             continue
 
-        logger.info(f"  Train: {len(X_train)} samples, Test: {len(X_test)} samples")
+        logger.info(f"  Train: {len(train_df)} samples, Test: {len(test_df)} samples")
         logger.info(
             f"  Train target: up={y_train.mean():.1%}, Test target: up={y_test.mean():.1%}"
         )
 
-        # Scale features
-        scaler = StandardScaler()
-        X_train_scaled = scaler.fit_transform(X_train)
-        X_test_scaled = scaler.transform(X_test)
-
-        # Replace any remaining NaN/inf after scaling
-        X_train_scaled = np.nan_to_num(X_train_scaled, nan=0.0, posinf=3.0, neginf=-3.0)
-        X_test_scaled = np.nan_to_num(X_test_scaled, nan=0.0, posinf=3.0, neginf=-3.0)
-
-        # Train HistGradientBoosting
-        model = HistGradientBoostingClassifier(
-            max_iter=500,
-            max_depth=6,
-            learning_rate=0.05,
-            min_samples_leaf=50,
-            l2_regularization=1.0,
-            max_bins=255,
-            early_stopping=True,
-            validation_fraction=0.1,
-            n_iter_no_change=20,
-            random_state=42,
-            class_weight="balanced",
-        )
-
         t0 = time.time()
-        model.fit(X_train_scaled, y_train)
+        try:
+            bundle = _fit_dual_target_models(
+                train_df=train_df,
+                feature_cols=feature_cols,
+                estimated_round_trip_cost=promotion_cost_rate,
+                min_up_probability=DEFAULT_MIN_UP_PROBABILITY,
+            )
+        except Exception as exc:
+            logger.warning("  Skipping fold due to training failure: %s", exc)
+            continue
         train_time = time.time() - t0
 
-        # Evaluate
-        y_pred = model.predict(X_test_scaled)
-        y_proba = model.predict_proba(X_test_scaled)[:, 1]
+        fit_mask, cal_mask = _split_train_calibration(train_df)
+        inner_pred = _predict_dual_target(bundle, train_df.loc[cal_mask].copy())
+        inner_pred["date"] = train_df.loc[cal_mask].index
+        selection = _select_nested_portfolio_config(
+            inner_pred,
+            commission_bps=DEFAULT_PROMOTION_COMMISSION_BPS,
+        )
+        selected_cfg = dict(selection["config"])
+        selected_configs.append(selected_cfg)
+
+        # Evaluate outer fold with locked config
+        pred_df = _predict_dual_target(bundle, test_df.copy())
+        pred_df["date"] = test_df.index
+        pred_df["fold"] = fold_i + 1
+
+        y_pred = pred_df["y_pred"].values
+        y_proba = pred_df["y_proba"].values
 
         acc = accuracy_score(y_test, y_pred)
         majority = max(y_test.mean(), 1 - y_test.mean())
@@ -1376,66 +1817,101 @@ def walk_forward_train(
         except Exception:
             ll = np.nan
 
-        # Simulated PnL
-        # Signal: if predicted up, go long (+1), else short (-1)
-        # Scaled by model confidence
-        test_returns = df.loc[test_mask, "forward_return"].values
+        # Diagnostic sample-level PnL (not a realistic portfolio return).
+        test_returns = test_df["forward_return"].values
         signal = 2 * y_proba - 1  # Map [0,1] -> [-1,1]
         strategy_returns = signal * test_returns
         strategy_returns = np.nan_to_num(strategy_returns, nan=0.0)
 
-        total_return = np.sum(strategy_returns)
-        sharpe = (
-            np.mean(strategy_returns) / (np.std(strategy_returns) + 1e-8) * np.sqrt(252)
+        sample_return_sum = float(np.sum(strategy_returns))
+
+        pred_df["strategy_return"] = strategy_returns
+        portfolio_metrics = _evaluate_ranked_portfolio(
+            pred_df,
+            hold_days=int(selected_cfg["hold_days"]),
+            top_k=int(selected_cfg["top_k"]),
+            rebalance_interval=int(selected_cfg["rebalance_interval"]),
+            long_only=True,
+            score_column="portfolio_score",
+            min_probability=float(selected_cfg["min_up_probability"]),
+            commission_bps=DEFAULT_PROMOTION_COMMISSION_BPS,
         )
+        total_return = float(portfolio_metrics.get("total_return", 0.0))
+        sharpe = float(portfolio_metrics.get("sharpe", 0.0))
+        max_drawdown = float(portfolio_metrics.get("max_drawdown", 0.0))
 
         logger.info(
             f"  Accuracy: {acc:.1%} (majority: {majority:.1%}, edge: {edge:+.1%})"
         )
         logger.info(f"  AUC: {auc:.4f}, LogLoss: {ll:.4f}")
-        logger.info(f"  Return: {total_return:+.2%}, Sharpe: {sharpe:.2f}")
-        logger.info(f"  Train time: {train_time:.1f}s, Iterations: {model.n_iter_}")
+        logger.info(
+            "  Selected: top_k=%d hold_days=%d rebalance_interval=%d min_up=%.2f "
+            "(inner score=%.4f)",
+            int(selected_cfg["top_k"]),
+            int(selected_cfg["hold_days"]),
+            int(selected_cfg["rebalance_interval"]),
+            float(selected_cfg["min_up_probability"]),
+            float(selection["selection_score"]),
+        )
+        logger.info(
+            "  Portfolio: Return=%+.2f%% Annual=%+.2f%% Sharpe=%.2f MaxDD=%+.2f%% Periods=%d",
+            total_return * 100.0,
+            float(portfolio_metrics.get("annual_return", 0.0)) * 100.0,
+            sharpe,
+            max_drawdown * 100.0,
+            int(portfolio_metrics.get("n_rebalance_periods", 0)),
+        )
+        logger.info(f"  Diagnostic sample-sum return: {sample_return_sum:+.2%}")
+        logger.info(
+            "  Train time: %.1fs, Clf iterations: %d, Reg iterations: %d",
+            train_time,
+            int(bundle["classifier"].n_iter_),
+            int(bundle["regressor"].n_iter_),
+        )
 
         fold_result = {
             "fold": fold_i + 1,
             "train_end": str(train_end.date()),
             "test_start": str(test_start.date()),
             "test_end": str(test_end.date()),
-            "n_train": len(X_train),
-            "n_test": len(X_test),
+            "n_train": len(train_df),
+            "n_test": len(test_df),
             "accuracy": float(acc),
             "majority_baseline": float(majority),
             "edge": float(edge),
             "auc": float(auc),
             "log_loss": float(ll),
-            "total_return": float(total_return),
-            "sharpe": float(sharpe),
+            "total_return": total_return,
+            "annual_return": float(portfolio_metrics.get("annual_return", 0.0)),
+            "sharpe": sharpe,
+            "max_drawdown": max_drawdown,
+            "avg_spread": float(portfolio_metrics.get("avg_spread", 0.0)),
+            "n_rebalance_periods": int(portfolio_metrics.get("n_rebalance_periods", 0)),
+            "avg_names_per_side": float(portfolio_metrics.get("avg_names_per_side", 0.0)),
+            "sample_return_sum": sample_return_sum,
+            "selected_top_k": int(selected_cfg["top_k"]),
+            "selected_hold_days": int(selected_cfg["hold_days"]),
+            "selected_rebalance_interval": int(selected_cfg["rebalance_interval"]),
+            "selected_min_up_probability": float(selected_cfg["min_up_probability"]),
+            "selection_score": float(selection["selection_score"]),
+            "predicted_return_mean": float(np.mean(pred_df["predicted_return"])),
+            "net_expected_return_mean": float(np.mean(pred_df["net_expected_return"])),
+            "veto_rate": float(np.mean(pred_df["vetoed"])),
             "train_time": float(train_time),
-            "n_iterations": int(model.n_iter_),
+            "classifier_iterations": int(bundle["classifier"].n_iter_),
+            "regressor_iterations": int(bundle["regressor"].n_iter_),
+            "calibration_samples": int(bundle["calibration_samples"]),
         }
         all_results.append(fold_result)
-
-        # Store predictions for analysis
-        test_dates = df.loc[test_mask].index
-        test_symbols = df.loc[test_mask, "symbol"].values
-        pred_df = pd.DataFrame(
-            {
-                "date": test_dates,
-                "symbol": test_symbols,
-                "y_true": y_test,
-                "y_pred": y_pred,
-                "y_proba": y_proba,
-                "forward_return": test_returns,
-                "strategy_return": strategy_returns,
-            }
-        )
         all_predictions.append(pred_df)
 
         # Track best model
         if auc > best_auc:
             best_auc = auc
-            best_model = model
-            best_scaler = scaler
+            best_classifier = bundle["classifier"]
+            best_regressor = bundle["regressor"]
+            best_calibrator = bundle["calibrator"]
+            best_scaler = bundle["scaler"]
 
     # ── Summary ───────────────────────────────────────────────────────
     if not all_results:
@@ -1447,6 +1923,9 @@ def walk_forward_train(
     avg_auc = np.mean([r["auc"] for r in all_results])
     avg_sharpe = np.mean([r["sharpe"] for r in all_results])
     avg_return = np.mean([r["total_return"] for r in all_results])
+    avg_annual_return = np.mean([r["annual_return"] for r in all_results])
+    avg_max_drawdown = np.mean([r["max_drawdown"] for r in all_results])
+    recommended_cfg = _select_median_config(selected_configs)
 
     logger.info(f"\n{'=' * 60}")
     logger.info(f"WALK-FORWARD RESULTS ({len(all_results)} folds)")
@@ -1456,10 +1935,19 @@ def walk_forward_train(
     logger.info(f"  Avg AUC:       {avg_auc:.4f}")
     logger.info(f"  Avg Sharpe:    {avg_sharpe:.2f}")
     logger.info(f"  Avg Return:    {avg_return:+.2%}")
+    logger.info(f"  Avg Annual:    {avg_annual_return:+.2%}")
+    logger.info(f"  Avg MaxDD:     {avg_max_drawdown:+.2%}")
+    logger.info(
+        "  Recommended config: top_k=%d hold_days=%d rebalance_interval=%d min_up=%.2f",
+        int(recommended_cfg["top_k"]),
+        int(recommended_cfg["hold_days"]),
+        int(recommended_cfg["rebalance_interval"]),
+        float(recommended_cfg["min_up_probability"]),
+    )
 
     # Feature importance (from best model)
-    if best_model is not None and hasattr(best_model, "feature_importances_"):
-        importances = best_model.feature_importances_
+    if best_classifier is not None and hasattr(best_classifier, "feature_importances_"):
+        importances = best_classifier.feature_importances_
         feat_imp = sorted(
             zip(feature_cols, importances),
             key=lambda x: x[1],
@@ -1475,30 +1963,28 @@ def walk_forward_train(
     else:
         all_preds = pd.DataFrame()
 
+    commission_sensitivity = {}
+    if not all_preds.empty:
+        for bps in COMMISSION_SENSITIVITY_BPS:
+            commission_sensitivity[str(int(bps))] = _evaluate_ranked_portfolio(
+                all_preds,
+                hold_days=int(recommended_cfg["hold_days"]),
+                top_k=int(recommended_cfg["top_k"]),
+                rebalance_interval=int(recommended_cfg["rebalance_interval"]),
+                long_only=True,
+                score_column="portfolio_score",
+                min_probability=float(recommended_cfg["min_up_probability"]),
+                commission_bps=float(bps),
+            )
+
     # ── Train final model on ALL data (for deployment) ────────────────
     logger.info(f"\nTraining final model on ALL {len(df)} samples...")
-
-    X_all = df[feature_cols].values
-    y_all = df["target"].values
-
-    final_scaler = StandardScaler()
-    X_all_scaled = final_scaler.fit_transform(X_all)
-    X_all_scaled = np.nan_to_num(X_all_scaled, nan=0.0, posinf=3.0, neginf=-3.0)
-
-    final_model = HistGradientBoostingClassifier(
-        max_iter=500,
-        max_depth=6,
-        learning_rate=0.05,
-        min_samples_leaf=50,
-        l2_regularization=1.0,
-        max_bins=255,
-        early_stopping=True,
-        validation_fraction=0.1,
-        n_iter_no_change=20,
-        random_state=42,
-        class_weight="balanced",
+    final_bundle = _fit_dual_target_models(
+        train_df=df[feature_cols + ["target", "forward_return", "symbol"]].copy(),
+        feature_cols=feature_cols,
+        estimated_round_trip_cost=promotion_cost_rate,
+        min_up_probability=float(recommended_cfg["min_up_probability"]),
     )
-    final_model.fit(X_all_scaled, y_all)
 
     feature_meta = _feature_family_counts(feature_cols)
 
@@ -1519,14 +2005,19 @@ def walk_forward_train(
     with open(model_path, "wb") as f:
         pickle.dump(
             {
-                "model": final_model,
-                "scaler": final_scaler,
+                "model": final_bundle["classifier"],
+                "return_model": final_bundle["regressor"],
+                "calibrator": final_bundle["calibrator"],
+                "scaler": final_bundle["scaler"],
                 "feature_cols": feature_cols,
                 "feature_set": feature_set,
                 "forward_period": FORWARD_PERIOD,
                 "trained_at": datetime.now().isoformat(),
                 "n_samples": len(df),
                 "n_features": len(feature_cols),
+                "recommended_config": recommended_cfg,
+                "estimated_round_trip_cost": promotion_cost_rate,
+                "commission_sensitivity_bps": commission_sensitivity,
                 **feature_meta,
                 "walk_forward_results": all_results,
             },
@@ -1538,12 +2029,16 @@ def walk_forward_train(
     with open(best_path, "wb") as f:
         pickle.dump(
             {
-                "model": best_model,
+                "model": best_classifier,
+                "return_model": best_regressor,
+                "calibrator": best_calibrator,
                 "scaler": best_scaler,
                 "feature_cols": feature_cols,
                 "feature_set": feature_set,
                 "forward_period": FORWARD_PERIOD,
                 "best_auc": best_auc,
+                "recommended_config": recommended_cfg,
+                "estimated_round_trip_cost": promotion_cost_rate,
                 **feature_meta,
             },
             f,
@@ -1562,10 +2057,14 @@ def walk_forward_train(
                     "avg_auc": float(avg_auc),
                     "avg_sharpe": float(avg_sharpe),
                     "avg_return": float(avg_return),
+                    "avg_annual_return": float(avg_annual_return),
+                    "avg_max_drawdown": float(avg_max_drawdown),
                     "n_features": len(feature_cols),
                     **feature_meta,
                     "n_total_samples": len(df),
                     "feature_cols": feature_cols,
+                    "recommended_config": recommended_cfg,
+                    "commission_sensitivity_bps": commission_sensitivity,
                 },
                 "folds": all_results,
             },
@@ -1588,11 +2087,17 @@ def walk_forward_train(
             "avg_auc": avg_auc,
             "avg_sharpe": avg_sharpe,
             "avg_return": avg_return,
+            "avg_annual_return": avg_annual_return,
+            "avg_max_drawdown": avg_max_drawdown,
+            "recommended_config": recommended_cfg,
+            "commission_sensitivity_bps": commission_sensitivity,
             **feature_meta,
         },
         "folds": all_results,
-        "model": final_model,
-        "scaler": final_scaler,
+        "model": final_bundle["classifier"],
+        "return_model": final_bundle["regressor"],
+        "calibrator": final_bundle["calibrator"],
+        "scaler": final_bundle["scaler"],
         "feature_cols": feature_cols,
         "predictions": all_preds,
     }
@@ -1637,7 +2142,7 @@ def main():
         "--feature-set",
         type=str,
         default="base",
-        choices=["base", "mc_pade"],
+        choices=["base", "mc_pade", "path_shape", "hybrid_math"],
         help="Feature family for training (default: base)",
     )
     parser.add_argument(
@@ -1753,9 +2258,12 @@ def main():
             ]
         else:
             selected_set = _resolve_feature_set(args.feature_set)
-            selected_prefix = (
-                "meta_ensemble" if selected_set == "base" else "meta_ensemble_mc_pade"
-            )
+            selected_prefix = {
+                "base": "meta_ensemble",
+                "mc_pade": "meta_ensemble_mc_pade",
+                "path_shape": "meta_ensemble_path_shape",
+                "hybrid_math": "meta_ensemble_hybrid_math",
+            }[selected_set]
             train_jobs = [(selected_set, selected_prefix)]
 
         for feature_set, model_prefix in train_jobs:
@@ -1777,10 +2285,11 @@ def main():
             logger.info(f"  AUC:      {results['summary']['avg_auc']:.4f}")
             logger.info(f"  Sharpe:   {results['summary']['avg_sharpe']:.2f}")
             logger.info(
-                "  Features: total=%d mc=%d pade=%d",
+                "  Features: total=%d mc=%d pade=%d path_shape=%d",
                 int(results["summary"].get("feature_count", 0)),
                 int(results["summary"].get("mc_feature_count", 0)),
                 int(results["summary"].get("pade_feature_count", 0)),
+                int(results["summary"].get("path_shape_feature_count", 0)),
             )
 
 

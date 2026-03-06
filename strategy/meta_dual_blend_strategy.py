@@ -33,18 +33,26 @@ def _safe_float(value: object, default: float = 0.0) -> float:
 def _feature_family_counts(feature_cols: list[str]) -> dict[str, int]:
     mc_count = sum(1 for c in feature_cols if str(c).startswith(("mc_", "jd_", "rs_")))
     pade_count = sum(1 for c in feature_cols if str(c).startswith("pade_"))
+    path_shape_count = sum(1 for c in feature_cols if str(c).startswith("ps_"))
     return {
         "feature_count": int(len(feature_cols)),
         "mc_feature_count": int(mc_count),
         "pade_feature_count": int(pade_count),
+        "path_shape_feature_count": int(path_shape_count),
     }
 
 
 def _infer_feature_set(declared_feature_set: object, feature_cols: list[str]) -> str:
     value = str(declared_feature_set or "").strip().lower()
-    if value in {"base", "mc_pade"}:
+    if value in {"base", "mc_pade", "path_shape", "hybrid_math"}:
         return value
     stats = _feature_family_counts(feature_cols)
+    if stats["path_shape_feature_count"] > 0 and (
+        stats["mc_feature_count"] > 0 or stats["pade_feature_count"] > 0
+    ):
+        return "hybrid_math"
+    if stats["path_shape_feature_count"] > 0:
+        return "path_shape"
     if stats["mc_feature_count"] > 0 or stats["pade_feature_count"] > 0:
         return "mc_pade"
     return "base"

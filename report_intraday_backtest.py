@@ -203,6 +203,12 @@ def main() -> None:
         type=str,
         default=str(Path(__file__).parent / "reports" / "intraday_backtests" / "intraday_backtest.csv"),
     )
+    parser.add_argument(
+        "--summary-json",
+        type=str,
+        default=None,
+        help="Optional path to write machine-readable summary JSON",
+    )
     args = parser.parse_args()
 
     stats = run_backtest(
@@ -223,6 +229,26 @@ def main() -> None:
     print(f"Chart saved: {args.output}")
     print(f"Strategy return: {stats['strategy_return'] * 100:.2f}%")
     print(f"Benchmark return: {stats['benchmark_return'] * 100:.2f}%")
+
+    if args.summary_json:
+        payload = {
+            "run_at_utc": datetime.utcnow().isoformat(),
+            "symbol": args.symbol,
+            "interval": args.interval,
+            "lookback_days": int(args.lookback_days),
+            "checkpoint_dir": args.checkpoint_dir,
+            "checkpoint": args.checkpoint,
+            "checkpoint_file": args.checkpoint_file,
+            "horizon": args.horizon,
+            "cost_bps": float(args.cost_bps),
+            "scale": float(args.scale),
+            "chart_path": args.output,
+            "csv_path": args.csv,
+            "stats": stats,
+        }
+        out_path = Path(args.summary_json)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 
 if __name__ == "__main__":

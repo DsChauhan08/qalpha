@@ -68,10 +68,13 @@ class MetaEnsembleStrategy:
         self.proportional_sizing = proportional_sizing
 
         self._model = None
+        self._return_model = None
+        self._calibrator = None
         self._scaler = None
         self._feature_cols = None
         self._loaded = False
         self._mc_pade_gen = None
+        self._path_shape_gen = None
 
     def _load_model(self):
         """Load the trained meta-ensemble model from checkpoint."""
@@ -94,6 +97,8 @@ class MetaEnsembleStrategy:
 
             if isinstance(checkpoint, dict):
                 self._model = checkpoint.get("model")
+                self._return_model = checkpoint.get("return_model")
+                self._calibrator = checkpoint.get("calibrator")
                 self._scaler = checkpoint.get("scaler")
                 self._feature_cols = checkpoint.get("feature_cols")
             else:
@@ -126,6 +131,20 @@ class MetaEnsembleStrategy:
                 logger.warning(f"MC/Padé features unavailable: {e}")
                 self._mc_pade_gen = False
         return self._mc_pade_gen if self._mc_pade_gen is not False else None
+
+    def _get_path_shape_gen(self):
+        """Lazy-load regime path-shape feature generator."""
+        if self._path_shape_gen is None:
+            try:
+                from quantum_alpha.features.regime_path_shape import (
+                    RegimePathShapeFeatureGenerator,
+                )
+
+                self._path_shape_gen = RegimePathShapeFeatureGenerator()
+            except Exception as e:
+                logger.warning(f"Regime path-shape features unavailable: {e}")
+                self._path_shape_gen = False
+        return self._path_shape_gen if self._path_shape_gen is not False else None
 
     def _compute_features(self, df: pd.DataFrame, symbol: str = "SPY") -> pd.DataFrame:
         """
@@ -169,6 +188,14 @@ class MetaEnsembleStrategy:
                 featured = mc_gen.generate_features_fast(featured)
             except Exception as e:
                 logger.debug(f"MC/Padé features failed: {e}")
+
+        # Regime path-shape features
+        path_shape_gen = self._get_path_shape_gen()
+        if path_shape_gen is not None:
+            try:
+                featured = path_shape_gen.generate_features(featured)
+            except Exception as e:
+                logger.debug(f"Regime path-shape features failed: {e}")
 
         # GDELT news tone features (real sentiment from news articles)
         # Mirrors Step 5.5 in compute_features_single_symbol()
@@ -385,8 +412,10 @@ class MetaEnsembleStrategy:
         # Predict probabilities
         try:
             proba = self._model.predict_proba(X_pred)
-            # proba[:, 1] = probability of class 1 (up)
             up_prob = proba[:, 1]
+            if self._calibrator is not None and hasattr(self._calibrator, "transform"):
+                up_prob = np.asarray(self._calibrator.transform(up_prob), dtype=float)
+                up_prob = np.clip(up_prob, 0.0, 1.0)
         except Exception as e:
             logger.error(f"Prediction failed: {e}")
             return df

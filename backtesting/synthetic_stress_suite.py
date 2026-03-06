@@ -500,6 +500,12 @@ def main() -> None:
         default="models/checkpoints/meta_ensemble",
     )
     parser.add_argument(
+        "--prediction-file",
+        type=str,
+        default="walk_forward_predictions.pkl",
+        help="Prediction filename inside checkpoint dir",
+    )
+    parser.add_argument(
         "--blend-checkpoint-dirs",
         type=str,
         default=None,
@@ -551,7 +557,9 @@ def main() -> None:
     )
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    pred = deduplicate_predictions(load_predictions(args.checkpoint_dir))
+    pred = deduplicate_predictions(
+        load_predictions(args.checkpoint_dir, prediction_file=args.prediction_file)
+    )
     blend_dirs = _parse_csv_str(args.blend_checkpoint_dirs)
     blend_weights = _parse_csv_float(args.blend_weights)
     if blend_dirs:
@@ -584,6 +592,7 @@ def main() -> None:
         "run_at_utc": datetime.now(timezone.utc).isoformat(),
         "config": asdict(cfg),
         "checkpoint_dir": args.checkpoint_dir,
+        "prediction_file": args.prediction_file,
         "blend_checkpoint_dirs": blend_dirs,
         "blend_weights": blend_weights,
         "scenarios": scenarios,

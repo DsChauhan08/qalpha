@@ -267,12 +267,43 @@ def _save_animation(
     plt.close(fig)
 
 
+def validate_output_dir(output_dir: str | Path) -> Dict[str, object]:
+    out_dir = Path(output_dir)
+    required = {
+        "summary_json": out_dir / "summary.json",
+        "normalized_curves": out_dir / "normalized_curves.csv",
+        "snapshot_png": out_dir / "playback_snapshot.png",
+        "video_mp4": out_dir / "backtest_playback.mp4",
+    }
+    missing = [name for name, path in required.items() if not path.exists()]
+    summary = None
+    curves_rows = 0
+    if "summary_json" not in missing:
+        with open(required["summary_json"], "r", encoding="utf-8") as f:
+            summary = json.load(f)
+    if "normalized_curves" not in missing:
+        curves_rows = int(len(pd.read_csv(required["normalized_curves"])))
+    return {
+        "output_dir": str(out_dir),
+        "required_files": {name: str(path) for name, path in required.items()},
+        "missing": missing,
+        "valid": len(missing) == 0 and isinstance(summary, dict) and curves_rows > 0,
+        "summary": summary,
+        "curve_rows": curves_rows,
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Meta-ensemble playback video generator")
     parser.add_argument(
         "--checkpoint-dir",
         default="quantum_alpha/models/checkpoints/meta_ensemble",
         help="Directory containing walk_forward_predictions.pkl",
+    )
+    parser.add_argument(
+        "--prediction-file",
+        default="walk_forward_predictions.pkl",
+        help="Prediction filename inside checkpoint dir",
     )
     parser.add_argument(
         "--blend-checkpoint-dirs",
@@ -341,7 +372,7 @@ def main() -> None:
     )
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    pred = load_predictions(args.checkpoint_dir)
+    pred = load_predictions(args.checkpoint_dir, prediction_file=args.prediction_file)
     pred = deduplicate_predictions(pred)
     if args.blend_checkpoint_dirs:
         blend_dirs = [x.strip() for x in args.blend_checkpoint_dirs.split(",") if x.strip()]
@@ -456,6 +487,8 @@ def main() -> None:
         "start_date": str(model_dates.min().date()),
         "end_date": str(model_dates.max().date()),
         "params": {
+            "checkpoint_dir": args.checkpoint_dir,
+            "prediction_file": args.prediction_file,
             "signal_threshold": args.signal_threshold,
             "short_threshold": args.short_threshold,
             "commission_bps": args.commission_bps,
@@ -498,6 +531,13 @@ def main() -> None:
     }
     with open(out_dir / "summary.json", "w", encoding="utf-8") as f:
         json.dump(summary, f, indent=2)
+
+    validation = validate_output_dir(out_dir)
+    if not bool(validation.get("valid")):
+        raise RuntimeError(
+            "Viewer artifact validation failed: "
+            + ", ".join(validation.get("missing", []))
+        )
 
     print("\nArtifacts generated:")
     print(f"  {out_dir / 'summary.json'}")

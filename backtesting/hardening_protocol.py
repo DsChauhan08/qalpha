@@ -4,6 +4,7 @@ R&D protocol runner for enhanced-engine hardening.
 
 from __future__ import annotations
 
+import argparse
 import json
 from datetime import datetime, timezone
 from pathlib import Path
@@ -105,3 +106,42 @@ def run_hardening_rnd_protocol(
         json.dump(summary, f, indent=2)
     summary["output_path"] = str(output)
     return summary
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Enhanced strategy hardening protocol")
+    parser.add_argument(
+        "--symbols",
+        type=str,
+        default="SPY,QQQ,IWM",
+        help="Comma-separated symbols",
+    )
+    parser.add_argument(
+        "--strategy",
+        type=str,
+        default="enhanced",
+        help="Strategy type passed to run_backtest",
+    )
+    parser.add_argument("--capital", type=float, default=100000.0)
+    parser.add_argument("--config-path", type=str, default=None)
+    parser.add_argument("--output-path", type=str, default=None)
+    parser.add_argument("--verbose", action="store_true")
+    args = parser.parse_args()
+
+    symbols = [s.strip().upper() for s in str(args.symbols).split(",") if s.strip()]
+    if not symbols:
+        raise SystemExit("No symbols provided")
+
+    summary = run_hardening_rnd_protocol(
+        symbols=symbols,
+        strategy_type=str(args.strategy).strip().lower(),
+        initial_capital=float(args.capital),
+        config_path=args.config_path,
+        output_path=args.output_path,
+        verbose=bool(args.verbose),
+    )
+    print(json.dumps(summary, indent=2))
+
+
+if __name__ == "__main__":
+    main()

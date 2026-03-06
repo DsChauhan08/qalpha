@@ -147,9 +147,12 @@ def _apply_semiconductor_short_gate(
     return out
 
 
-def load_predictions(checkpoint_dir: str | Path) -> pd.DataFrame:
+def load_predictions(
+    checkpoint_dir: str | Path,
+    prediction_file: str = "walk_forward_predictions.pkl",
+) -> pd.DataFrame:
     """Load walk-forward out-of-sample predictions."""
-    pred_path = Path(checkpoint_dir) / "walk_forward_predictions.pkl"
+    pred_path = Path(checkpoint_dir) / str(prediction_file)
     if not pred_path.exists():
         raise FileNotFoundError(f"No predictions found at {pred_path}")
 
@@ -656,11 +659,13 @@ def _backtest_hold_period(
     confidence_weight: bool = False,
 ) -> dict:
     """
-    Day-by-day simulation with proper hold period enforcement.
+    Hold-period simulation for multi-day forward returns.
 
     Rebalances only every hold_days trading days:
     - On rebalance days: select new positions from available signals
-    - On non-rebalance days: hold existing positions, use their forward_return
+    - Realize the stored forward_return once on the entry/rebalance date
+    - On non-rebalance days: hold positions but do not re-apply the same
+      multi-day forward return again
     - Track turnover properly for commission calculation
 
     Optimized: uses vectorized dict-building and groupby instead of iterrows().
@@ -748,11 +753,13 @@ def _backtest_hold_period(
                 daily_costs[i] = changed * w * commission_rate * 2
                 daily_turnover[i] = changed / max(n_pos, 1)
 
-        # Compute daily return from held positions
+        # For multi-day prediction panels, realize the stored forward return once
+        # on rebalance/entry dates only. Re-applying it on every held day would
+        # massively overstate both gains and losses.
         n_pos = len(current_positions)
         daily_n_positions[i] = n_pos
 
-        if n_pos > 0:
+        if rebalance and n_pos > 0:
             # Compute weights: confidence-weighted or equal-weight
             if confidence_weight:
                 conf_sum = sum(conf for (_, conf) in current_positions.values())
@@ -1119,6 +1126,12 @@ Examples:
         help="Directory containing walk_forward_predictions.pkl",
     )
     parser.add_argument(
+        "--prediction-file",
+        type=str,
+        default="walk_forward_predictions.pkl",
+        help="Prediction filename inside checkpoint dir",
+    )
+    parser.add_argument(
         "--blend-checkpoint-dirs",
         type=str,
         default=None,
@@ -1262,7 +1275,7 @@ Examples:
     print(f"  Bypasses PositionSizer / DrawdownController / momentum filter")
     print(f"{'=' * 65}\n")
 
-    df = load_predictions(ckpt_dir)
+    df = load_predictions(ckpt_dir, prediction_file=args.prediction_file)
     df = deduplicate_predictions(df)
 
     # Optional cross-horizon probability blending

@@ -613,6 +613,12 @@ def main() -> None:
         help="Checkpoint dir containing walk_forward_predictions.pkl",
     )
     parser.add_argument(
+        "--prediction-file",
+        type=str,
+        default="walk_forward_predictions.pkl",
+        help="Prediction filename inside checkpoint dir",
+    )
+    parser.add_argument(
         "--blend-checkpoint-dirs",
         type=str,
         default=None,
@@ -714,7 +720,9 @@ def main() -> None:
     )
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    pred = deduplicate_predictions(load_predictions(args.checkpoint_dir))
+    pred = deduplicate_predictions(
+        load_predictions(args.checkpoint_dir, prediction_file=args.prediction_file)
+    )
     if args.blend_checkpoint_dirs:
         blend_dirs = [x.strip() for x in args.blend_checkpoint_dirs.split(",") if x.strip()]
         blend_weights = (
@@ -858,6 +866,7 @@ def main() -> None:
     summary = {
         "run_at_utc": datetime.now(timezone.utc).isoformat(),
         "checkpoint_dir": args.checkpoint_dir,
+        "prediction_file": args.prediction_file,
         "blend_checkpoint_dirs": args.blend_checkpoint_dirs,
         "blend_weights": args.blend_weights,
         "quant_benchmark_tickers": quant_tickers,

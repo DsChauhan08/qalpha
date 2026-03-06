@@ -14,6 +14,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 from datetime import datetime, timedelta
@@ -91,6 +92,12 @@ def main():
         "--binary-sizing",
         action="store_true",
         help="Use binary (0/1) position sizing instead of proportional",
+    )
+    parser.add_argument(
+        "--output-json",
+        type=str,
+        default=None,
+        help="Optional path to write machine-readable summary JSON",
     )
 
     args = parser.parse_args()
@@ -212,6 +219,21 @@ def main():
     else:
         print("VERDICT: UNPROFITABLE - Negative returns")
     print(f"{'=' * 60}\n")
+
+    if args.output_json:
+        payload = {
+            "run_at_utc": datetime.utcnow().isoformat(),
+            "symbols": list(args.symbols),
+            "start_date": start_date.isoformat(),
+            "end_date": end_date.isoformat(),
+            "initial_capital": float(args.capital),
+            "config_path": config_path,
+            "strategy_kwargs": strategy_kwargs,
+            "results": results,
+        }
+        out_path = Path(args.output_json)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 
 if __name__ == "__main__":

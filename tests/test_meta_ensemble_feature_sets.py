@@ -9,21 +9,31 @@ import quantum_alpha.meta_ensemble as me
 def test_get_feature_columns_respects_feature_set(monkeypatch):
     base_cols = ["rsi", "macd"]
     mc_col = "mc_1d_prob_up"
+    ps_col = "ps_hurst_21"
     monkeypatch.setattr(me, "BASE_FEATURE_COLS", list(base_cols))
-    monkeypatch.setattr(me, "ALL_FEATURE_COLS", list(base_cols) + [mc_col])
+    monkeypatch.setattr(me, "PATH_SHAPE_FEATURES", [ps_col])
+    monkeypatch.setattr(me, "ALL_FEATURE_COLS", list(base_cols) + [mc_col, ps_col])
     monkeypatch.setattr(me, "_get_mc_pade_generator", lambda: object())
+    monkeypatch.setattr(me, "_get_path_shape_generator", lambda: object())
 
-    df = pd.DataFrame({"rsi": [50.0], "macd": [0.1], mc_col: [0.7]})
+    df = pd.DataFrame({"rsi": [50.0], "macd": [0.1], mc_col: [0.7], ps_col: [0.2]})
     cols_base = me.get_feature_columns(df, feature_set="base")
     cols_mc = me.get_feature_columns(df, feature_set="mc_pade")
+    cols_path = me.get_feature_columns(df, feature_set="path_shape")
+    cols_hybrid = me.get_feature_columns(df, feature_set="hybrid_math")
 
     assert mc_col not in cols_base
     assert mc_col in cols_mc
+    assert ps_col not in cols_base
+    assert ps_col in cols_path
+    assert mc_col in cols_hybrid
+    assert ps_col in cols_hybrid
 
 
 def test_compute_features_drops_unknown_target_tail(monkeypatch):
     # Keep this test fast by stubbing expensive external feature inputs.
     monkeypatch.setattr(me, "_get_mc_pade_generator", lambda: None)
+    monkeypatch.setattr(me, "_get_path_shape_generator", lambda: None)
     monkeypatch.setattr(me, "_get_gdelt_data", lambda: pd.DataFrame())
     monkeypatch.setattr(me, "_get_ai_regime_data", lambda: pd.DataFrame())
     monkeypatch.setattr(me, "_get_symbol_fundamentals", lambda symbol: {})

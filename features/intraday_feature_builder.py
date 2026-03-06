@@ -284,8 +284,8 @@ class UnifiedIntradayFeatureBuilder:
         )
 
     def _compute_signature_slope(self, close: pd.Series) -> pd.Series:
-        out = pd.Series(0.0, index=close.index)
-        for i in range(len(close)):
+        out = pd.Series(np.nan, index=close.index, dtype=float)
+        for i in range(19, len(close), 5):
             start = max(0, i - 59)
             window = close.iloc[start : i + 1]
             if len(window) < 20:
@@ -294,19 +294,19 @@ class UnifiedIntradayFeatureBuilder:
             if len(sig) < 2:
                 continue
             out.iloc[i] = float(np.polyfit(sig["frequency"], sig["realised_vol"], 1)[0])
-        return out
+        return out.ffill().fillna(0.0)
 
     def _compute_topology_features(self, bars: pd.DataFrame) -> Dict[str, pd.Series]:
         output = {
-            "tp_h0_total_persistence": pd.Series(0.0, index=bars.index),
-            "tp_h1_total_persistence": pd.Series(0.0, index=bars.index),
-            "tp_h1_num_cycles": pd.Series(0.0, index=bars.index),
-            "tp_persistence_entropy": pd.Series(0.0, index=bars.index),
-            "tp_depth_entropy": pd.Series(0.0, index=bars.index),
+            "tp_h0_total_persistence": pd.Series(np.nan, index=bars.index, dtype=float),
+            "tp_h1_total_persistence": pd.Series(np.nan, index=bars.index, dtype=float),
+            "tp_h1_num_cycles": pd.Series(np.nan, index=bars.index, dtype=float),
+            "tp_persistence_entropy": pd.Series(np.nan, index=bars.index, dtype=float),
+            "tp_depth_entropy": pd.Series(np.nan, index=bars.index, dtype=float),
         }
         price_block = bars[["open", "high", "low", "close", "volume"]]
         for window in self.TP_WINDOWS:
-            for i in range(window - 1, len(price_block)):
+            for i in range(window - 1, len(price_block), 5):
                 section = price_block.iloc[i - window + 1 : i + 1]
                 point_cloud = self._ph.create_point_cloud(section)
                 if len(point_cloud) < 5:
@@ -338,6 +338,8 @@ class UnifiedIntradayFeatureBuilder:
                 raw=True,
             )
         )
+        for key, series in list(output.items()):
+            output[key] = series.ffill().fillna(0.0)
         return output
 
     def _compute_rough_path_features(self, bars: pd.DataFrame) -> Dict[str, pd.Series]:

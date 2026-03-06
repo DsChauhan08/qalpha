@@ -26,7 +26,15 @@ from quantum_alpha.visualization.meta_ensemble_video import validate_output_dir 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 CONFIG_ROOT = Path(__file__).resolve().parent / "config"
-DEFAULT_STRATEGIES = ["enhanced", "meta_ensemble", "news_lstm", "intraday"]
+DEFAULT_STRATEGIES = [
+    "enhanced",
+    "meta_ensemble",
+    "news_lstm",
+    "intraday",
+    "intraday_microstructure",
+    "rv_stat_arb",
+    "hybrid_stack",
+]
 DEFAULT_META_HORIZONS = [5, 21]
 DEFAULT_PROMOTION_SYMBOLS = ["SPY", "QQQ", "IWM", "AAPL", "MSFT", "NVDA"]
 META_PROMOTION_RULES = {
@@ -36,6 +44,23 @@ META_PROMOTION_RULES = {
 NEWS_PROMOTION_RULES = {
     "max_drawdown_abs": 0.25,
     "sharpe_min": 0.75,
+}
+INTRADAY_MICRO_RULES = {
+    "max_drawdown_abs": 0.12,
+    "sharpe_min": 1.25,
+    "beta_abs_max": 0.15,
+}
+RV_STAT_ARB_RULES = {
+    "max_drawdown_abs": 0.12,
+    "sharpe_min": 1.00,
+    "beta_abs_max": 0.10,
+}
+HYBRID_STACK_RULES = {
+    "max_drawdown_abs": 0.20,
+    "sharpe_min": 1.10,
+    "annual_excess_min": 0.02,
+    "mcpt_pvalue_max": 0.05,
+    "beat_ratio_min": 0.55,
 }
 
 SMOKE_TESTS = {
@@ -57,6 +82,17 @@ SMOKE_TESTS = {
     "intraday": [
         "quantum_alpha/tests/test_live_paper_core.py",
         "quantum_alpha/tests/test_market_data_intraday_period.py",
+    ],
+    "intraday_microstructure": [
+        "quantum_alpha/tests/test_intraday_replay_store.py",
+        "quantum_alpha/tests/test_intraday_feature_builder.py",
+        "quantum_alpha/tests/test_intraday_microstructure_pipeline.py",
+    ],
+    "rv_stat_arb": [
+        "quantum_alpha/tests/test_rv_stat_arb_pipeline.py",
+    ],
+    "hybrid_stack": [
+        "quantum_alpha/tests/test_hybrid_stack_pipeline.py",
     ],
     "dashboard": [
         "quantum_alpha/tests/test_live_graph_dashboard.py",
@@ -198,6 +234,11 @@ def _discover_intraday_checkpoint() -> Tuple[str, Path] | None:
     return symbol, subdirs[0]
 
 
+def _discover_meta_daily_returns(candidate_root: Path, horizon: int) -> Path | None:
+    path = candidate_root / "meta_ensemble" / f"meta_ensemble_h{int(horizon)}d" / "robustness" / "daily_returns.csv"
+    return path if path.exists() else None
+
+
 def _validate_required_files(paths: Dict[str, Path]) -> Tuple[bool, List[str]]:
     missing = [name for name, path in paths.items() if not path.exists()]
     return len(missing) == 0, missing
@@ -288,6 +329,66 @@ def _intraday_candidate_verdict(payload: Dict[str, object]) -> Tuple[bool, List[
     if float(stats.get("strategy_return", 0.0)) <= float(stats.get("benchmark_return", 0.0)):
         fail_reasons.append("strategy_return_not_above_benchmark")
     return len(fail_reasons) == 0, fail_reasons, stats
+
+
+def _intraday_micro_candidate_verdict(payload: Dict[str, object]) -> Tuple[bool, List[str], Dict[str, object]]:
+    metrics = (payload.get("metrics") or {}) if isinstance(payload, dict) else {}
+    quality = (payload.get("data_quality") or {}) if isinstance(payload, dict) else {}
+    fail_reasons: List[str] = []
+    if float(metrics.get("annual_return", 0.0)) <= 0.0:
+        fail_reasons.append("annual_return_nonpositive")
+    if float(metrics.get("sharpe", 0.0)) < INTRADAY_MICRO_RULES["sharpe_min"]:
+        fail_reasons.append("sharpe_below_floor")
+    if abs(float(metrics.get("beta", 0.0))) > INTRADAY_MICRO_RULES["beta_abs_max"]:
+        fail_reasons.append("beta_above_cap")
+    if abs(float(metrics.get("max_drawdown", 0.0))) > INTRADAY_MICRO_RULES["max_drawdown_abs"]:
+        fail_reasons.append("max_drawdown_above_cap")
+    if float(quality.get("depth_completeness", 0.0)) < 0.95:
+        fail_reasons.append("depth_completeness_below_floor")
+    if float(quality.get("median_quote_staleness_ms", 1e9)) > 2000.0:
+        fail_reasons.append("quote_staleness_above_cap")
+    if float(quality.get("crossed_market_rate", 1.0)) > 0.001:
+        fail_reasons.append("crossed_market_rate_above_cap")
+    if float(quality.get("negative_spread_rate", 1.0)) > 0.001:
+        fail_reasons.append("negative_spread_rate_above_cap")
+    return len(fail_reasons) == 0, fail_reasons, {**metrics, **quality}
+
+
+def _rv_stat_arb_candidate_verdict(payload: Dict[str, object]) -> Tuple[bool, List[str], Dict[str, object]]:
+    metrics = (payload.get("metrics") or {}) if isinstance(payload, dict) else {}
+    quality = (payload.get("data_quality") or {}) if isinstance(payload, dict) else {}
+    fail_reasons: List[str] = []
+    if float(metrics.get("annual_return", 0.0)) <= 0.0:
+        fail_reasons.append("annual_return_nonpositive")
+    if float(metrics.get("sharpe", 0.0)) < RV_STAT_ARB_RULES["sharpe_min"]:
+        fail_reasons.append("sharpe_below_floor")
+    if abs(float(metrics.get("beta", 0.0))) > RV_STAT_ARB_RULES["beta_abs_max"]:
+        fail_reasons.append("beta_above_cap")
+    if abs(float(metrics.get("max_drawdown", 0.0))) > RV_STAT_ARB_RULES["max_drawdown_abs"]:
+        fail_reasons.append("max_drawdown_above_cap")
+    if float(quality.get("depth_completeness", 0.0)) < 0.95:
+        fail_reasons.append("depth_completeness_below_floor")
+    return len(fail_reasons) == 0, fail_reasons, {**metrics, **quality}
+
+
+def _hybrid_stack_candidate_verdict(payload: Dict[str, object]) -> Tuple[bool, List[str], Dict[str, object]]:
+    metrics = (payload.get("metrics") or {}) if isinstance(payload, dict) else {}
+    fail_reasons: List[str] = []
+    if float(metrics.get("annual_excess_vs_spy", -1.0)) < HYBRID_STACK_RULES["annual_excess_min"]:
+        fail_reasons.append("annual_excess_vs_spy_below_floor")
+    if float(metrics.get("annual_excess_vs_equal_weight", -1.0)) < HYBRID_STACK_RULES["annual_excess_min"]:
+        fail_reasons.append("annual_excess_vs_equal_weight_below_floor")
+    if float(metrics.get("sharpe", 0.0)) < HYBRID_STACK_RULES["sharpe_min"]:
+        fail_reasons.append("sharpe_below_floor")
+    if abs(float(metrics.get("max_drawdown", 0.0))) > HYBRID_STACK_RULES["max_drawdown_abs"]:
+        fail_reasons.append("max_drawdown_above_cap")
+    if float(metrics.get("mcpt_p_value", 1.0)) >= HYBRID_STACK_RULES["mcpt_pvalue_max"]:
+        fail_reasons.append("mcpt_pvalue_not_significant")
+    if float(metrics.get("beat_ratio_spy_3m", 0.0)) <= HYBRID_STACK_RULES["beat_ratio_min"]:
+        fail_reasons.append("beat_ratio_spy_below_floor")
+    if float(metrics.get("beat_ratio_equal_weight_3m", 0.0)) <= HYBRID_STACK_RULES["beat_ratio_min"]:
+        fail_reasons.append("beat_ratio_equal_weight_below_floor")
+    return len(fail_reasons) == 0, fail_reasons, metrics
 
 
 def _run_smoke_suite(
@@ -617,6 +718,135 @@ def _run_intraday_candidate(args: argparse.Namespace, output_dir: Path, timeout_
     return [record]
 
 
+def _run_intraday_micro_candidate(args: argparse.Namespace, output_dir: Path, timeout_s: int) -> List[Dict[str, object]]:
+    summary_path = output_dir / "summary.json"
+    daily_returns_path = output_dir / "daily_returns.csv"
+    checkpoint_dir = PROJECT_ROOT / "quantum_alpha" / "models" / "intraday_microstructure"
+    cmd = [
+        sys.executable,
+        "-m",
+        "quantum_alpha.train_intraday_microstructure",
+        "--symbols",
+        args.intraday_symbols,
+        "--market-symbol",
+        args.intraday_market_symbol,
+        "--sector-symbol",
+        args.intraday_sector_symbol,
+        "--fixture-days",
+        str(int(args.fixture_days)),
+        "--top-k",
+        str(int(args.intraday_top_k)),
+        "--output-dir",
+        str(output_dir),
+        "--checkpoint-dir",
+        str(checkpoint_dir),
+    ]
+    if args.intraday_replay_dir:
+        cmd.extend(["--replay-dir", args.intraday_replay_dir])
+    result = _run_command(cmd, timeout_s=timeout_s)
+    record = _record_command(
+        "intraday_microstructure",
+        "train_backtest",
+        result,
+        artifacts={
+            "summary_json": str(summary_path),
+            "daily_returns_csv": str(daily_returns_path),
+            "checkpoint_dir": str(checkpoint_dir),
+        },
+    )
+    if record["passed"] and summary_path.exists():
+        payload = _load_json(summary_path)
+        passed, fail_reasons, metrics = _intraday_micro_candidate_verdict(payload)
+        record["metrics"] = metrics
+        record["passed"] = passed
+        record["fail_reasons"] = fail_reasons
+    return [record]
+
+
+def _run_rv_stat_arb_candidate(args: argparse.Namespace, output_dir: Path, timeout_s: int) -> List[Dict[str, object]]:
+    summary_path = output_dir / "summary.json"
+    daily_returns_path = output_dir / "daily_returns.csv"
+    checkpoint_dir = PROJECT_ROOT / "quantum_alpha" / "models" / "rv_stat_arb"
+    cmd = [
+        sys.executable,
+        "-m",
+        "quantum_alpha.train_rv_stat_arb",
+        "--symbols",
+        args.intraday_symbols,
+        "--fixture-days",
+        str(int(args.fixture_days)),
+        "--output-dir",
+        str(output_dir),
+        "--checkpoint-dir",
+        str(checkpoint_dir),
+    ]
+    if args.intraday_replay_dir:
+        cmd.extend(["--replay-dir", args.intraday_replay_dir])
+    result = _run_command(cmd, timeout_s=timeout_s)
+    record = _record_command(
+        "rv_stat_arb",
+        "train_backtest",
+        result,
+        artifacts={
+            "summary_json": str(summary_path),
+            "daily_returns_csv": str(daily_returns_path),
+            "checkpoint_dir": str(checkpoint_dir),
+        },
+    )
+    if record["passed"] and summary_path.exists():
+        payload = _load_json(summary_path)
+        passed, fail_reasons, metrics = _rv_stat_arb_candidate_verdict(payload)
+        record["metrics"] = metrics
+        record["passed"] = passed
+        record["fail_reasons"] = fail_reasons
+    return [record]
+
+
+def _run_hybrid_stack_candidate(args: argparse.Namespace, output_dir: Path, timeout_s: int, candidate_root: Path) -> List[Dict[str, object]]:
+    intraday_path = candidate_root / "intraday_microstructure" / "daily_returns.csv"
+    rv_path = candidate_root / "rv_stat_arb" / "daily_returns.csv"
+    meta_path = _discover_meta_daily_returns(candidate_root, _parse_csv_ints(args.meta_horizons, DEFAULT_META_HORIZONS)[0])
+    if not intraday_path.exists():
+        return [_record_command("hybrid_stack", "train_backtest", {"command": [], "returncode": 1, "stdout": "", "stderr": "", "duration_sec": 0.0}, fail_reasons=["missing_intraday_microstructure_daily_returns"])]
+    if not rv_path.exists():
+        return [_record_command("hybrid_stack", "train_backtest", {"command": [], "returncode": 1, "stdout": "", "stderr": "", "duration_sec": 0.0}, fail_reasons=["missing_rv_stat_arb_daily_returns"])]
+
+    summary_path = output_dir / "summary.json"
+    cmd = [
+        sys.executable,
+        "-m",
+        "quantum_alpha.train_hybrid_stack",
+        "--intraday-daily-returns",
+        str(intraday_path),
+        "--rv-daily-returns",
+        str(rv_path),
+        "--output-dir",
+        str(output_dir),
+    ]
+    if meta_path is not None:
+        cmd.extend(["--meta-daily-returns", str(meta_path), "--benchmark-daily-returns", str(meta_path)])
+    result = _run_command(cmd, timeout_s=timeout_s)
+    record = _record_command(
+        "hybrid_stack",
+        "train_backtest",
+        result,
+        artifacts={
+            "summary_json": str(summary_path),
+            "daily_returns_csv": str(output_dir / "daily_returns.csv"),
+            "normalized_curves": str(output_dir / "normalized_curves.csv"),
+            "snapshot_png": str(output_dir / "playback_snapshot.png"),
+            "video_mp4": str(output_dir / "backtest_playback.mp4"),
+        },
+    )
+    if record["passed"] and summary_path.exists():
+        payload = _load_json(summary_path)
+        passed, fail_reasons, metrics = _hybrid_stack_candidate_verdict(payload)
+        record["metrics"] = metrics
+        record["passed"] = passed
+        record["fail_reasons"] = fail_reasons
+    return [record]
+
+
 def _run_realtime_probe(args: argparse.Namespace, output_dir: Path, timeout_s: int) -> List[Dict[str, object]]:
     if not args.live_probe:
         return []
@@ -696,12 +926,18 @@ def run_pipeline_suite(args: argparse.Namespace) -> Dict[str, object]:
     else:
         if "enhanced" in strategies:
             records.extend(_run_enhanced_candidate(args, output_dir / "enhanced", timeout_s))
+        if "intraday_microstructure" in strategies:
+            records.extend(_run_intraday_micro_candidate(args, output_dir / "intraday_microstructure", timeout_s))
+        if "rv_stat_arb" in strategies:
+            records.extend(_run_rv_stat_arb_candidate(args, output_dir / "rv_stat_arb", timeout_s))
         if "meta_ensemble" in strategies:
             records.extend(_run_meta_candidate(args, output_dir / "meta_ensemble", timeout_s))
         if "news_lstm" in strategies:
             records.extend(_run_news_candidate(args, output_dir / "news_lstm", timeout_s))
         if "intraday" in strategies:
             records.extend(_run_intraday_candidate(args, output_dir / "intraday", timeout_s))
+        if "hybrid_stack" in strategies:
+            records.extend(_run_hybrid_stack_candidate(args, output_dir / "hybrid_stack", timeout_s, output_dir))
 
         if args.suite == "promotion":
             smoke_records, _ = _run_smoke_suite(strategies, output_dir / "smoke", timeout_s)
@@ -740,6 +976,12 @@ def main() -> None:
     parser.add_argument("--live-probe-symbols", type=str, default="SPY,QQQ,AAPL")
     parser.add_argument("--meta-horizons", type=str, default="5,21")
     parser.add_argument("--meta-n-symbols", type=int, default=100)
+    parser.add_argument("--intraday-replay-dir", type=str, default=None)
+    parser.add_argument("--intraday-symbols", type=str, default="SPY,XLK,AAPL,MSFT")
+    parser.add_argument("--intraday-market-symbol", type=str, default="SPY")
+    parser.add_argument("--intraday-sector-symbol", type=str, default="XLK")
+    parser.add_argument("--intraday-top-k", type=int, default=2)
+    parser.add_argument("--fixture-days", type=int, default=5)
     parser.add_argument("--promotion-symbols", type=str, default="SPY,QQQ,IWM,AAPL,MSFT,NVDA")
     parser.add_argument("--news-checkpoint", type=str, default=None)
     parser.add_argument("--quick", action="store_true", help="Pass quick flags to supported research jobs")

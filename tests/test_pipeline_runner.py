@@ -16,6 +16,12 @@ def _args(tmp_path: Path, suite: str = "smoke", strategies: str = "meta_ensemble
         live_probe_symbols="SPY,QQQ,AAPL",
         meta_horizons="5,21",
         meta_n_symbols=10,
+        intraday_replay_dir=None,
+        intraday_symbols="SPY,XLK,AAPL,MSFT",
+        intraday_market_symbol="SPY",
+        intraday_sector_symbol="XLK",
+        intraday_top_k=2,
+        fixture_days=3,
         promotion_symbols="SPY,QQQ,IWM,AAPL,MSFT,NVDA",
         news_checkpoint=None,
         quick=True,
@@ -78,3 +84,28 @@ def test_normalize_symbols_rejects_empty_universe():
         assert "empty" in str(exc).lower()
     else:
         raise AssertionError("Expected ValueError for empty universe")
+
+
+def test_pipeline_runner_smoke_accepts_new_strategy_names(monkeypatch, tmp_path: Path):
+    def _fake_run_command(cmd, **kwargs):
+        return {
+            "command": cmd,
+            "returncode": 0,
+            "stdout": "ok",
+            "stderr": "",
+            "duration_sec": 0.1,
+        }
+
+    monkeypatch.setattr(pr, "_run_command", _fake_run_command)
+    manifest = pr.run_pipeline_suite(
+        _args(tmp_path, suite="smoke", strategies="intraday_microstructure,rv_stat_arb,hybrid_stack")
+    )
+
+    assert manifest["passed"] is True
+    assert len(manifest["records"]) == 3
+
+
+def test_pipeline_runner_candidate_hybrid_requires_dependencies(tmp_path: Path):
+    manifest = pr.run_pipeline_suite(_args(tmp_path, suite="candidate", strategies="hybrid_stack"))
+    assert manifest["passed"] is False
+    assert any("missing_intraday_microstructure_daily_returns" in r for r in manifest["fail_reasons"])

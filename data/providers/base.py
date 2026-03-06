@@ -44,6 +44,60 @@ class MarketDataProvider(Protocol):
     def fetch_fundamentals(self, symbol: str) -> ProviderResult:
         ...
 
+    def fetch_trades(
+        self,
+        symbol: str,
+        start: datetime,
+        end: datetime,
+    ) -> ProviderResult:
+        ...
+
+    def fetch_quotes(
+        self,
+        symbol: str,
+        start: datetime,
+        end: datetime,
+    ) -> ProviderResult:
+        ...
+
+    def fetch_order_book(
+        self,
+        symbol: str,
+        at: Optional[datetime] = None,
+        levels: int = 10,
+    ) -> ProviderResult:
+        ...
+
+
+class DeepMarketDataProvider(Protocol):
+    """Contract for high-frequency trade, quote, and depth providers."""
+
+    name: str
+
+    def fetch_trades(
+        self,
+        symbol: str,
+        start: datetime,
+        end: datetime,
+    ) -> ProviderResult:
+        ...
+
+    def fetch_quotes(
+        self,
+        symbol: str,
+        start: datetime,
+        end: datetime,
+    ) -> ProviderResult:
+        ...
+
+    def fetch_order_book(
+        self,
+        symbol: str,
+        at: Optional[datetime] = None,
+        levels: int = 10,
+    ) -> ProviderResult:
+        ...
+
 
 class AlternativeDataProvider(Protocol):
     """Contract for optional alternative data domains."""
@@ -69,4 +123,9 @@ class AlternativeDataProvider(Protocol):
         ...
 
 
-__all__ = ["ProviderResult", "MarketDataProvider", "AlternativeDataProvider"]
+__all__ = [
+    "ProviderResult",
+    "MarketDataProvider",
+    "DeepMarketDataProvider",
+    "AlternativeDataProvider",
+]

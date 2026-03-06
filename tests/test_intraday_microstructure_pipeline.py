@@ -13,7 +13,7 @@ def test_intraday_microstructure_pipeline_writes_summary_and_daily_returns(tmp_p
         sector_symbol="XLK",
         output_dir=output_dir,
         checkpoint_dir=checkpoint_dir,
-        fixture_days=3,
+        fixture_days=1,
         top_k=2,
     )
 

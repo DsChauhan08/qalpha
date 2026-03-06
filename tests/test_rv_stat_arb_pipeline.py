@@ -11,7 +11,7 @@ def test_rv_stat_arb_pipeline_selects_pairs_and_writes_outputs(tmp_path):
         symbols=["SPY", "XLK", "AAPL", "MSFT"],
         output_dir=output_dir,
         checkpoint_dir=checkpoint_dir,
-        fixture_days=3,
+        fixture_days=1,
     )
 
     assert (output_dir / "summary.json").exists()

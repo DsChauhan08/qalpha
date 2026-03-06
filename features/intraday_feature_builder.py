@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Dict, Iterable, List, Sequence
+import warnings
 
 import numpy as np
 import pandas as pd
@@ -147,7 +148,7 @@ class UnifiedIntradayFeatureBuilder:
         depth_df = depth.copy()
         depth_df["timestamp"] = pd.to_datetime(depth_df["timestamp"], utc=True)
         depth_df = depth_df.sort_values(["timestamp", "level"])
-        depth_group = depth_df.groupby("timestamp")
+        depth_group = depth_df.groupby("timestamp")[["level", "bid_price", "bid_size", "ask_price", "ask_size"]]
         depth_summary = depth_group.apply(self._summarize_depth_snapshot).reset_index()
         depth_summary = depth_summary.set_index("timestamp").resample("1min").last().ffill()
 
@@ -193,7 +194,13 @@ class UnifiedIntradayFeatureBuilder:
         for col, series in rp_features.items():
             out[col] = series.reindex(out.index).fillna(0.0)
 
-        ps_frame = self._ps.generate(out[["open", "high", "low", "close", "volume"]].copy())
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore",
+                message="Level value of .* is too high: all coefficients will experience boundary effects.",
+                category=UserWarning,
+            )
+            ps_frame = self._ps.generate(out[["open", "high", "low", "close", "volume"]].copy())
         for col in self._ps.get_feature_names():
             out[col] = _safe_series(ps_frame[col]).reindex(out.index).fillna(0.0)
 

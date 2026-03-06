@@ -186,10 +186,9 @@ def _intraday_backtest(
 ) -> tuple[pd.Series, pd.DataFrame]:
     excluded = {s.upper() for s in excluded_symbols}
     df = pred.copy()
-    df["minute_of_day"] = df["timestamp"].dt.hour * 60 + df["timestamp"].dt.minute
     candidate = df.loc[~df["symbol"].isin(excluded)].copy()
-    candidate = candidate.loc[candidate["minute_of_day"] < (16 * 60 - 5)]
-    candidate = candidate.loc[(candidate["minute_of_day"] - candidate["minute_of_day"].min()) % rebalance_step == 0]
+    candidate["rebalance_slot"] = candidate.groupby(candidate["timestamp"].dt.normalize()).cumcount()
+    candidate = candidate.loc[candidate["rebalance_slot"] % max(1, int(rebalance_step)) == 0]
 
     returns: List[Dict[str, float | pd.Timestamp]] = []
     positions: List[Dict[str, float | str | pd.Timestamp]] = []
@@ -200,9 +199,8 @@ def _intraday_backtest(
         if active.empty:
             continue
         longs = active.sort_values("trade_score", ascending=False).head(max(1, int(top_k)))
-        shorts = active.sort_values("trade_score", ascending=True).head(max(1, int(top_k)))
-        longs = longs.loc[longs["trade_score"] > 0]
-        shorts = shorts.loc[shorts["trade_score"] < 0]
+        short_pool = active.loc[~active["symbol"].isin(longs["symbol"])]
+        shorts = short_pool.sort_values("trade_score", ascending=True).head(max(1, int(top_k)))
 
         long_weight = 0.5 / max(1, len(longs)) if len(longs) else 0.0
         short_weight = -0.5 / max(1, len(shorts)) if len(shorts) else 0.0

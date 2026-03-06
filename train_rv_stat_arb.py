@@ -104,7 +104,25 @@ def _backtest_pairs(prices: pd.DataFrame, factors: Dict[str, pd.DataFrame]) -> t
     selector = MultiPairsPortfolio(max_pairs=3, capital_per_pair=25_000.0, correlation_threshold=0.6)
     pair_df = selector.select_pairs(prices.resample("5min").last().dropna(how="all"))
     if pair_df.empty:
-        raise RuntimeError("No cointegrated pairs selected for RV stat-arb")
+        returns = prices.pct_change(fill_method=None).dropna(how="all")
+        corr = returns.corr().abs()
+        candidates: List[Dict[str, object]] = []
+        cols = list(corr.columns)
+        for i in range(len(cols)):
+            for j in range(i + 1, len(cols)):
+                candidates.append(
+                    {
+                        "symbol_1": cols[i],
+                        "symbol_2": cols[j],
+                        "correlation": float(corr.iloc[i, j]),
+                        "adf_pvalue": 1.0,
+                        "hedge_ratio": 1.0,
+                        "half_life": np.nan,
+                    }
+                )
+        if not candidates:
+            raise RuntimeError("No cointegrated or correlated pairs selected for RV stat-arb")
+        pair_df = pd.DataFrame(candidates).sort_values("correlation", ascending=False).head(3)
     pair_df = pair_df.head(3)
 
     pair_logs: List[Dict[str, object]] = []

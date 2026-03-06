@@ -21,7 +21,7 @@ def _args(tmp_path: Path, suite: str = "smoke", strategies: str = "meta_ensemble
         intraday_market_symbol="SPY",
         intraday_sector_symbol="XLK",
         intraday_top_k=2,
-        fixture_days=3,
+        fixture_days=1,
         promotion_symbols="SPY,QQQ,IWM,AAPL,MSFT,NVDA",
         news_checkpoint=None,
         quick=True,

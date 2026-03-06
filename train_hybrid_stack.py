@@ -160,7 +160,7 @@ def train_hybrid_stack(
             "equal_weight": _curve_from_returns(equal_weight),
         },
         axis=1,
-    ).fillna(method="ffill").fillna(1.0)
+    ).ffill().fillna(1.0)
     curves_path = out_dir / "normalized_curves.csv"
     curves.to_csv(curves_path, index_label="timestamp")
 

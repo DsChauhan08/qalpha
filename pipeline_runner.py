@@ -17,6 +17,7 @@ from typing import Dict, Iterable, List, Tuple
 
 import pandas as pd
 
+from quantum_alpha.backtesting.event_sleeve_tools import validate_viewer_bundle as validate_event_viewer_bundle
 from quantum_alpha.execution.live_graph_dashboard import (
     load_equity_curve,
     load_status,
@@ -34,6 +35,9 @@ DEFAULT_STRATEGIES = [
     "intraday_microstructure",
     "rv_stat_arb",
     "hybrid_stack",
+    "event_cross_sectional",
+    "event_rv",
+    "event_stack",
 ]
 DEFAULT_META_HORIZONS = [5, 21]
 DEFAULT_PROMOTION_SYMBOLS = ["SPY", "QQQ", "IWM", "AAPL", "MSFT", "NVDA"]
@@ -61,6 +65,23 @@ HYBRID_STACK_RULES = {
     "annual_excess_min": 0.02,
     "mcpt_pvalue_max": 0.05,
     "beat_ratio_min": 0.55,
+}
+EVENT_CROSS_RULES = {
+    "annual_return_min": 0.0,
+    "sharpe_min": 1.25,
+    "beta_abs_max": 0.10,
+    "max_drawdown_abs": 0.12,
+    "rolling_positive_ratio_min": 0.55,
+}
+EVENT_RV_RULES = {
+    "annual_return_min": 0.0,
+    "sharpe_min": 1.10,
+    "beta_abs_max": 0.08,
+    "max_drawdown_abs": 0.10,
+}
+EVENT_STACK_RULES = {
+    "annual_return_min": 0.0,
+    "sharpe_min": 1.10,
 }
 
 SMOKE_TESTS = {
@@ -93,6 +114,16 @@ SMOKE_TESTS = {
     ],
     "hybrid_stack": [
         "quantum_alpha/tests/test_hybrid_stack_pipeline.py",
+    ],
+    "event_cross_sectional": [
+        "quantum_alpha/tests/test_event_feature_builder.py",
+        "quantum_alpha/tests/test_event_cross_sectional_pipeline.py",
+    ],
+    "event_rv": [
+        "quantum_alpha/tests/test_event_rv_pipeline.py",
+    ],
+    "event_stack": [
+        "quantum_alpha/tests/test_event_stack_pipeline.py",
     ],
     "dashboard": [
         "quantum_alpha/tests/test_live_graph_dashboard.py",
@@ -388,6 +419,88 @@ def _hybrid_stack_candidate_verdict(payload: Dict[str, object]) -> Tuple[bool, L
         fail_reasons.append("beat_ratio_spy_below_floor")
     if float(metrics.get("beat_ratio_equal_weight_3m", 0.0)) <= HYBRID_STACK_RULES["beat_ratio_min"]:
         fail_reasons.append("beat_ratio_equal_weight_below_floor")
+    return len(fail_reasons) == 0, fail_reasons, metrics
+
+
+def _event_cross_candidate_verdict(payload: Dict[str, object], *, require_paid: bool) -> Tuple[bool, List[str], Dict[str, object]]:
+    metrics = (payload.get("metrics") or {}) if isinstance(payload, dict) else {}
+    quality = (payload.get("data_quality") or {}) if isinstance(payload, dict) else {}
+    artifacts = (payload.get("artifacts") or {}) if isinstance(payload, dict) else {}
+    fail_reasons: List[str] = []
+    if float(metrics.get("annual_return", -1.0)) <= EVENT_CROSS_RULES["annual_return_min"]:
+        fail_reasons.append("annual_return_nonpositive")
+    if float(metrics.get("sharpe", 0.0)) < EVENT_CROSS_RULES["sharpe_min"]:
+        fail_reasons.append("sharpe_below_floor")
+    if abs(float(metrics.get("beta", 0.0))) > EVENT_CROSS_RULES["beta_abs_max"]:
+        fail_reasons.append("beta_above_cap")
+    if abs(float(metrics.get("max_drawdown", 0.0))) > EVENT_CROSS_RULES["max_drawdown_abs"]:
+        fail_reasons.append("max_drawdown_above_cap")
+    if float(metrics.get("rolling_positive_ratio_3m", 0.0)) < EVENT_CROSS_RULES["rolling_positive_ratio_min"]:
+        fail_reasons.append("rolling_positive_ratio_below_floor")
+    if int(metrics.get("eligible_event_count", 0) or 0) <= 0:
+        fail_reasons.append("empty_event_set")
+    congress_cov = float((quality.get("coverage_by_domain") or {}).get("congress", 0.0))
+    if congress_cov > 0.05 and not bool(quality.get("event_lag_ok", False)):
+        fail_reasons.append("event_lag_invalid")
+    if require_paid and not bool(quality.get("paid_data_eligible", False)):
+        fail_reasons.append("paid_data_ineligible")
+    if float((quality.get("coverage_by_domain") or {}).get("earnings", 0.0)) <= 0.0:
+        fail_reasons.append("earnings_coverage_missing")
+    if float((quality.get("staleness_days") or {}).get("earnings", 9999.0)) > 45.0:
+        fail_reasons.append("earnings_staleness_above_cap")
+    required_artifacts = {
+        "summary_json": payload.get("summary_json"),
+        "daily_returns_csv": artifacts.get("daily_returns_csv"),
+        "robustness_json": artifacts.get("robustness_json"),
+        "synthetic_stress_json": artifacts.get("synthetic_stress_json"),
+        "regime_report_json": artifacts.get("regime_report_json"),
+    }
+    for name, path in required_artifacts.items():
+        if not path or not Path(str(path)).exists():
+            fail_reasons.append(f"missing_{name}")
+    return len(fail_reasons) == 0, fail_reasons, {**metrics, **quality}
+
+
+def _event_rv_candidate_verdict(payload: Dict[str, object], *, require_paid: bool) -> Tuple[bool, List[str], Dict[str, object]]:
+    metrics = (payload.get("metrics") or {}) if isinstance(payload, dict) else {}
+    quality = (payload.get("data_quality") or {}) if isinstance(payload, dict) else {}
+    artifacts = (payload.get("artifacts") or {}) if isinstance(payload, dict) else {}
+    fail_reasons: List[str] = []
+    if float(metrics.get("annual_return", -1.0)) <= EVENT_RV_RULES["annual_return_min"]:
+        fail_reasons.append("annual_return_nonpositive")
+    if float(metrics.get("sharpe", 0.0)) < EVENT_RV_RULES["sharpe_min"]:
+        fail_reasons.append("sharpe_below_floor")
+    if abs(float(metrics.get("beta", 0.0))) > EVENT_RV_RULES["beta_abs_max"]:
+        fail_reasons.append("beta_above_cap")
+    if abs(float(metrics.get("max_drawdown", 0.0))) > EVENT_RV_RULES["max_drawdown_abs"]:
+        fail_reasons.append("max_drawdown_above_cap")
+    if int(metrics.get("eligible_event_count", 0) or 0) <= 0:
+        fail_reasons.append("empty_event_set")
+    congress_cov = float((quality.get("coverage_by_domain") or {}).get("congress", 0.0))
+    if congress_cov > 0.05 and not bool(quality.get("event_lag_ok", False)):
+        fail_reasons.append("event_lag_invalid")
+    if require_paid and not bool(quality.get("paid_data_eligible", False)):
+        fail_reasons.append("paid_data_ineligible")
+    required_artifacts = {
+        "daily_returns_csv": artifacts.get("daily_returns_csv"),
+        "pairs_json": artifacts.get("pairs_json"),
+        "robustness_json": artifacts.get("robustness_json"),
+        "synthetic_stress_json": artifacts.get("synthetic_stress_json"),
+        "regime_report_json": artifacts.get("regime_report_json"),
+    }
+    for name, path in required_artifacts.items():
+        if not path or not Path(str(path)).exists():
+            fail_reasons.append(f"missing_{name}")
+    return len(fail_reasons) == 0, fail_reasons, {**metrics, **quality}
+
+
+def _event_stack_candidate_verdict(payload: Dict[str, object]) -> Tuple[bool, List[str], Dict[str, object]]:
+    metrics = (payload.get("metrics") or {}) if isinstance(payload, dict) else {}
+    fail_reasons: List[str] = []
+    if float(metrics.get("annual_return", -1.0)) <= EVENT_STACK_RULES["annual_return_min"]:
+        fail_reasons.append("annual_return_nonpositive")
+    if float(metrics.get("sharpe", 0.0)) < EVENT_STACK_RULES["sharpe_min"]:
+        fail_reasons.append("sharpe_below_floor")
     return len(fail_reasons) == 0, fail_reasons, metrics
 
 
@@ -847,6 +960,168 @@ def _run_hybrid_stack_candidate(args: argparse.Namespace, output_dir: Path, time
     return [record]
 
 
+def _run_event_cross_candidate(args: argparse.Namespace, output_dir: Path, timeout_s: int) -> List[Dict[str, object]]:
+    summary_path = output_dir / "summary.json"
+    checkpoint_dir = PROJECT_ROOT / "quantum_alpha" / "models" / "event_cross_sectional"
+    viewer_dir = output_dir / "viewer"
+    cmd = [
+        sys.executable,
+        "-m",
+        "quantum_alpha.train_event_cross_sectional",
+        "--symbols",
+        args.event_symbols,
+        "--universe-size",
+        str(int(args.event_universe_size)),
+        "--fixture-days",
+        str(int(args.fixture_days)),
+        "--output-dir",
+        str(output_dir),
+        "--checkpoint-dir",
+        str(checkpoint_dir),
+    ]
+    if bool(getattr(args, "event_use_fixture", False)):
+        cmd.append("--use-fixture")
+    if args.quick:
+        cmd.append("--quick")
+    result = _run_command(cmd, timeout_s=timeout_s)
+    validation = validate_event_viewer_bundle(viewer_dir) if viewer_dir.exists() else {"valid": False, "missing": ["viewer_dir"]}
+    record = _record_command(
+        "event_cross_sectional",
+        "train_backtest",
+        result,
+        artifacts={
+            "summary_json": str(summary_path),
+            "daily_returns_csv": str(output_dir / "daily_returns.csv"),
+            "viewer_dir": str(viewer_dir),
+        },
+        fail_reasons=[] if validation.get("valid") else [f"missing_{m}" for m in validation.get("missing", [])],
+    )
+    if record["passed"] and summary_path.exists():
+        payload = _load_json(summary_path)
+        payload["summary_json"] = str(summary_path)
+        viewer_artifacts = payload.setdefault("artifacts", {})
+        viewer_artifacts.update(
+            {
+                "normalized_curves_csv": str(viewer_dir / "normalized_curves.csv"),
+                "hedged_curves_csv": str(viewer_dir / "hedged_curves.csv"),
+                "snapshot_png": str(viewer_dir / "playback_snapshot.png"),
+                "video_mp4": str(viewer_dir / "backtest_playback.mp4"),
+            }
+        )
+        passed, fail_reasons, metrics = _event_cross_candidate_verdict(payload, require_paid=args.suite == "promotion")
+        if not bool(validation.get("valid")):
+            fail_reasons.extend([f"missing_{m}" for m in validation.get("missing", [])])
+        record["metrics"] = metrics
+        record["passed"] = bool(passed and validation.get("valid"))
+        record["fail_reasons"] = list(dict.fromkeys(fail_reasons))
+    return [record]
+
+
+def _run_event_rv_candidate(args: argparse.Namespace, output_dir: Path, timeout_s: int) -> List[Dict[str, object]]:
+    summary_path = output_dir / "summary.json"
+    checkpoint_dir = PROJECT_ROOT / "quantum_alpha" / "models" / "event_rv"
+    viewer_dir = output_dir / "viewer"
+    cmd = [
+        sys.executable,
+        "-m",
+        "quantum_alpha.train_event_rv",
+        "--symbols",
+        args.event_symbols,
+        "--universe-size",
+        str(int(args.event_universe_size)),
+        "--fixture-days",
+        str(int(args.fixture_days)),
+        "--output-dir",
+        str(output_dir),
+        "--checkpoint-dir",
+        str(checkpoint_dir),
+    ]
+    if bool(getattr(args, "event_use_fixture", False)):
+        cmd.append("--use-fixture")
+    if args.quick:
+        cmd.append("--quick")
+    result = _run_command(cmd, timeout_s=timeout_s)
+    validation = validate_event_viewer_bundle(viewer_dir) if viewer_dir.exists() else {"valid": False, "missing": ["viewer_dir"]}
+    record = _record_command(
+        "event_rv",
+        "train_backtest",
+        result,
+        artifacts={
+            "summary_json": str(summary_path),
+            "daily_returns_csv": str(output_dir / "daily_returns.csv"),
+            "viewer_dir": str(viewer_dir),
+        },
+        fail_reasons=[] if validation.get("valid") else [f"missing_{m}" for m in validation.get("missing", [])],
+    )
+    if record["passed"] and summary_path.exists():
+        payload = _load_json(summary_path)
+        payload["summary_json"] = str(summary_path)
+        viewer_artifacts = payload.setdefault("artifacts", {})
+        viewer_artifacts.update(
+            {
+                "normalized_curves_csv": str(viewer_dir / "normalized_curves.csv"),
+                "hedged_curves_csv": str(viewer_dir / "hedged_curves.csv"),
+                "snapshot_png": str(viewer_dir / "playback_snapshot.png"),
+                "video_mp4": str(viewer_dir / "backtest_playback.mp4"),
+            }
+        )
+        passed, fail_reasons, metrics = _event_rv_candidate_verdict(payload, require_paid=args.suite == "promotion")
+        if not bool(validation.get("valid")):
+            fail_reasons.extend([f"missing_{m}" for m in validation.get("missing", [])])
+        record["metrics"] = metrics
+        record["passed"] = bool(passed and validation.get("valid"))
+        record["fail_reasons"] = list(dict.fromkeys(fail_reasons))
+    return [record]
+
+
+def _run_event_stack_candidate(args: argparse.Namespace, output_dir: Path, timeout_s: int, candidate_root: Path) -> List[Dict[str, object]]:
+    cross_path = candidate_root / "event_cross_sectional" / "daily_returns.csv"
+    rv_path = candidate_root / "event_rv" / "daily_returns.csv"
+    if not cross_path.exists():
+        return [_record_command("event_stack", "train_backtest", {"command": [], "returncode": 1, "stdout": "", "stderr": "", "duration_sec": 0.0}, fail_reasons=["missing_event_cross_sectional_daily_returns"])]
+    if not rv_path.exists():
+        return [_record_command("event_stack", "train_backtest", {"command": [], "returncode": 1, "stdout": "", "stderr": "", "duration_sec": 0.0}, fail_reasons=["missing_event_rv_daily_returns"])]
+
+    meta_path = _discover_meta_daily_returns(candidate_root, _parse_csv_ints(args.meta_horizons, DEFAULT_META_HORIZONS)[0])
+    summary_path = output_dir / "summary.json"
+    viewer_dir = output_dir / "viewer"
+    cmd = [
+        sys.executable,
+        "-m",
+        "quantum_alpha.train_event_stack",
+        "--event-cross-daily-returns",
+        str(cross_path),
+        "--event-rv-daily-returns",
+        str(rv_path),
+        "--output-dir",
+        str(output_dir),
+    ]
+    if meta_path is not None:
+        cmd.extend(["--meta-daily-returns", str(meta_path)])
+    result = _run_command(cmd, timeout_s=timeout_s)
+    validation = validate_event_viewer_bundle(viewer_dir) if viewer_dir.exists() else {"valid": False, "missing": ["viewer_dir"]}
+    record = _record_command(
+        "event_stack",
+        "train_backtest",
+        result,
+        artifacts={
+            "summary_json": str(summary_path),
+            "daily_returns_csv": str(output_dir / "daily_returns.csv"),
+            "viewer_dir": str(viewer_dir),
+        },
+        fail_reasons=[] if validation.get("valid") else [f"missing_{m}" for m in validation.get("missing", [])],
+    )
+    if record["passed"] and summary_path.exists():
+        payload = _load_json(summary_path)
+        passed, fail_reasons, metrics = _event_stack_candidate_verdict(payload)
+        if not bool(validation.get("valid")):
+            fail_reasons.extend([f"missing_{m}" for m in validation.get("missing", [])])
+        record["metrics"] = metrics
+        record["passed"] = bool(passed and validation.get("valid"))
+        record["fail_reasons"] = list(dict.fromkeys(fail_reasons))
+    return [record]
+
+
 def _run_realtime_probe(args: argparse.Namespace, output_dir: Path, timeout_s: int) -> List[Dict[str, object]]:
     if not args.live_probe:
         return []
@@ -930,6 +1205,10 @@ def run_pipeline_suite(args: argparse.Namespace) -> Dict[str, object]:
             records.extend(_run_intraday_micro_candidate(args, output_dir / "intraday_microstructure", timeout_s))
         if "rv_stat_arb" in strategies:
             records.extend(_run_rv_stat_arb_candidate(args, output_dir / "rv_stat_arb", timeout_s))
+        if "event_cross_sectional" in strategies:
+            records.extend(_run_event_cross_candidate(args, output_dir / "event_cross_sectional", timeout_s))
+        if "event_rv" in strategies:
+            records.extend(_run_event_rv_candidate(args, output_dir / "event_rv", timeout_s))
         if "meta_ensemble" in strategies:
             records.extend(_run_meta_candidate(args, output_dir / "meta_ensemble", timeout_s))
         if "news_lstm" in strategies:
@@ -938,6 +1217,8 @@ def run_pipeline_suite(args: argparse.Namespace) -> Dict[str, object]:
             records.extend(_run_intraday_candidate(args, output_dir / "intraday", timeout_s))
         if "hybrid_stack" in strategies:
             records.extend(_run_hybrid_stack_candidate(args, output_dir / "hybrid_stack", timeout_s, output_dir))
+        if "event_stack" in strategies:
+            records.extend(_run_event_stack_candidate(args, output_dir / "event_stack", timeout_s, output_dir))
 
         if args.suite == "promotion":
             smoke_records, _ = _run_smoke_suite(strategies, output_dir / "smoke", timeout_s)
@@ -981,6 +1262,9 @@ def main() -> None:
     parser.add_argument("--intraday-market-symbol", type=str, default="SPY")
     parser.add_argument("--intraday-sector-symbol", type=str, default="XLK")
     parser.add_argument("--intraday-top-k", type=int, default=2)
+    parser.add_argument("--event-symbols", type=str, default="SPY,AAPL,MSFT,NVDA,AMZN,XOM,JPM")
+    parser.add_argument("--event-universe-size", type=int, default=800)
+    parser.add_argument("--event-use-fixture", action="store_true")
     parser.add_argument("--fixture-days", type=int, default=5)
     parser.add_argument("--promotion-symbols", type=str, default="SPY,QQQ,IWM,AAPL,MSFT,NVDA")
     parser.add_argument("--news-checkpoint", type=str, default=None)

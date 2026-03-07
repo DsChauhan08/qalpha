@@ -33,7 +33,10 @@ def compute_basic_metrics(
     total_return = float(equity.iloc[-1] - 1.0) if not equity.empty else 0.0
 
     if len(ret) > 0:
-        annual_return = float((1.0 + total_return) ** (periods_per_year / max(len(ret), 1)) - 1.0)
+        if total_return <= -1.0:
+            annual_return = -1.0
+        else:
+            annual_return = float((1.0 + total_return) ** (periods_per_year / max(len(ret), 1)) - 1.0)
         vol = float(ret.std(ddof=0))
         sharpe = float((ret.mean() / vol) * np.sqrt(periods_per_year)) if vol > 0 else 0.0
     else:

@@ -10,15 +10,21 @@ import pandas as pd
 from sklearn.cluster import KMeans
 from sklearn.decomposition import PCA
 
+from quantum_alpha.features.state_graph_features import (
+    STATE_GRAPH_FACTOR_COLUMNS,
+    STATE_GRAPH_PREFIXES,
+    StateGraphFeatureBuilder,
+)
 from quantum_alpha.features.mathematical.copula_models import CopulaAnalyzer
 from quantum_alpha.features.mathematical.optimal_transport import OptimalTransportAnalyzer
 
-EVENT_PREFIXES = ("ev_", "rv_", "dp_", "ex_")
+EVENT_PREFIXES = ("ev_", "rv_", "dp_", "ex_", *STATE_GRAPH_PREFIXES)
 EVENT_FACTOR_COLUMNS = [
     "ev_information_gap",
     "ev_confirmation_pressure",
     "rv_peer_dislocation",
     "dp_tail_fragility",
+    *STATE_GRAPH_FACTOR_COLUMNS,
 ]
 
 
@@ -68,7 +74,7 @@ class UnifiedEventFeatureBuilder:
         self.copula = CopulaAnalyzer()
         self.transport = OptimalTransportAnalyzer(n_bins=20, epsilon=0.05)
 
-    def build(self, panel: pd.DataFrame) -> EventFeatureBuildResult:
+    def build(self, panel: pd.DataFrame, *, model_family: str = "baseline") -> EventFeatureBuildResult:
         df = panel.copy()
         df["date"] = pd.to_datetime(df["date"]).dt.normalize()
         df["symbol"] = df["symbol"].astype(str).str.upper()
@@ -82,18 +88,31 @@ class UnifiedEventFeatureBuilder:
         df["dollar_volume"] = pd.to_numeric(df["dollar_volume"], errors="coerce").replace([np.inf, -np.inf], np.nan)
         df["dollar_volume"] = df["dollar_volume"].fillna(df["close"] * df["volume"])
 
-        cluster_map = self._cluster_symbols(df)
-        df["peer_cluster"] = df["symbol"].map(cluster_map).fillna(0).astype(int)
+        if "research_peer_group" in df.columns:
+            cluster_map = (
+                df.loc[:, ["symbol", "research_peer_group"]]
+                .drop_duplicates("symbol")
+                .set_index("symbol")["research_peer_group"]
+                .astype(int)
+                .to_dict()
+            )
+            df["peer_cluster"] = pd.to_numeric(df["research_peer_group"], errors="coerce").fillna(0).astype(int)
+        else:
+            cluster_map = self._cluster_symbols(df)
+            df["peer_cluster"] = df["symbol"].map(cluster_map).fillna(0).astype(int)
 
-        market_series = (
-            df.loc[df["symbol"] == "SPY", ["date", "returns"]]
-            .drop_duplicates("date")
-            .set_index("date")["returns"]
-            .sort_index()
-        )
-        if market_series.empty:
-            market_series = df.groupby("date")["returns"].mean().sort_index()
-        df["market_return"] = df["date"].map(market_series).fillna(0.0)
+        if "research_market_return" in df.columns:
+            df["market_return"] = pd.to_numeric(df["research_market_return"], errors="coerce").fillna(0.0)
+        else:
+            market_series = (
+                df.loc[df["symbol"] == "SPY", ["date", "returns"]]
+                .drop_duplicates("date")
+                .set_index("date")["returns"]
+                .sort_index()
+            )
+            if market_series.empty:
+                market_series = df.groupby("date")["returns"].mean().sort_index()
+            df["market_return"] = df["date"].map(market_series).fillna(0.0)
 
         cluster_returns = (
             df.groupby(["date", "peer_cluster"])["returns"]
@@ -128,6 +147,9 @@ class UnifiedEventFeatureBuilder:
         self._build_dp_features(df)
         self._build_ex_features(df)
         self._build_composite_factors(df)
+        model_family_norm = str(model_family or "baseline").strip().lower()
+        if model_family_norm == "state_graph":
+            df = StateGraphFeatureBuilder().build(df, include_graph=True).features
 
         feature_cols = [c for c in df.columns if c.startswith(EVENT_PREFIXES)]
         df.loc[:, feature_cols] = df.loc[:, feature_cols].replace([np.inf, -np.inf], np.nan).fillna(0.0)
@@ -138,6 +160,7 @@ class UnifiedEventFeatureBuilder:
                 "feature_columns": feature_cols,
                 "factor_columns": list(EVENT_FACTOR_COLUMNS),
                 "peer_clusters": {str(k): int(v) for k, v in cluster_map.items()},
+                "model_family": model_family_norm,
             },
         )
 

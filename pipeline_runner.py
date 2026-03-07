@@ -5,6 +5,7 @@ Unified pipeline runner for research, validation, and promotion checks.
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import hashlib
 import json
 import os
@@ -22,6 +23,10 @@ from quantum_alpha.execution.live_graph_dashboard import (
     load_equity_curve,
     load_status,
     load_trades,
+)
+from quantum_alpha.research_spine import (
+    RESEARCH_LEDGER_FILENAME,
+    build_or_load_research_spine,
 )
 from quantum_alpha.visualization.meta_ensemble_video import validate_output_dir as validate_video_output_dir
 
@@ -83,6 +88,28 @@ EVENT_STACK_RULES = {
     "annual_return_min": 0.0,
     "sharpe_min": 1.10,
 }
+RESEARCH_GATE_RULES = {
+    "event_cross_sectional": {
+        "annual_return_min": 0.0,
+        "sharpe_min": 0.90,
+        "beta_abs_max": 0.10,
+        "rolling_positive_ratio_min": 0.55,
+    },
+    "event_rv": {
+        "annual_return_min": 0.0,
+        "sharpe_min": 0.80,
+        "beta_abs_max": 0.08,
+        "max_drawdown_abs": 0.12,
+    },
+    "event_stack": {
+        "excess_vs_spy_min": 0.0,
+        "excess_vs_equal_weight_min": 0.0,
+        "sharpe_min": 0.85,
+    },
+}
+SMOKE_SUITE_RUNTIME_TARGET_SEC = 120.0
+SMOKE_STRATEGY_RUNTIME_TARGET_SEC = 15.0
+QUICK_CANDIDATE_RUNTIME_TARGET_SEC = 20.0 * 60.0
 
 SMOKE_TESTS = {
     "enhanced": [
@@ -188,6 +215,24 @@ def _normalize_symbols(value: str | None, default: Iterable[str]) -> List[str]:
     if not out:
         raise ValueError("Universe selection is empty")
     return out
+
+
+def _prepare_event_research_spine(args: argparse.Namespace, output_dir: Path) -> Dict[str, object]:
+    spine = build_or_load_research_spine(
+        spine_dir=output_dir / "research_spine",
+        symbols=_normalize_symbols(args.event_symbols, ["SPY", "AAPL", "MSFT"]),
+        universe_size=int(args.event_universe_size),
+        use_fixture=bool(getattr(args, "event_use_fixture", False)),
+        fixture_days=int(args.fixture_days),
+        seed=42,
+    )
+    return {
+        "spine_dir": str(spine.spine_dir),
+        "panel_path": str(spine.panel_path),
+        "metadata_path": str(spine.metadata_path),
+        "dataset_hash": str(spine.dataset_hash),
+        "ledger_path": str(spine.spine_dir / RESEARCH_LEDGER_FILENAME),
+    }
 
 
 def _run_command(
@@ -509,18 +554,48 @@ def _run_smoke_suite(
     output_dir: Path,
     timeout_s: int,
 ) -> Tuple[List[Dict[str, object]], bool]:
-    records: List[Dict[str, object]] = []
+    jobs: List[Tuple[str, List[str]]] = []
     for strategy in strategies:
         tests = list(SMOKE_TESTS.get(strategy, []))
         if strategy == "meta_ensemble":
             tests.extend(SMOKE_TESTS["dashboard"])
         if not tests:
             continue
-        cmd = [sys.executable, "-m", "pytest", "-q", *tests]
-        result = _run_command(cmd, timeout_s=timeout_s)
-        records.append(_record_command(strategy, "smoke", result))
-    passed = all(bool(r.get("passed")) for r in records)
-    _write_json(output_dir / "smoke_manifest.json", {"records": records, "passed": passed})
+        jobs.append((strategy, [sys.executable, "-m", "pytest", "-q", *tests]))
+
+    if not jobs:
+        _write_json(output_dir / "smoke_manifest.json", {"records": [], "passed": True})
+        return [], True
+
+    records_by_strategy: Dict[str, Dict[str, object]] = {}
+    started = time.time()
+    max_workers = max(1, min(len(jobs), 4, os.cpu_count() or 1))
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        future_map = {
+            pool.submit(_run_command, cmd, timeout_s=timeout_s): strategy for strategy, cmd in jobs
+        }
+        for future in as_completed(future_map):
+            strategy = future_map[future]
+            result = future.result()
+            record = _record_command(strategy, "smoke", result)
+            record["runtime_target_sec"] = SMOKE_STRATEGY_RUNTIME_TARGET_SEC
+            record["runtime_target_passed"] = float(record.get("duration_sec", 0.0)) <= SMOKE_STRATEGY_RUNTIME_TARGET_SEC
+            records_by_strategy[strategy] = record
+
+    records = [records_by_strategy[strategy] for strategy, _ in jobs]
+    total_runtime = round(time.time() - started, 3)
+    passed = all(bool(r.get("passed")) for r in records) and total_runtime <= SMOKE_SUITE_RUNTIME_TARGET_SEC
+    fail_reasons = []
+    if total_runtime > SMOKE_SUITE_RUNTIME_TARGET_SEC:
+        fail_reasons.append("smoke_runtime_budget_exceeded")
+    payload = {
+        "records": records,
+        "passed": passed,
+        "runtime_sec": total_runtime,
+        "runtime_target_sec": SMOKE_SUITE_RUNTIME_TARGET_SEC,
+        "fail_reasons": fail_reasons,
+    }
+    _write_json(output_dir / "smoke_manifest.json", payload)
     return records, passed
 
 
@@ -960,7 +1035,14 @@ def _run_hybrid_stack_candidate(args: argparse.Namespace, output_dir: Path, time
     return [record]
 
 
-def _run_event_cross_candidate(args: argparse.Namespace, output_dir: Path, timeout_s: int) -> List[Dict[str, object]]:
+def _run_event_cross_candidate(
+    args: argparse.Namespace,
+    output_dir: Path,
+    timeout_s: int,
+    *,
+    research_spine: Dict[str, object] | None = None,
+    model_family: str = "state_graph",
+) -> List[Dict[str, object]]:
     summary_path = output_dir / "summary.json"
     checkpoint_dir = PROJECT_ROOT / "quantum_alpha" / "models" / "event_cross_sectional"
     viewer_dir = output_dir / "viewer"
@@ -972,6 +1054,8 @@ def _run_event_cross_candidate(args: argparse.Namespace, output_dir: Path, timeo
         args.event_symbols,
         "--universe-size",
         str(int(args.event_universe_size)),
+        "--model-family",
+        model_family,
         "--fixture-days",
         str(int(args.fixture_days)),
         "--output-dir",
@@ -979,6 +1063,15 @@ def _run_event_cross_candidate(args: argparse.Namespace, output_dir: Path, timeo
         "--checkpoint-dir",
         str(checkpoint_dir),
     ]
+    if research_spine:
+        cmd.extend(
+            [
+                "--research-spine-dir",
+                str(research_spine["spine_dir"]),
+                "--research-ledger-path",
+                str(research_spine["ledger_path"]),
+            ]
+        )
     if bool(getattr(args, "event_use_fixture", False)):
         cmd.append("--use-fixture")
     if args.quick:
@@ -1017,7 +1110,14 @@ def _run_event_cross_candidate(args: argparse.Namespace, output_dir: Path, timeo
     return [record]
 
 
-def _run_event_rv_candidate(args: argparse.Namespace, output_dir: Path, timeout_s: int) -> List[Dict[str, object]]:
+def _run_event_rv_candidate(
+    args: argparse.Namespace,
+    output_dir: Path,
+    timeout_s: int,
+    *,
+    research_spine: Dict[str, object] | None = None,
+    model_family: str = "state_graph",
+) -> List[Dict[str, object]]:
     summary_path = output_dir / "summary.json"
     checkpoint_dir = PROJECT_ROOT / "quantum_alpha" / "models" / "event_rv"
     viewer_dir = output_dir / "viewer"
@@ -1029,6 +1129,8 @@ def _run_event_rv_candidate(args: argparse.Namespace, output_dir: Path, timeout_
         args.event_symbols,
         "--universe-size",
         str(int(args.event_universe_size)),
+        "--model-family",
+        model_family,
         "--fixture-days",
         str(int(args.fixture_days)),
         "--output-dir",
@@ -1036,6 +1138,15 @@ def _run_event_rv_candidate(args: argparse.Namespace, output_dir: Path, timeout_
         "--checkpoint-dir",
         str(checkpoint_dir),
     ]
+    if research_spine:
+        cmd.extend(
+            [
+                "--research-spine-dir",
+                str(research_spine["spine_dir"]),
+                "--research-ledger-path",
+                str(research_spine["ledger_path"]),
+            ]
+        )
     if bool(getattr(args, "event_use_fixture", False)):
         cmd.append("--use-fixture")
     if args.quick:
@@ -1074,7 +1185,14 @@ def _run_event_rv_candidate(args: argparse.Namespace, output_dir: Path, timeout_
     return [record]
 
 
-def _run_event_stack_candidate(args: argparse.Namespace, output_dir: Path, timeout_s: int, candidate_root: Path) -> List[Dict[str, object]]:
+def _run_event_stack_candidate(
+    args: argparse.Namespace,
+    output_dir: Path,
+    timeout_s: int,
+    candidate_root: Path,
+    *,
+    model_family: str = "state_graph",
+) -> List[Dict[str, object]]:
     cross_path = candidate_root / "event_cross_sectional" / "daily_returns.csv"
     rv_path = candidate_root / "event_rv" / "daily_returns.csv"
     if not cross_path.exists():
@@ -1093,6 +1211,8 @@ def _run_event_stack_candidate(args: argparse.Namespace, output_dir: Path, timeo
         str(cross_path),
         "--event-rv-daily-returns",
         str(rv_path),
+        "--model-family",
+        model_family,
         "--output-dir",
         str(output_dir),
     ]
@@ -1181,6 +1301,7 @@ def run_pipeline_suite(args: argparse.Namespace) -> Dict[str, object]:
     strategies = _normalize_strategies(args.strategies)
     output_dir = Path(args.output_dir or (PROJECT_ROOT / "artifacts" / f"pipeline_run_{datetime.now().strftime('%Y%m%d_%H%M%S')}"))
     output_dir.mkdir(parents=True, exist_ok=True)
+    suite_started = time.time()
 
     manifest: Dict[str, object] = {
         "run_at_utc": _now_utc(),
@@ -1189,16 +1310,25 @@ def run_pipeline_suite(args: argparse.Namespace) -> Dict[str, object]:
         "offline": bool(args.offline),
         "live_probe": bool(args.live_probe),
         "config_hashes": _collect_config_hashes(),
+        "runtime_targets": {
+            "smoke_suite_sec": SMOKE_SUITE_RUNTIME_TARGET_SEC,
+            "smoke_strategy_sec": SMOKE_STRATEGY_RUNTIME_TARGET_SEC,
+            "quick_candidate_sec": QUICK_CANDIDATE_RUNTIME_TARGET_SEC,
+        },
         "records": [],
     }
 
     records: List[Dict[str, object]] = []
     timeout_s = int(args.timeout_seconds)
+    research_spine: Dict[str, object] | None = None
 
     if args.suite == "smoke":
         smoke_records, _ = _run_smoke_suite(strategies, output_dir, timeout_s)
         records.extend(smoke_records)
     else:
+        if any(s in strategies for s in ("event_cross_sectional", "event_rv", "event_stack")):
+            research_spine = _prepare_event_research_spine(args, output_dir)
+            manifest["research_spine"] = research_spine
         if "enhanced" in strategies:
             records.extend(_run_enhanced_candidate(args, output_dir / "enhanced", timeout_s))
         if "intraday_microstructure" in strategies:
@@ -1206,9 +1336,25 @@ def run_pipeline_suite(args: argparse.Namespace) -> Dict[str, object]:
         if "rv_stat_arb" in strategies:
             records.extend(_run_rv_stat_arb_candidate(args, output_dir / "rv_stat_arb", timeout_s))
         if "event_cross_sectional" in strategies:
-            records.extend(_run_event_cross_candidate(args, output_dir / "event_cross_sectional", timeout_s))
+            records.extend(
+                _run_event_cross_candidate(
+                    args,
+                    output_dir / "event_cross_sectional",
+                    timeout_s,
+                    research_spine=research_spine,
+                    model_family="state_graph",
+                )
+            )
         if "event_rv" in strategies:
-            records.extend(_run_event_rv_candidate(args, output_dir / "event_rv", timeout_s))
+            records.extend(
+                _run_event_rv_candidate(
+                    args,
+                    output_dir / "event_rv",
+                    timeout_s,
+                    research_spine=research_spine,
+                    model_family="state_graph",
+                )
+            )
         if "meta_ensemble" in strategies:
             records.extend(_run_meta_candidate(args, output_dir / "meta_ensemble", timeout_s))
         if "news_lstm" in strategies:
@@ -1218,7 +1364,15 @@ def run_pipeline_suite(args: argparse.Namespace) -> Dict[str, object]:
         if "hybrid_stack" in strategies:
             records.extend(_run_hybrid_stack_candidate(args, output_dir / "hybrid_stack", timeout_s, output_dir))
         if "event_stack" in strategies:
-            records.extend(_run_event_stack_candidate(args, output_dir / "event_stack", timeout_s, output_dir))
+            records.extend(
+                _run_event_stack_candidate(
+                    args,
+                    output_dir / "event_stack",
+                    timeout_s,
+                    output_dir,
+                    model_family="state_graph",
+                )
+            )
 
         if args.suite == "promotion":
             smoke_records, _ = _run_smoke_suite(strategies, output_dir / "smoke", timeout_s)
@@ -1226,6 +1380,10 @@ def run_pipeline_suite(args: argparse.Namespace) -> Dict[str, object]:
             records.extend(_run_realtime_probe(args, output_dir / "promotion_checks", timeout_s))
 
     passed, fail_reasons = _aggregate_verdict(records)
+    total_runtime = round(time.time() - suite_started, 3)
+    if args.suite == "smoke" and total_runtime > SMOKE_SUITE_RUNTIME_TARGET_SEC:
+        fail_reasons.append("smoke_suite:runtime:smoke_runtime_budget_exceeded")
+        passed = False
     verdict = {
         "suite": args.suite,
         "strategies": strategies,
@@ -1237,6 +1395,7 @@ def run_pipeline_suite(args: argparse.Namespace) -> Dict[str, object]:
     manifest["passed"] = passed
     manifest["fail_reasons"] = fail_reasons
     manifest["output_dir"] = str(output_dir)
+    manifest["runtime_sec"] = total_runtime
 
     _write_json(output_dir / "manifest.json", manifest)
     _write_json(output_dir / "verdict.json", verdict)

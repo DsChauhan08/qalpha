@@ -264,6 +264,26 @@ ALL_FEATURE_COLS = list(BASE_FEATURE_COLS)
 # These are added to ALL_FEATURE_COLS after import
 MC_PADE_FEATURES: List[str] = []
 PATH_SHAPE_FEATURES: List[str] = []
+STATE_UNCERTAINTY_FEATURES: List[str] = [
+    "state_market_trend_prob",
+    "state_market_stress_prob",
+    "state_market_transition_entropy",
+    "state_market_persistence",
+    "state_trend_prob",
+    "state_stress_prob",
+    "state_transition_entropy",
+    "state_conditional_drift",
+    "state_conditional_volatility",
+    "state_persistence",
+    "state_stress_flag",
+    "unc_prediction_interval_width",
+    "unc_tail_miss_rate",
+    "unc_model_disagreement",
+    "unc_confidence_veto",
+    "state_trend",
+    "state_stress",
+    "unc_signal_quality",
+]
 _mc_pade_gen = None
 _path_shape_gen = None
 
@@ -320,6 +340,12 @@ def _get_path_shape_generator():
     return _path_shape_gen if _path_shape_gen is not False else None
 
 
+def _ensure_state_uncertainty_features() -> None:
+    for feature in STATE_UNCERTAINTY_FEATURES:
+        if feature not in ALL_FEATURE_COLS:
+            ALL_FEATURE_COLS.append(feature)
+
+
 def _resolve_feature_set(feature_set: str | None) -> str:
     value = str(feature_set or "base").strip().lower()
     if value not in {"base", "mc_pade", "path_shape", "hybrid_math"}:
@@ -334,11 +360,15 @@ def _feature_family_counts(feature_cols: List[str]) -> Dict[str, int]:
     mc_count = sum(1 for c in feature_cols if str(c).startswith(("mc_", "jd_", "rs_")))
     pade_count = sum(1 for c in feature_cols if str(c).startswith("pade_"))
     path_shape_count = sum(1 for c in feature_cols if str(c).startswith("ps_"))
+    state_count = sum(1 for c in feature_cols if str(c).startswith("state_"))
+    uncertainty_count = sum(1 for c in feature_cols if str(c).startswith("unc_"))
     return {
         "feature_count": int(len(feature_cols)),
         "mc_feature_count": int(mc_count),
         "pade_feature_count": int(pade_count),
         "path_shape_feature_count": int(path_shape_count),
+        "state_feature_count": int(state_count),
+        "uncertainty_feature_count": int(uncertainty_count),
     }
 
 
@@ -918,6 +948,19 @@ def compute_features_single_symbol(
             except Exception as e:
                 logger.debug(f"Regime path-shape features failed for {symbol}: {e}")
 
+        # Step 5.35: Hidden-state regime and uncertainty features for hybrid-math.
+        try:
+            from quantum_alpha.features.state_graph_features import (
+                augment_single_symbol_state_uncertainty,
+            )
+
+            state_unc = augment_single_symbol_state_uncertainty(featured)
+            for col in state_unc.columns:
+                featured[col] = state_unc[col].reindex(featured.index)
+            _ensure_state_uncertainty_features()
+        except Exception as e:
+            logger.debug(f"State/uncertainty features failed for {symbol}: {e}")
+
         # Step 5.5: GDELT news tone features (real sentiment from news articles)
         # Data covers 2017-01-01 to present; pre-2017 rows get NaN → filled with 0.
         # GDELT pickle columns: tone, tone_ma5, ... → renamed to gdelt_tone, gdelt_tone_ma5, ...
@@ -1279,6 +1322,7 @@ def get_feature_columns(df: pd.DataFrame, feature_set: str = "base") -> List[str
     elif fs == "hybrid_math":
         _get_mc_pade_generator()
         _get_path_shape_generator()
+        _ensure_state_uncertainty_features()
         candidates = list(ALL_FEATURE_COLS)
     else:
         candidates = BASE_FEATURE_COLS

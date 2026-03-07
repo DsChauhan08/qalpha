@@ -41,3 +41,18 @@ def test_event_feature_builder_is_past_only_before_cutoff():
         original.loc[before_cutoff, feature_cols].reset_index(drop=True),
         rebuilt.loc[before_cutoff, feature_cols].reset_index(drop=True),
     )
+
+
+def test_event_feature_builder_state_graph_emits_deterministic_features():
+    bundle = build_synthetic_event_panel(["SPY", "AAPL", "MSFT"], days=100, seed=13)
+    first = UnifiedEventFeatureBuilder().build(bundle.panel, model_family="state_graph")
+    second = UnifiedEventFeatureBuilder().build(bundle.panel, model_family="state_graph")
+
+    feature_cols = [
+        c
+        for c in first.features.columns
+        if c.startswith(("state_", "graph_", "unc_")) or c in {"state_trend", "state_stress", "graph_dislocation", "unc_signal_quality"}
+    ]
+    assert feature_cols
+    assert first.features[feature_cols].isna().sum().sum() == 0
+    assert_frame_equal(first.features[feature_cols], second.features[feature_cols])

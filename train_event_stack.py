@@ -39,6 +39,32 @@ def _project_weights(weights: np.ndarray, min_weight: float, max_weight: float) 
     return w / max(w.sum(), 1e-8)
 
 
+def _apply_stack_constraints(
+    weights: np.ndarray,
+    columns: List[str],
+    *,
+    neutral_min: float = 0.60,
+    directional_cap: float = 0.40,
+) -> np.ndarray:
+    w = np.asarray(weights, dtype=float).copy()
+    col_to_idx = {name: i for i, name in enumerate(columns)}
+    meta_idx = col_to_idx.get("meta_ensemble")
+    neutral_idx = [i for i, name in enumerate(columns) if name != "meta_ensemble"]
+
+    if meta_idx is not None:
+        w[meta_idx] = min(w[meta_idx], directional_cap)
+    neutral_sum = float(w[neutral_idx].sum()) if neutral_idx else 0.0
+    if neutral_idx and neutral_sum > 0 and neutral_sum < neutral_min:
+        shortfall = neutral_min - neutral_sum
+        if meta_idx is not None and w[meta_idx] > 0:
+            transfer = min(shortfall, max(0.0, w[meta_idx]))
+            w[meta_idx] -= transfer
+            neutral_add = transfer / len(neutral_idx)
+            for idx in neutral_idx:
+                w[idx] += neutral_add
+    return w / max(w.sum(), 1e-8)
+
+
 def _approx_erc(cov: np.ndarray, min_weight: float, max_weight: float, n_iter: int = 100) -> np.ndarray:
     n = cov.shape[0]
     w = np.repeat(1.0 / n, n)
@@ -58,6 +84,8 @@ def _build_weighted_returns(
     lookback: int = 63,
     min_weight: float = 0.10,
     max_weight: float = 0.60,
+    neutral_min_weight: float = 0.60,
+    directional_cap: float = 0.40,
 ) -> tuple[pd.Series, pd.DataFrame]:
     sleeves = sleeves.fillna(0.0).copy()
     weight_rows: List[pd.Series] = []
@@ -69,6 +97,12 @@ def _build_weighted_returns(
         else:
             cov = hist.cov().to_numpy(dtype=float)
             w = _approx_erc(cov, min_weight=min_weight, max_weight=max_weight)
+        w = _apply_stack_constraints(
+            w,
+            list(sleeves.columns),
+            neutral_min=neutral_min_weight,
+            directional_cap=directional_cap,
+        )
         weight_rows.append(pd.Series(w, index=sleeves.columns, name=ts))
         blended.iloc[i] = float(np.dot(w, sleeves.iloc[i].to_numpy(dtype=float)))
     return blended, pd.DataFrame(weight_rows)
@@ -80,6 +114,7 @@ def train_event_stack(
     event_rv_daily_returns: str | Path,
     meta_daily_returns: str | Path | None,
     output_dir: str | Path,
+    model_family: str = "state_graph",
 ) -> Dict[str, object]:
     out_dir = Path(output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -106,7 +141,11 @@ def train_event_stack(
             equal_weight = pd.Series(pd.to_numeric(meta_df["equal_weight"], errors="coerce").fillna(0.0).to_numpy(dtype=float), index=meta_idx)
 
     sleeve_df = pd.concat(sleeves, axis=1).fillna(0.0).sort_index()
-    blended, weights = _build_weighted_returns(sleeve_df)
+    blended, weights = _build_weighted_returns(
+        sleeve_df,
+        neutral_min_weight=0.60,
+        directional_cap=0.40,
+    )
     spy = spy.reindex(blended.index).fillna(0.0)
     equal_weight = equal_weight.reindex(blended.index).fillna(0.0)
 
@@ -117,6 +156,7 @@ def train_event_stack(
         periods_per_year=252.0,
     )
     metrics["mcpt_p_value"] = float(run_mcpt_on_returns(blended).get("p_value", 1.0))
+    metrics["turnover_mean"] = float(weights.diff().abs().sum(axis=1).fillna(0.0).mean())
 
     beta = float(metrics.get("beta", 0.0))
     hedged_returns = blended - beta * spy
@@ -146,8 +186,10 @@ def train_event_stack(
     summary = {
         "run_at_utc": datetime.now(timezone.utc).isoformat(),
         "strategy": "event_stack",
+        "model_family": model_family,
         "metrics": metrics,
         "sleeves": list(sleeve_df.columns),
+        "sleeve_weight_means": {col: float(weights[col].mean()) for col in weights.columns},
         "artifacts": {
             "daily_returns_csv": str(daily_returns_path),
             "weights_csv": str(weights_path),
@@ -167,6 +209,7 @@ def main() -> None:
     parser.add_argument("--event-cross-daily-returns", type=str, required=True)
     parser.add_argument("--event-rv-daily-returns", type=str, required=True)
     parser.add_argument("--meta-daily-returns", type=str, default=None)
+    parser.add_argument("--model-family", choices=["baseline", "state_graph"], default="state_graph")
     parser.add_argument(
         "--output-dir",
         type=str,
@@ -179,6 +222,7 @@ def main() -> None:
         event_rv_daily_returns=args.event_rv_daily_returns,
         meta_daily_returns=args.meta_daily_returns,
         output_dir=args.output_dir,
+        model_family=args.model_family,
     )
     print(json.dumps({"passed": True, "summary_json": str(Path(args.output_dir) / "summary.json"), "metrics": summary["metrics"]}, indent=2))
 

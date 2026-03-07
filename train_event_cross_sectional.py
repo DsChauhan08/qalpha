@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import pickle
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Iterable, List, Sequence
@@ -22,10 +23,63 @@ from quantum_alpha.backtesting.event_sleeve_tools import (
     write_json,
     write_viewer_bundle,
 )
-from quantum_alpha.data.collectors.event_panel import build_event_panel
 from quantum_alpha.features.event_feature_builder import UnifiedEventFeatureBuilder
+from quantum_alpha.research_spine import (
+    RESEARCH_LEDGER_FILENAME,
+    append_research_ledger,
+    build_or_load_research_spine,
+    load_or_build_event_feature_cache,
+    load_research_spine,
+)
 
 DEFAULT_SYMBOLS = ("SPY", "AAPL", "MSFT", "NVDA", "AMZN", "XOM", "JPM", "LLY")
+BASE_EVENT_PREFIXES = ("ev_", "rv_", "dp_", "ex_")
+STATE_GRAPH_EVENT_PREFIXES = BASE_EVENT_PREFIXES + ("state_", "graph_", "unc_")
+
+
+def _select_feature_columns(feature_df: pd.DataFrame, metadata: Dict[str, object], model_family: str) -> List[str]:
+    prefixes = STATE_GRAPH_EVENT_PREFIXES if str(model_family).lower() == "state_graph" else BASE_EVENT_PREFIXES
+    feature_cols = [c for c in feature_df.columns if c.startswith(prefixes)]
+    for col in metadata.get("factor_columns", []) or []:
+        if col in feature_df.columns and col not in feature_cols:
+            feature_cols.append(col)
+    return feature_cols
+
+
+def _load_panel_and_features(
+    *,
+    symbols: Sequence[str] | None,
+    universe_size: int,
+    use_fixture: bool,
+    fixture_days: int,
+    seed: int,
+    research_spine_dir: str | Path | None,
+    model_family: str,
+    default_spine_dir: Path,
+) -> tuple[pd.DataFrame, Dict[str, object], Path, Dict[str, object], Path, Path]:
+    if research_spine_dir:
+        spine = load_research_spine(research_spine_dir)
+    else:
+        spine = build_or_load_research_spine(
+            spine_dir=default_spine_dir,
+            symbols=symbols,
+            universe_size=universe_size,
+            use_fixture=use_fixture,
+            fixture_days=fixture_days,
+            seed=seed,
+        )
+    feature_df, feature_meta, feature_cache_path = load_or_build_event_feature_cache(
+        spine_dir=spine.spine_dir,
+        model_family=model_family,
+    )
+    return (
+        spine.panel,
+        spine.metadata,
+        spine.panel_path,
+        feature_meta,
+        feature_cache_path,
+        spine.spine_dir,
+    )
 
 
 def _add_targets(df: pd.DataFrame) -> pd.DataFrame:
@@ -292,29 +346,36 @@ def train_event_cross_sectional(
     fixture_days: int = 252,
     seed: int = 42,
     quick: bool = False,
+    model_family: str = "state_graph",
+    research_spine_dir: str | Path | None = None,
+    research_ledger_path: str | Path | None = None,
 ) -> Dict[str, object]:
+    started = time.time()
     out_dir = Path(output_dir)
     ckpt_dir = Path(checkpoint_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     ckpt_dir.mkdir(parents=True, exist_ok=True)
-
-    bundle = build_event_panel(
+    model_family = str(model_family or "state_graph").strip().lower()
+    panel_df, panel_meta, panel_path, feature_meta, feature_cache_path, spine_dir = _load_panel_and_features(
         symbols=symbols,
         universe_size=(min(universe_size, 60) if quick else universe_size),
         use_fixture=use_fixture,
         fixture_days=(min(fixture_days, 126) if quick else fixture_days),
         seed=seed,
+        research_spine_dir=research_spine_dir,
+        model_family=model_family,
+        default_spine_dir=out_dir / "research_spine",
     )
-    panel_path = out_dir / "event_panel.parquet"
-    bundle.panel.to_parquet(panel_path, index=False)
 
-    features = UnifiedEventFeatureBuilder().build(bundle.panel)
-    feature_df = _add_targets(features.features)
-    feature_cols = [c for c in feature_df.columns if c.startswith(("ev_", "rv_", "dp_", "ex_"))]
+    feature_df = _add_targets(pd.read_parquet(feature_cache_path))
+    feature_cols = _select_feature_columns(feature_df, feature_meta, model_family)
     feature_df = feature_df.dropna(subset=["target_residual_5d", "target_residual_20d"]).copy()
     train_df, test_df = _split_train_test(feature_df)
     model_bundle = _fit_models(train_df, feature_cols)
     scored = _score_predictions(model_bundle, test_df)
+    if "unc_confidence_veto" in scored.columns:
+        scored.loc[pd.to_numeric(scored["unc_confidence_veto"], errors="coerce").fillna(0.0) > 0.0, "vetoed"] = 1
+        scored.loc[scored["vetoed"] == 1, "trade_score"] = -1e9
 
     daily_returns, benchmark, equal_weight, positions, turnover, gross_series, net_exposure = _portfolio_backtest(scored)
     if daily_returns.empty:
@@ -329,6 +390,9 @@ def train_event_cross_sectional(
     metrics["gross_exposure_mean"] = float(gross_series.mean())
     metrics["net_exposure_mean"] = float(net_exposure.mean())
     metrics["eligible_event_count"] = int((scored["ev_earnings_event_flag"] > 0).sum())
+    unc_veto = pd.Series(scored["unc_confidence_veto"], index=scored.index) if "unc_confidence_veto" in scored.columns else pd.Series(0.0, index=scored.index)
+    metrics["uncertainty_veto_rate"] = float(pd.to_numeric(unc_veto, errors="coerce").fillna(0.0).mean())
+    metrics["turnover_mean"] = float(turnover.reindex(daily_returns.index).fillna(0.0).mean())
 
     beta = float(metrics.get("beta", 0.0))
     hedged_returns = daily_returns - beta * benchmark.reindex(daily_returns.index).fillna(0.0)
@@ -399,8 +463,8 @@ def train_event_cross_sectional(
             {
                 "models": model_bundle,
                 "feature_columns": feature_cols,
-                "builder_metadata": features.metadata,
-                "data_quality": bundle.quality,
+                "builder_metadata": feature_meta,
+                "research_metadata": panel_meta,
                 "generated_at_utc": datetime.now(timezone.utc).isoformat(),
             },
             f,
@@ -409,22 +473,35 @@ def train_event_cross_sectional(
     summary = {
         "run_at_utc": datetime.now(timezone.utc).isoformat(),
         "strategy": "event_cross_sectional",
-        "symbols": sorted(bundle.panel["symbol"].unique().tolist()),
-        "universe_size": int(bundle.panel["symbol"].nunique()),
+        "model_family": model_family,
+        "symbols": sorted(panel_df["symbol"].unique().tolist()),
+        "universe_size": int(panel_df["symbol"].nunique()),
         "feature_count": int(len(feature_cols)),
         "train_rows": int(len(train_df)),
         "test_rows": int(len(test_df)),
         "metrics": metrics,
-        "data_quality": bundle.quality,
+        "data_quality": panel_meta.get("quality", {}),
+        "research_spine": {
+            "spine_dir": str(spine_dir),
+            "panel_path": str(panel_path),
+            "feature_cache_path": str(feature_cache_path),
+            "dataset_hash": str(panel_meta.get("dataset_hash", "")),
+        },
+        "feature_families": list(dict.fromkeys([str(c).split("_", 1)[0] for c in feature_cols])),
         "factor_exposures": {
             "ev_information_gap": float(scored["ev_information_gap"].mean()),
             "ev_confirmation_pressure": float(scored["ev_confirmation_pressure"].mean()),
             "rv_peer_dislocation": float(scored["rv_peer_dislocation"].mean()),
             "dp_tail_fragility": float(scored["dp_tail_fragility"].mean()),
+            "state_trend": float(pd.to_numeric(scored["state_trend"], errors="coerce").fillna(0.0).mean()) if "state_trend" in scored.columns else 0.0,
+            "state_stress": float(pd.to_numeric(scored["state_stress"], errors="coerce").fillna(0.0).mean()) if "state_stress" in scored.columns else 0.0,
+            "graph_dislocation": float(pd.to_numeric(scored["graph_dislocation"], errors="coerce").fillna(0.0).mean()) if "graph_dislocation" in scored.columns else 0.0,
+            "unc_signal_quality": float(pd.to_numeric(scored["unc_signal_quality"], errors="coerce").fillna(0.0).mean()) if "unc_signal_quality" in scored.columns else 0.0,
         },
         "artifacts": {
             "checkpoint": str(checkpoint_path),
             "event_panel_parquet": str(panel_path),
+            "feature_cache_parquet": str(feature_cache_path),
             "daily_returns_csv": str(daily_returns_path),
             "positions_csv": str(positions_path),
             "robustness_json": str(robustness_path),
@@ -439,6 +516,26 @@ def train_event_cross_sectional(
     validation = validate_viewer_bundle(viewer_dir)
     if not bool(validation.get("valid")):
         raise RuntimeError(f"Event cross-sectional viewer artifact validation failed: {validation}")
+
+    ledger_path = Path(research_ledger_path) if research_ledger_path else spine_dir / RESEARCH_LEDGER_FILENAME
+    append_research_ledger(
+        ledger_path,
+        {
+            "strategy": "event_cross_sectional",
+            "model_family": model_family,
+            "dataset_hash": str(panel_meta.get("dataset_hash", "")),
+            "feature_families": summary["feature_families"],
+            "cost_model": "predicted_spread_plus_turnover",
+            "benchmarks": ["SPY", "equal_weight"],
+            "runtime_sec": round(time.time() - started, 3),
+            "metrics": metrics,
+            "passed": True,
+            "fail_reasons": [],
+            "summary_json": str(summary_path),
+        },
+    )
+    summary["research_ledger_path"] = str(ledger_path)
+    write_json(summary_path, summary)
 
     latest_path = ckpt_dir / "latest_event_cross_sectional.json"
     write_json(
@@ -456,10 +553,13 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Train the event-driven cross-sectional sleeve")
     parser.add_argument("--symbols", type=str, default=",".join(DEFAULT_SYMBOLS))
     parser.add_argument("--universe-size", type=int, default=800)
+    parser.add_argument("--model-family", choices=["baseline", "state_graph"], default="state_graph")
     parser.add_argument("--use-fixture", action="store_true")
     parser.add_argument("--fixture-days", type=int, default=252)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--quick", action="store_true")
+    parser.add_argument("--research-spine-dir", type=str, default=None)
+    parser.add_argument("--research-ledger-path", type=str, default=None)
     parser.add_argument(
         "--output-dir",
         type=str,
@@ -482,6 +582,9 @@ def main() -> None:
         fixture_days=args.fixture_days,
         seed=args.seed,
         quick=args.quick,
+        model_family=args.model_family,
+        research_spine_dir=args.research_spine_dir,
+        research_ledger_path=args.research_ledger_path,
     )
     print(json.dumps({"passed": True, "summary_json": str(Path(args.output_dir) / "summary.json"), "metrics": summary["metrics"]}, indent=2))
 
